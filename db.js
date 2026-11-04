@@ -8,17 +8,32 @@ const UPLOADS = path.join(DIR, 'uploads');
 fs.mkdirSync(UPLOADS, { recursive: true });
 
 const db = new DatabaseSync(path.join(DIR, 'motoboys.db'));
+const USUARIOS = (nome) => `CREATE TABLE IF NOT EXISTS ${nome} (
+  id INTEGER PRIMARY KEY, nome TEXT NOT NULL, login TEXT NOT NULL UNIQUE COLLATE NOCASE, senha TEXT NOT NULL,
+  perfil TEXT NOT NULL CHECK (perfil IN ('admin','gestao','financeiro','despachante','motoboy')),
+  loja_id INTEGER REFERENCES lojas, ativo INTEGER NOT NULL DEFAULT 1, email TEXT,
+  motoboy_id INTEGER UNIQUE REFERENCES motoboys);`;
+
+// Migração da 1ª versão (usuarios sem perfil motoboy/email): recria a tabela mantendo os dados.
+// Segue o procedimento do SQLite (cria nova, copia, apaga antiga, renomeia) para não quebrar as FKs de sessoes.
 const antigo = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'usuarios'").get()?.sql;
-if (antigo && !antigo.includes("'motoboy'")) throw new Error(`Banco da versão de teste anterior em ${DIR}. Apague essa pasta e inicie de novo.`);
+if (antigo && !antigo.includes("'motoboy'")) {
+  db.exec('PRAGMA foreign_keys = OFF; BEGIN;');
+  try {
+    db.exec(`${USUARIOS('usuarios_novo')}
+      INSERT INTO usuarios_novo (id, nome, login, senha, perfil, loja_id, ativo) SELECT id, nome, login, senha, perfil, loja_id, ativo FROM usuarios;
+      DROP TABLE usuarios;
+      ALTER TABLE usuarios_novo RENAME TO usuarios;
+      COMMIT;`);
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  console.log('Banco atualizado para a nova versão (usuarios).');
+}
+
 db.exec(`
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS lojas (id INTEGER PRIMARY KEY, nome TEXT NOT NULL UNIQUE COLLATE NOCASE);
-CREATE TABLE IF NOT EXISTS usuarios (
-  id INTEGER PRIMARY KEY, nome TEXT NOT NULL, login TEXT NOT NULL UNIQUE COLLATE NOCASE, senha TEXT NOT NULL,
-  perfil TEXT NOT NULL CHECK (perfil IN ('admin','gestao','financeiro','despachante','motoboy')),
-  loja_id INTEGER REFERENCES lojas, ativo INTEGER NOT NULL DEFAULT 1, email TEXT,
-  motoboy_id INTEGER UNIQUE REFERENCES motoboys);
+${USUARIOS('usuarios')}
 CREATE TABLE IF NOT EXISTS sessoes (token TEXT PRIMARY KEY, usuario_id INTEGER NOT NULL REFERENCES usuarios ON DELETE CASCADE, expira INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS motoboys (id INTEGER PRIMARY KEY, nome TEXT NOT NULL, cpf TEXT, pix TEXT, ativo INTEGER NOT NULL DEFAULT 1);
 -- nome do entregador no Agilizone (por loja) -> motoboy cadastrado

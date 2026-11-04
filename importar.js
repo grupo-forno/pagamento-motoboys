@@ -66,7 +66,8 @@ function lerResumo(buf) {
     const c = l.split(';');
     const total = centavos(c[col('Soma das taxas de entrega')]);
     if (Number.isNaN(total)) throw erro(`Resumo: valor inválido para ${c[col('Entregador')]}.`);
-    return { entregador: String(c[col('Entregador')] ?? '').trim(), pedidos: Number(c[col('Pedidos')]) || 0, cpf: limpa(c[col('CPF')]), pix: limpa(c[col('Chave Pix')]), total };
+    const pago = col('Pago') < 0 ? 0 : centavos(c[col('Pago')]) || 0; // acerto já feito no Agilizone
+    return { entregador: String(c[col('Entregador')] ?? '').trim(), pedidos: Number(c[col('Pedidos')]) || 0, cpf: limpa(c[col('CPF')]), pix: limpa(c[col('Chave Pix')]), total, pago };
   }).filter((r) => r.entregador);
   if (!rows.length) throw erro('O Resumo de entregas está vazio.');
   return rows;

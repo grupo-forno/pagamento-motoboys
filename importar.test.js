@@ -6,10 +6,10 @@ const { lerRelatorio, lerResumo, diaOperacional, centavos } = require('./importa
 test('lê resumo de entregadores (CSV do Agilizone)', () => {
   const csv = 'Entregador;Pedidos;CPF;Chave Pix;Data de Nascimento;Soma das taxas de entrega;Pago;Saldo a pagar\n' +
     'Mike Rodrigues;53;02675373362;02675373362;26/05/1988;R$ 1.462,00;R$ 0,00;R$ 1.462,00\n' +
-    'Vinícius Amaral ;35;-;-;-;R$ 326,50;R$ 0,00;R$ 326,50\n';
+    'Vinícius Amaral ;35;-;-;-;R$ 326,50;R$ 100,00;R$ 226,50\n';
   assert.deepEqual(lerResumo(Buffer.from(csv)), [
-    { entregador: 'Mike Rodrigues', pedidos: 53, cpf: '02675373362', pix: '02675373362', total: 146200 },
-    { entregador: 'Vinícius Amaral', pedidos: 35, cpf: null, pix: null, total: 32650 },
+    { entregador: 'Mike Rodrigues', pedidos: 53, cpf: '02675373362', pix: '02675373362', total: 146200, pago: 0 },
+    { entregador: 'Vinícius Amaral', pedidos: 35, cpf: null, pix: null, total: 32650, pago: 10000 },
   ]);
   assert.equal(lerResumo(Buffer.from(csv, 'latin1'))[1].entregador, 'Vinícius Amaral'); // salvo pelo Excel
   assert.throws(() => lerResumo(Buffer.from('Número;Loja\n1;A')), /Resumo de entregas/);

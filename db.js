@@ -64,8 +64,10 @@ CREATE TABLE IF NOT EXISTS pagamentos (
 -- "Resumo de entregas por entregador" do Agilizone: total confiável por entregador no período
 CREATE TABLE IF NOT EXISTS resumo (
   fechamento_id INTEGER NOT NULL REFERENCES fechamentos ON DELETE CASCADE, entregador TEXT NOT NULL,
-  motoboy_id INTEGER REFERENCES motoboys, pedidos INTEGER, total INTEGER NOT NULL, cpf TEXT, pix TEXT,
+  motoboy_id INTEGER REFERENCES motoboys, pedidos INTEGER, total INTEGER NOT NULL, cpf TEXT, pix TEXT, pago INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (fechamento_id, entregador));
+-- configurações editáveis pela TI (e-mail, destinatários...)
+CREATE TABLE IF NOT EXISTS config (chave TEXT PRIMARY KEY, valor TEXT);
 -- valor que o próprio motoboy informou no sistema; o despachante resolve com um ajuste
 CREATE TABLE IF NOT EXISTS reclamacoes (
   id INTEGER PRIMARY KEY, fechamento_id INTEGER NOT NULL REFERENCES fechamentos ON DELETE CASCADE,
@@ -76,6 +78,9 @@ CREATE TABLE IF NOT EXISTS log (
   id INTEGER PRIMARY KEY, quando TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   usuario_id INTEGER, ref TEXT, acao TEXT NOT NULL);
 `);
+
+// Colunas adicionadas depois da tabela existir em bancos já em uso.
+if (!db.prepare("SELECT 1 FROM pragma_table_info('resumo') WHERE name = 'pago'").get()) db.exec('ALTER TABLE resumo ADD COLUMN pago INTEGER NOT NULL DEFAULT 0');
 
 for (const nome of ['FORNO PAULISTA DIRCEU', 'FORNO PAULISTA DOM SEVERINO ATIVA', 'FORNO PAULISTA SUL', 'Forno Paulista Centro de Distribuição Leste'])
   db.prepare('INSERT OR IGNORE INTO lojas (nome) VALUES (?)').run(nome);

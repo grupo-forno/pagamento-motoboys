@@ -2,7 +2,7 @@ const PDFDocument = require('pdfkit');
 const nodemailer = require('nodemailer');
 const fs = require('node:fs');
 const path = require('node:path');
-const { DIR } = require('./db');
+const { db, DIR } = require('./db');
 
 const brl = (c) => (c / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const SEMANA = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
@@ -12,7 +12,7 @@ const dataFmt = (d) => d.split('-').reverse().join('/');
 // PDF A4 paisagem: tabela motoboy x dia (igual à planilha antiga) + divergências com justificativa.
 function gerarPdf(f, g, ajustes) {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 30, info: { Title: `Pagamento motoboys ${f.loja}` } });
+    const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 30, info: { Title: `Solicitação de pagamento motoboys ${f.loja}` } });
     const partes = [];
     doc.on('data', (b) => partes.push(b)).on('end', () => resolve(Buffer.concat(partes))).on('error', reject);
 
@@ -37,7 +37,7 @@ function gerarPdf(f, g, ajustes) {
       y += H;
     };
 
-    doc.font('Helvetica-Bold').fontSize(15).text(`Pagamento de motoboys · ${f.loja}`, L, 30);
+    doc.font('Helvetica-Bold').fontSize(15).text(`Solicitação de pagamento · Motoboys · ${f.loja}`, L, 30);
     doc.font('Helvetica').fontSize(10).fillColor('#444')
       .text(`Período: ${dataFmt(f.data_ini)} a ${dataFmt(f.data_fim)}   ·   ${g.linhas.length} motoboys   ·   Total: ${brl(g.total)}   ·   Gerado em ${new Date().toLocaleString('pt-BR', { timeZone: 'America/Fortaleza' })}`);
     y = doc.y + 10;
@@ -58,21 +58,27 @@ function gerarPdf(f, g, ajustes) {
   });
 }
 
-// Sem SMTP_HOST configurado, o e-mail é gravado em data/emails/*.eml (desenvolvimento).
-const transporte = process.env.SMTP_HOST
-  ? nodemailer.createTransport({
-    host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT || 587), secure: process.env.SMTP_PORT === '465',
-    auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } : undefined,
-  })
-  : nodemailer.createTransport({ streamTransport: true, buffer: true });
+// Configuração de e-mail: tela "Configurações" (tabela config), com as variáveis de ambiente como reserva.
+const ENV = { smtp_host: 'SMTP_HOST', smtp_port: 'SMTP_PORT', smtp_user: 'SMTP_USER', smtp_pass: 'SMTP_PASS', smtp_from: 'SMTP_FROM', app_url: 'APP_URL', email_para: 'EMAIL_PARA', email_copia: 'EMAIL_COPIA' };
+const cfg = (k) => db.prepare('SELECT valor FROM config WHERE chave = ?').get(k)?.valor ?? process.env[ENV[k]] ?? '';
+const listaEmails = (txt) => String(txt || '').split(/[s,;]+/).map((e) => e.trim()).filter(Boolean);
 
+// Envia; sem servidor configurado, grava o .eml em data/emails e avisa (não lança erro).
+// Retorna { enviado: true } ou { salvo: caminho }. Erros do servidor de e-mail são lançados.
 async function enviarEmail(msg) {
-  const info = await transporte.sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER || 'motoboys@localhost', ...msg });
-  if (!process.env.SMTP_HOST) {
+  const host = cfg('smtp_host'), porta = Number(cfg('smtp_port') || 587);
+  const from = cfg('smtp_from') || cfg('smtp_user') || 'motoboys@localhost';
+  if (!host) {
+    const info = await nodemailer.createTransport({ streamTransport: true, buffer: true }).sendMail({ from, ...msg });
     const pasta = path.join(DIR, 'emails');
     fs.mkdirSync(pasta, { recursive: true });
-    fs.writeFileSync(path.join(pasta, `${Date.now()}.eml`), info.message);
+    const arq = path.join(pasta, `${Date.now()}.eml`);
+    fs.writeFileSync(arq, info.message);
+    return { salvo: arq };
   }
+  const t = nodemailer.createTransport({ host, port: porta, secure: porta === 465, auth: cfg('smtp_user') ? { user: cfg('smtp_user'), pass: cfg('smtp_pass') } : undefined, connectionTimeout: 15000 });
+  await t.sendMail({ from, ...msg });
+  return { enviado: true };
 }
 
-module.exports = { gerarPdf, enviarEmail, brl, diaFmt, dataFmt };
+module.exports = { gerarPdf, enviarEmail, cfg, listaEmails, brl, diaFmt, dataFmt };

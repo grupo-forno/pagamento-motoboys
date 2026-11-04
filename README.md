@@ -4,26 +4,32 @@ Sistema web que substitui a planilha de pagamento dos motoboys. Ele lê o relat�
 
 ## Fluxo
 1. **Despachante**: no Agilizone, escolhe a loja, abre *Relatório de Pedidos*, preenche o período e clica em *Aplicar filtros*. Na mesma tela exporta **dois arquivos**:
-   - *Exportar Pedidos* (`.xlsx`): os pedidos de cada dia.
-   - *Resumo de entregas por entregador* → *Exportar Resumo* (`.csv`): o total certo de cada motoboy.
+   - *Exportar Pedidos* (`.xlsx`): os pedidos de cada dia. Pedidos sem motoboy atrelado são descartados.
+   - *Resumo de entregas por entregador* → *Exportar Resumo* (`.csv`): o total certo e a chave PIX de cada motoboy.
 
-   Em seguida importa os dois em **Novo fechamento**. O sistema confere a soma dos dias de cada motoboy com o Resumo. Se não bater, a linha fica marcada como "Não bate com o Resumo" e o fechamento não pode ser enviado até o despachante registrar a diferença no dia certo. O PIX e o CPF que estiverem no Resumo são cadastrados automaticamente em quem ainda não tem (nunca sobrescrevem um valor já cadastrado).
+   Em seguida importa os dois em **Novo fechamento**.
 2. Na primeira vez, o despachante liga cada nome do Agilizone a um motoboy cadastrado. Nas importações seguintes isso já sai automático.
-3. O sistema mostra o valor por motoboy e por dia (soma da coluna *Taxa do Entregador*). Se o motoboy informou outro valor, o despachante clica no dia e registra a **divergência**: valor informado, valor final, justificativa e evidências.
-4. **Enviar ao financeiro**: só funciona quando todos os motoboys com valor a receber têm chave PIX.
-5. **Financeiro**: marca cada motoboy como pago ou devolve o fechamento para correção. Quando todos estão pagos, o fechamento fica como "Pago".
+3. O sistema mostra o valor por motoboy e por dia e confere com o Resumo:
+   - **Não bate com o Resumo**: a linha fica marcada e o envio é bloqueado até o despachante registrar a diferença no dia certo (a tela já sugere o valor).
+   - **PIX**: vem do Resumo e atualiza o cadastro (fica no histórico). Se faltar, o despachante digita na própria tela do fechamento.
+   - **Acerto já feito no Agilizone** (coluna "Pago" do Resumo): o sistema avisa para não pagar em dobro.
+   - Se um motoboy disser que o valor está errado, o despachante clica no dia e registra a **divergência** (valor, justificativa, evidências).
+4. **Enviar ao financeiro**: sai um e-mail com o **PDF da solicitação de pagamento** para os destinatários definidos em Configurações. A tela mostra se o e-mail foi enviado, com botão para reenviar.
+5. **Financeiro**: copia o PIX de cada motoboy, paga e marca como pago (um por um ou "Marcar todos como pagos"). Pode devolver ao despachante com o motivo, e o despachante recebe um e-mail.
 
-Perfis:
-- **TI/Admin**: tudo, inclusive usuários.
+Perfis (motoboys não acessam o sistema):
+- **TI/Admin**: tudo, inclusive usuários e **Configurações** (e-mail, destinatários, lojas).
 - **Gestão**: só vê.
-- **Financeiro**: vê tudo e paga. Quando o fechamento é enviado, recebe **e-mail com o PDF** no endereço cadastrado em Usuários.
-- **Despachante**: só a própria loja. Cria o acesso dos motoboys na ficha de cada um.
-- **Motoboy**: vê só os próprios valores por dia. Se algo não bate, informa o valor e a explicação. O fechamento só pode ser enviado depois que o despachante confere todas essas informações.
+- **Financeiro**: vê tudo e paga.
+- **Despachante**: só a própria loja; importa, confere, completa PIX e envia.
 
 Regras:
 - Um pedido não entra em dois fechamentos.
 - Pedido iniciado antes das 05:00 conta no dia anterior.
 - Mudanças de PIX e ações nos fechamentos ficam no histórico.
+
+## E-mail (Google Workspace)
+Em **Configurações** (login da TI) há o passo a passo. Resumo: numa conta do domínio (ex.: `tecnologia@grupofornopaulista.com`), ative a verificação em duas etapas, crie uma **senha de app** em myaccount.google.com/apppasswords e preencha servidor `smtp.gmail.com`, porta `587`, usuário e senha de app. Depois use **Enviar teste**. Sem servidor configurado, os e-mails ficam salvos em `data/emails/` e não saem.
 
 ## Rodar
 Requer Node 22.13 ou mais novo.
@@ -37,7 +43,9 @@ Abra http://localhost:3080.
 
 Variáveis: `PORT` (padrão 3080), `HOST`, `DATA_DIR` (banco SQLite e evidências, padrão `./data`), `COOKIE_SECURE=1` quando estiver atrás de HTTPS, `APP_URL` (link que vai no e-mail, ex.: `https://motoboys.seudominio.com.br`).
 
-E-mail: `SMTP_HOST`, `SMTP_PORT` (587 ou 465), `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`. No Google Workspace, use `smtp.gmail.com`, porta 587 e uma **senha de app** da conta. Sem `SMTP_HOST`, os e-mails são salvos em `data/emails/` em vez de enviados, o que serve para testar.
+As configurações de e-mail ficam na tela **Configurações**. As variáveis `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`, `EMAIL_PARA` e `APP_URL` servem só como valor inicial quando a tela ainda não foi preenchida.
+
+Para testar mexendo no código: `npm run dev` (reinicia sozinho a cada alteração).
 
 Testes: `npm test`
 
@@ -54,9 +62,6 @@ sudo useradd --system --home /opt/motoboys motoboys
 sudo git clone <repo> /opt/motoboys   # ou copie a pasta do projeto
 cd /opt/motoboys && sudo npm ci --omit=dev
 sudo mkdir -p data && sudo chown -R motoboys: data
-
-# E-mail: crie /etc/motoboys.env com APP_URL=..., SMTP_HOST=..., SMTP_USER=..., SMTP_PASS=... (uma por linha)
-sudo nano /etc/motoboys.env && sudo chmod 600 /etc/motoboys.env
 
 # Serviço
 sudo cp deploy/motoboys.service /etc/systemd/system/

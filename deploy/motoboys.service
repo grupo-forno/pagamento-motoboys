@@ -1,0 +1,23 @@
+[Unit]
+Description=Pagamento Motoboys
+After=network.target
+
+[Service]
+User=motoboys
+WorkingDirectory=/opt/motoboys
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOST=127.0.0.1
+Environment=DATA_DIR=/opt/motoboys/data
+Environment=COOKIE_SECURE=1
+# E-mail (APP_URL, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM) em arquivo separado, só root lê:
+EnvironmentFile=-/etc/motoboys.env
+ExecStart=/usr/bin/node server.js
+Restart=always
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/motoboys/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

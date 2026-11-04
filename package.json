@@ -1,0 +1,22 @@
+{
+  "name": "pagamento-motoboys",
+  "version": "1.0.0",
+  "description": "Fechamento e pagamento de motoboys a partir do Agilizone",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "type": "commonjs",
+  "dependencies": {
+    "express": "^5.1.0",
+    "multer": "^2.5.0",
+    "nodemailer": "^10.3.1",
+    "pdfkit": "^0.20.2",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  }
+}

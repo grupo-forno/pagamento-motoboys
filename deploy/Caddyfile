@@ -1,0 +1,5 @@
+# Troque pelo domínio apontado para a VPS. O Caddy emite o certificado HTTPS sozinho.
+motoboys.seudominio.com.br {
+	request_body max_size 70MB
+	reverse_proxy 127.0.0.1:3000
+}

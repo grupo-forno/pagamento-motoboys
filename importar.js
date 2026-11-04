@@ -51,4 +51,25 @@ function lerRelatorio(buf) {
   return { loja: [...lojas][0], pedidos };
 }
 
-module.exports = { lerRelatorio, diaOperacional, centavos };
+// Lê o CSV de "Resumo de entregas por entregador > Exportar Resumo" do Agilizone.
+// É o total confiável por entregador; o Relatório de Pedidos serve para separar por dia.
+function lerResumo(buf) {
+  let txt = buf.toString('utf8');
+  if (txt.includes('�')) txt = buf.toString('latin1'); // CSV salvo de novo pelo Excel
+  const linhas = txt.replace(/^﻿/, '').split(/\r?\n/).filter((l) => l.trim());
+  const cab = (linhas[0] || '').split(';').map((s) => s.trim());
+  const col = (n) => cab.indexOf(n);
+  if (col('Entregador') < 0 || col('Soma das taxas de entrega') < 0)
+    throw erro('O segundo arquivo não parece o "Resumo de entregas por entregador" do Agilizone (o .csv de "Exportar Resumo").');
+  const limpa = (v) => { const s = String(v ?? '').trim(); return s && s !== '-' && s !== '—' ? s : null; };
+  const rows = linhas.slice(1).map((l) => {
+    const c = l.split(';');
+    const total = centavos(c[col('Soma das taxas de entrega')]);
+    if (Number.isNaN(total)) throw erro(`Resumo: valor inválido para ${c[col('Entregador')]}.`);
+    return { entregador: String(c[col('Entregador')] ?? '').trim(), pedidos: Number(c[col('Pedidos')]) || 0, cpf: limpa(c[col('CPF')]), pix: limpa(c[col('Chave Pix')]), total };
+  }).filter((r) => r.entregador);
+  if (!rows.length) throw erro('O Resumo de entregas está vazio.');
+  return rows;
+}
+
+module.exports = { lerRelatorio, lerResumo, diaOperacional, centavos };

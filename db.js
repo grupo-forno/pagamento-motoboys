@@ -61,6 +61,11 @@ CREATE TABLE IF NOT EXISTS pagamentos (
   fechamento_id INTEGER NOT NULL REFERENCES fechamentos ON DELETE CASCADE, motoboy_id INTEGER NOT NULL,
   valor INTEGER NOT NULL, pix TEXT, pago_por INTEGER, pago_em TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   PRIMARY KEY (fechamento_id, motoboy_id));
+-- "Resumo de entregas por entregador" do Agilizone: total confiável por entregador no período
+CREATE TABLE IF NOT EXISTS resumo (
+  fechamento_id INTEGER NOT NULL REFERENCES fechamentos ON DELETE CASCADE, entregador TEXT NOT NULL,
+  motoboy_id INTEGER REFERENCES motoboys, pedidos INTEGER, total INTEGER NOT NULL, cpf TEXT, pix TEXT,
+  PRIMARY KEY (fechamento_id, entregador));
 -- valor que o próprio motoboy informou no sistema; o despachante resolve com um ajuste
 CREATE TABLE IF NOT EXISTS reclamacoes (
   id INTEGER PRIMARY KEY, fechamento_id INTEGER NOT NULL REFERENCES fechamentos ON DELETE CASCADE,

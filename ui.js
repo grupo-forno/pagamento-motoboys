@@ -176,7 +176,8 @@ details.fold>summary .chev{transition:transform .15s;color:var(--mut)}details.fo
 .seg a{padding:6px 12px;border-radius:7px;color:var(--tx-2);text-decoration:none;font-size:14px;font-weight:500}.seg a.on{background:var(--tx);color:#fff}.seg a:not(.on):hover{background:var(--surface-2);color:var(--tx)}
 .seg .c{font-size:12px;opacity:.7;margin-left:4px}
 .seg button{border:0;background:none;font:inherit;padding:6px 12px;border-radius:7px;color:var(--tx-2);font-size:14px;font-weight:500;cursor:pointer}.seg button.on{background:var(--tx);color:#fff}.seg button:not(.on):hover{background:var(--surface-2)}
-table[data-f=com] tr[data-div="0"],table[data-f=sem] tr[data-div="1"]{display:none}
+table[data-f=com] tr[data-div="0"],table[data-f=sem] tr[data-div="1"],table[data-f=res] tr[data-res="0"]{display:none}
+tr.nobate>td,.grade tr.nobate>td:first-child{background:#fef2f2}.grade tr.nobate>td:first-child{box-shadow:inset 4px 0 0 var(--bad),inset -1px 0 0 var(--bd)}
 tr.alt>td,.grade tr.alt>td:first-child{background:#fffbeb}.grade tr.alt>td:first-child{box-shadow:inset 4px 0 0 #f59e0b,inset -1px 0 0 var(--bd)}
 .badge.div{background:#fef3c7;color:#92400e;border-color:#fcd34d}
 body.auth{min-height:100vh;display:grid;place-items:center;padding:20px;background:radial-gradient(1000px 500px at 0% -10%,#ffedd5 0,transparent 60%),radial-gradient(800px 500px at 110% 110%,#fee2e2 0,transparent 55%),var(--bg)}

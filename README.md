@@ -3,7 +3,11 @@
 Sistema web que substitui a planilha de pagamento dos motoboys. Ele lê o relatório exportado do Agilizone.
 
 ## Fluxo
-1. **Despachante**: no Agilizone, escolhe a loja, abre *Relatório de Pedidos*, preenche o período, clica em *Aplicar filtros* e depois em *Exportar Pedidos*. Em seguida importa o `.xlsx` em **Novo fechamento**.
+1. **Despachante**: no Agilizone, escolhe a loja, abre *Relatório de Pedidos*, preenche o período e clica em *Aplicar filtros*. Na mesma tela exporta **dois arquivos**:
+   - *Exportar Pedidos* (`.xlsx`): os pedidos de cada dia.
+   - *Resumo de entregas por entregador* → *Exportar Resumo* (`.csv`): o total certo de cada motoboy.
+
+   Em seguida importa os dois em **Novo fechamento**. O sistema confere a soma dos dias de cada motoboy com o Resumo. Se não bater, a linha fica marcada como "Não bate com o Resumo" e o fechamento não pode ser enviado até o despachante registrar a diferença no dia certo. O PIX e o CPF que estiverem no Resumo são cadastrados automaticamente em quem ainda não tem (nunca sobrescrevem um valor já cadastrado).
 2. Na primeira vez, o despachante liga cada nome do Agilizone a um motoboy cadastrado. Nas importações seguintes isso já sai automático.
 3. O sistema mostra o valor por motoboy e por dia (soma da coluna *Taxa do Entregador*). Se o motoboy informou outro valor, o despachante clica no dia e registra a **divergência**: valor informado, valor final, justificativa e evidências.
 4. **Enviar ao financeiro**: só funciona quando todos os motoboys com valor a receber têm chave PIX.

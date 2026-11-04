@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { db, UPLOADS, hashSenha, confereSenha, log, tx } = require('./db');
-const { lerRelatorio, centavos } = require('./importar');
+const { lerRelatorio, lerResumo, centavos } = require('./importar');
 const { gerarPdf, enviarEmail, brl, diaFmt, dataFmt } = require('./relatorio');
 const { Raw, html, icone, iniciais, semAcento, CSS, JS } = require('./ui');
 
@@ -134,22 +134,59 @@ function grade(f) {
   for (const a of db.prepare('SELECT * FROM ajustes WHERE fechamento_id = ?').all(f.id))
     Object.assign(cel(a.motoboy_id, a.dia), { final: a.valor_final, ajuste: a });
   const pagos = new Map(db.prepare('SELECT * FROM pagamentos WHERE fechamento_id = ?').all(f.id).map((p) => [p.motoboy_id, p]));
+  // Resumo do Agilizone (quando enviado): total confiável por motoboy. Quem só aparece no Resumo também entra na grade.
+  const temResumo = !!db.prepare('SELECT 1 FROM resumo WHERE fechamento_id = ?').get(f.id);
+  const resumo = new Map(db.prepare('SELECT motoboy_id m, SUM(total) t FROM resumo WHERE fechamento_id = ? AND motoboy_id IS NOT NULL GROUP BY 1').all(f.id).map((r) => [r.m, r.t]));
+  for (const m of resumo.keys()) if (!cels.has(m)) cels.set(m, {});
   const ids = [...cels.keys()];
   const linhas = db.prepare(`SELECT id, nome, pix FROM motoboys WHERE id IN (${ids.map(Number).join(',') || 0}) ORDER BY nome`).all()
     .map((m) => {
-      const c = cels.get(m.id);
-      return { ...m, dias: c, total: Object.values(c).reduce((s, x) => s + x.final, 0), pago: pagos.get(m.id) };
+      const c = cels.get(m.id), cs = Object.values(c);
+      const total = cs.reduce((s, x) => s + x.final, 0), res = temResumo ? (resumo.get(m.id) ?? 0) : null;
+      // ok: bate com o Resumo · justificado: não bate, mas o despachante registrou divergência · pendente: precisa resolver
+      const confere = res == null || total === res ? 'ok' : cs.some((x) => x.ajuste) ? 'justificado' : 'pendente';
+      return { ...m, dias: c, total, resumo: res, confere, pago: pagos.get(m.id) };
     });
   const diasArr = [...dias].sort();
   const totDia = Object.fromEntries(diasArr.map((d) => [d, linhas.reduce((s, l) => s + (l.dias[d]?.final || 0), 0)]));
-  return { dias: diasArr, linhas, totDia, total: linhas.reduce((s, l) => s + l.total, 0) };
+  return { dias: diasArr, linhas, totDia, total: linhas.reduce((s, l) => s + l.total, 0), temResumo };
+}
+
+// Liga o Resumo aos motoboys (pelos nomes do Agilizone) e preenche PIX/CPF de quem ainda não tem. Nunca sobrescreve.
+function aplicaResumo(f, uid) {
+  db.prepare('UPDATE resumo SET motoboy_id = (SELECT motoboy_id FROM apelidos WHERE loja_id = ? AND nome = resumo.entregador) WHERE fechamento_id = ? AND motoboy_id IS NULL').run(f.loja_id, f.id);
+  const faltando = db.prepare(`SELECT r.motoboy_id, r.pix, r.cpf, m.pix mpix, m.cpf mcpf FROM resumo r JOIN motoboys m ON m.id = r.motoboy_id
+    WHERE r.fechamento_id = ? AND ((r.pix IS NOT NULL AND m.pix IS NULL) OR (r.cpf IS NOT NULL AND m.cpf IS NULL))`).all(f.id);
+  for (const r of faltando) {
+    const pix = r.mpix ?? r.pix, cpf = r.mcpf ?? r.cpf;
+    db.prepare('UPDATE motoboys SET pix = ?, cpf = ? WHERE id = ?').run(pix, cpf, r.motoboy_id);
+    log(uid, `m:${r.motoboy_id}`, [!r.mpix && r.pix && `pix: "" → "${r.pix}"`, !r.mcpf && r.cpf && `cpf: "" → "${r.cpf}"`].filter(Boolean).join('; ') + ` (do Resumo do Agilizone, ${f.loja})`);
+  }
+}
+
+function gravaResumo(f, rows, uid, arquivo) {
+  db.prepare('DELETE FROM resumo WHERE fechamento_id = ?').run(f.id);
+  const ins = db.prepare('INSERT INTO resumo (fechamento_id, entregador, pedidos, total, cpf, pix) VALUES (?,?,?,?,?,?) ON CONFLICT DO UPDATE SET pedidos = pedidos + excluded.pedidos, total = total + excluded.total');
+  for (const r of rows) ins.run(f.id, r.entregador, r.pedidos, r.total, r.cpf, r.pix);
+  aplicaResumo(f, uid);
+  log(uid, `f:${f.id}`, `Anexou o Resumo de entregas ${arquivo}: ${rows.length} entregadores, ${brl(rows.reduce((s, r) => s + r.total, 0))}`);
+}
+
+// O Resumo precisa ser do mesmo período/loja: pelo menos metade dos entregadores dele deve aparecer no Relatório de Pedidos.
+function confereMesmoPeriodo(f, rows) {
+  const nomes = new Set(db.prepare('SELECT DISTINCT entregador FROM pedidos WHERE fechamento_id = ? AND entregador IS NOT NULL').all(f.id).map((x) => semAcento(x.entregador)));
+  const achados = rows.filter((r) => nomes.has(semAcento(r.entregador))).length;
+  if (achados < rows.length / 2) throw falha(`O Resumo enviado não parece ser da mesma loja e período do Relatório de Pedidos (só ${achados} de ${rows.length} entregadores aparecem nos dois). Exporte os dois da mesma tela, com o mesmo filtro.`);
 }
 
 // ---------- Fechamentos ----------
 const COMO_EXPORTAR = html`<div class="passos">
 <div class="passo"><span class="n">1</span><p>No <b>Agilizone</b>, escolha a loja e abra <b>Relatório de Pedidos</b>.</p></div>
 <div class="passo"><span class="n">2</span><p>Preencha <b>Data inicial</b> e <b>Data final</b> do período a pagar e clique em <b>Aplicar filtros</b>.</p></div>
-<div class="passo"><span class="n">3</span><p>Clique em <b>Exportar Pedidos</b> e envie o arquivo <b>.xlsx</b> aqui.</p></div></div>`;
+<div class="passo"><span class="n">3</span><p>Clique em <b>Exportar Pedidos</b>: baixa o <b>.xlsx</b> com os pedidos de cada dia.</p></div>
+<div class="passo"><span class="n">4</span><p>Na mesma tela, clique no botão verde <b>Resumo de entregas por entregador</b> e depois em <b>Exportar Resumo</b>: baixa o <b>.csv</b> com o total certo de cada motoboy.</p></div></div>`;
+const dropArquivo = (name, accept, titulo, dica) => html`<label class="drop" style="padding:22px 16px">${icone('subir', 'lg')}<b>${titulo}</b><span class="small">${dica}</span><span class="fname"></span>
+<input type="file" name="${name}" accept="${accept}" required aria-label="${titulo}"></label>`;
 
 function telaMotoboyInicio(req, res) {
   const u = req.user;
@@ -198,19 +235,23 @@ ${editaMotoboy(u) ? html`<div style="max-width:820px;margin:0 auto 20px">${COMO_
 });
 
 app.get('/fechamentos/novo', so((r) => editaMotoboy(r.user)), (req, res) => res.send(page(req, {
-  titulo: 'Novo fechamento', sub: 'Envie o relatório do Agilizone. O sistema identifica a loja e o período sozinho.', trilha: [['Fechamentos', '/'], ['Novo fechamento']],
+  titulo: 'Novo fechamento', sub: 'Envie os dois arquivos do Agilizone, exportados da mesma tela e com o mesmo filtro de datas.', trilha: [['Fechamentos', '/'], ['Novo fechamento']],
 }, html`<div class="split">
 <form method="post" enctype="multipart/form-data" class="card"><div class="card-b">
-<label class="drop">${icone('subir', 'lg')}<b>Clique para escolher o arquivo</b><span class="small">ou arraste aqui o .xlsx exportado do Agilizone</span><span class="fname"></span>
-<input type="file" name="arquivo" accept=".xlsx,.xls" required aria-label="Relatório de Pedidos (.xlsx)"></label>
-<p class="hint">Pedidos que já estão em outro fechamento são ignorados automaticamente, para ninguém receber duas vezes.</p></div>
-<div class="card-f"><button class="btn btn-pri">${icone('subir')} Importar relatório</button><a class="btn btn-ghost" href="/">Cancelar</a></div></form>
+<div class="field"><label>1. Relatório de Pedidos <span class="mut small">(.xlsx)</span></label>${dropArquivo('arquivo', '.xlsx,.xls', 'Escolher o arquivo de "Exportar Pedidos"', 'Separa o valor de cada dia')}</div>
+<div class="field"><label>2. Resumo de entregas por entregador <span class="mut small">(.csv)</span></label>${dropArquivo('resumo', '.csv,text/csv', 'Escolher o arquivo de "Exportar Resumo"', 'Total certo de cada motoboy: o sistema confere com os dias')}</div>
+<p class="hint">Se a soma dos dias de algum motoboy não bater com o Resumo, o sistema avisa e mostra a diferença. Pedidos que já estão em outro fechamento são ignorados, para ninguém receber duas vezes. A chave PIX que estiver no Resumo é cadastrada automaticamente em quem ainda não tem.</p></div>
+<div class="card-f"><button class="btn btn-pri">${icone('subir')} Importar e conferir</button><a class="btn btn-ghost" href="/">Cancelar</a></div></form>
 <div class="card"><div class="card-h"><span class="hico info">${icone('info')}</span><div class="t"><h2>Como exportar do Agilizone</h2></div></div><div class="card-b">${COMO_EXPORTAR}</div></div></div>`)));
 
-const umArquivo = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20e6, files: 1 } }).single('arquivo');
-app.post('/fechamentos/novo', so((r) => editaMotoboy(r.user)), umArquivo, (req, res) => {
-  if (!req.file) throw falha('Escolha o arquivo.');
+const doisArquivos = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20e6, files: 2 } }).fields([{ name: 'arquivo', maxCount: 1 }, { name: 'resumo', maxCount: 1 }]);
+app.post('/fechamentos/novo', so((r) => editaMotoboy(r.user)), doisArquivos, (req, res) => {
+  req.file = req.files?.arquivo?.[0];
+  const arqResumo = req.files?.resumo?.[0];
+  if (!req.file) throw falha('Escolha o Relatório de Pedidos (.xlsx).');
+  if (!arqResumo) throw falha('Escolha também o Resumo de entregas por entregador (.csv). Ele traz o total certo de cada motoboy.');
   const { loja, pedidos } = lerRelatorio(req.file.buffer);
+  const resumo = lerResumo(arqResumo.buffer);
   let l = db.prepare('SELECT * FROM lojas WHERE nome = ?').get(loja);
   if (!l && req.user.perfil === 'admin') l = { id: Number(db.prepare('INSERT INTO lojas (nome) VALUES (?)').run(loja).lastInsertRowid) };
   if (!l) throw falha(`A loja "${loja}" não está cadastrada. Peça para a TI cadastrar.`);
@@ -226,13 +267,19 @@ app.post('/fechamentos/novo', so((r) => editaMotoboy(r.user)), umArquivo, (req, 
     if (!novos) throw falha('Todos os pedidos deste arquivo já estão em outro fechamento. Nada foi importado.');
     db.prepare('UPDATE fechamentos SET data_ini = (SELECT MIN(dia) FROM pedidos WHERE fechamento_id = ?1), data_fim = (SELECT MAX(dia) FROM pedidos WHERE fechamento_id = ?1) WHERE id = ?1').run(fid);
     log(req.user.id, `f:${fid}`, `Importou ${req.file.originalname}: ${novos} pedidos` + (novos < pedidos.length ? ` (${pedidos.length - novos} ignorados por já estarem em outro fechamento)` : ''));
+    const f = { id: fid, loja_id: l.id, loja };
+    confereMesmoPeriodo(f, resumo);
+    gravaResumo(f, resumo, req.user.id, arqResumo.originalname);
     return { fid, ignorados: pedidos.length - novos };
   });
   r.ignorados ? volta(res, `/fechamentos/${r.fid}`, 'erro', `${r.ignorados} pedido(s) ignorado(s) porque já estão em outro fechamento.`)
     : volta(res, `/fechamentos/${r.fid}`, 'ok', 'Relatório importado. Agora confira os valores.');
 });
 
-const naoMapeados = (f) => db.prepare('SELECT entregador, COUNT(*) n, SUM(taxa) v FROM pedidos WHERE fechamento_id = ? AND motoboy_id IS NULL AND entregador IS NOT NULL GROUP BY 1 ORDER BY 1').all(f.id);
+// Nomes do Agilizone sem motoboy ligado, vindos dos pedidos ou do Resumo.
+const naoMapeados = (f) => db.prepare(`SELECT entregador, SUM(n) n, MAX(v) v FROM (
+  SELECT entregador, COUNT(*) n, SUM(taxa) v FROM pedidos WHERE fechamento_id = ?1 AND motoboy_id IS NULL AND entregador IS NOT NULL GROUP BY 1
+  UNION ALL SELECT entregador, 0, total FROM resumo WHERE fechamento_id = ?1 AND motoboy_id IS NULL) GROUP BY 1 ORDER BY 1`).all(f.id);
 const normaliza = (s) => semAcento(s).split(/\s+/).filter(Boolean);
 function sugestao(nome, motoboys) {
   const p = normaliza(nome);
@@ -300,12 +347,14 @@ app.get('/fechamentos/:fid', (req, res) => {
   const nDiv = (l) => Object.values(l.dias).filter((c) => c.ajuste).length;
   const comDiv = g.linhas.filter((l) => nDiv(l)).length;
   const aPagar = g.linhas.filter((l) => l.total > 0), pagos = aPagar.filter((l) => l.pago).length;
+  const pend = g.linhas.filter((l) => l.confere === 'pendente'), totResumo = g.linhas.reduce((s, l) => s + (l.resumo || 0), 0);
 
   // Etapas do fluxo e o que fazer agora, conforme status e perfil.
   const etapa = { rascunho: 1, enviado: 2, pago: 4 }[f.status];
   const bloqueios = [
     nm.length && [`Identifique ${nm.length} entregador(es) do Agilizone`, '#identificar'],
     recs.length && [`Confira ${recs.length} valor(es) informado(s) pelos motoboys`, '#informados'],
+    pend.length && [`${pend.length} motoboy(s) não batem com o Resumo do Agilizone`, '#conferencia'],
     semPix.length && [`Cadastre a chave PIX de ${semPix.length} motoboy(s)`, '#pix'],
   ].filter(Boolean);
 
@@ -355,7 +404,14 @@ ${edita ? html`<a class="btn btn-pri btn-sm" href="/fechamentos/${f.id}/ajuste?m
 
 ${semPix.length ? html`<div class="alert warn" id="pix">${icone('alerta')}<div><b>${semPix.length} motoboy(s) sem chave PIX</b>
 <div class="chips" style="margin-top:8px">${semPix.map((l) => html`<a class="badge warn" href="/motoboys/${l.id}">${l.nome}</a>`)}</div></div></div>` : ''}
-${semEnt.n ? html`<div class="alert">${icone('info')}<div><b>${semEnt.n} pedido(s) sem entregador no Agilizone</b>${brl(semEnt.v)} em taxas que não entram no pagamento.</div></div>` : ''}
+${g.temResumo ? (pend.length ? html`<div class="card warn" id="conferencia" style="margin-bottom:20px;border-color:var(--bad-bd)"><div class="card-h" style="background:var(--bad-soft);border-color:var(--bad-bd)"><span class="hico" style="background:#fee2e2;color:var(--bad)">${icone('alerta')}</span><div class="t">
+<h2>Não bate com o Resumo do Agilizone (${pend.length})</h2><p>O Resumo de entregas é o valor certo. A soma dos dias (Relatório de Pedidos) ficou diferente: registre a diferença no dia em que ela aconteceu.</p></div></div>
+<div class="items">${pend.map((l) => html`<div class="item-h"><div class="who">${avatar(l.nome)}<div><b>${l.nome}</b><div class="flow" style="margin:2px 0 0">Soma dos dias <b>${brl(l.total)}</b> ${icone('seta', 'sm')} Resumo <b>${brl(l.resumo)}</b> ${diferenca(l.resumo - l.total)}</div></div></div>
+${edita ? html`<a class="btn btn-pri btn-sm" href="/fechamentos/${f.id}/ajuste?m=${l.id}">Distribuir diferença ${icone('seta', 'sm')}</a>` : ''}</div>`)}</div></div>`
+  : html`<div class="alert ok" id="conferencia">${icone('ok')}<div><b>Totais conferidos com o Resumo do Agilizone</b>${g.linhas.some((l) => l.confere === 'justificado') ? 'Onde o valor difere do Resumo, há divergência registrada pelo despachante.' : 'A soma dos dias de cada motoboy bate com o Resumo de entregas.'}</div></div>`)
+  : html`<div class="alert warn" id="conferencia">${icone('alerta')}<div><b>Sem o Resumo de entregas do Agilizone</b>Os totais deste fechamento não foram conferidos. ${edita ? html`Envie o .csv de "Exportar Resumo" (mesmo filtro de datas):
+<form method="post" action="/fechamentos/${f.id}/resumo" enctype="multipart/form-data" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center"><input type="file" name="resumo" accept=".csv,text/csv" required aria-label="Resumo de entregas (.csv)"><button class="btn btn-sec btn-sm">${icone('subir', 'sm')} Anexar Resumo</button></form>` : 'Peça ao despachante para anexar o Resumo.'}</div></div>`}
+${semEnt.n ? html`<div class="alert">${icone('info')}<div><b>${semEnt.n} pedido(s) sem entregador no Agilizone</b>${brl(semEnt.v)} em taxas que não entram no pagamento.${pend.length ? ' Se a diferença com o Resumo for desse valor, provavelmente é este pedido: confira de quem é no Agilizone.' : ''}</div></div>` : ''}
 ${cancel.n ? html`<div class="alert">${icone('info')}<div><b>${cancel.n} pedido(s) cancelado(s) estão incluídos (${brl(cancel.v)})</b>Igual ao "Resumo de entregas por entregador" do Agilizone. Se algum não deve ser pago, registre uma divergência.</div></div>` : ''}
 
 <div class="card" id="valores"><div class="card-h"><span class="hico pri">${icone('calendario')}</span><div class="t"><h2>Valores por dia</h2>
@@ -365,12 +421,14 @@ ${cancel.n ? html`<div class="alert">${icone('info')}<div><b>${cancel.n} pedido(
 <div class="seg" data-div-filtro="#grade" role="group" aria-label="Filtrar divergências">
 <button type="button" data-f="todos" class="on" aria-pressed="true">Todos<span class="c">${g.linhas.length}</span></button>
 <button type="button" data-f="com" aria-pressed="false">Com divergência<span class="c">${comDiv}</span></button>
-<button type="button" data-f="sem" aria-pressed="false">Sem divergência<span class="c">${g.linhas.length - comDiv}</span></button></div>
+<button type="button" data-f="sem" aria-pressed="false">Sem divergência<span class="c">${g.linhas.length - comDiv}</span></button>
+${pend.length ? html`<button type="button" data-f="res" aria-pressed="false">Não bate com o Resumo<span class="c">${pend.length}</span></button>` : ''}</div>
 <div class="legend"><span><i style="background:#fef3c7;border:1px solid #fcd34d"></i>Valor corrigido</span>${recs.length ? html`<span><i style="box-shadow:inset 0 0 0 1.5px var(--warn)"></i>⚠ Motoboy informou outro valor</span>` : ''}</div></div>
-<div class="tw"><table class="grade" id="grade" data-f="todos"><tr><th>Motoboy</th>${edita ? html`<th></th>` : ''}<th>PIX</th>${g.dias.map((d) => html`<th class="n">${diaFmt(d)}</th>`)}<th class="n">Total</th>${mostraPago ? html`<th>Pagamento</th>` : ''}</tr>
-${g.linhas.map((l) => { const n = nDiv(l); return html`<tr data-q="${semAcento(l.nome)}" data-div="${n ? 1 : 0}" data-nome="${l.nome}" data-total="${brl(l.total)}" class="${n ? 'alt' : ''}">
+<div class="tw"><table class="grade" id="grade" data-f="todos"><tr><th>Motoboy</th>${edita ? html`<th></th>` : ''}<th>PIX</th>${g.dias.map((d) => html`<th class="n">${diaFmt(d)}</th>`)}<th class="n">Total</th>${g.temResumo ? html`<th class="n" title="Resumo de entregas do Agilizone">Resumo</th>` : ''}${mostraPago ? html`<th>Pagamento</th>` : ''}</tr>
+${g.linhas.map((l) => { const n = nDiv(l); return html`<tr data-q="${semAcento(l.nome)}" data-div="${n ? 1 : 0}" data-res="${l.confere === 'pendente' ? 1 : 0}" data-nome="${l.nome}" data-total="${brl(l.total)}" class="${l.confere === 'pendente' ? 'nobate' : n ? 'alt' : ''}">
 <td><div class="who">${avatar(l.nome)}<div><b>${l.nome}</b><div class="chips" style="margin-top:3px">
 ${n ? html`<span class="badge div nodot" title="O despachante corrigiu o valor de ${n} dia(s)">${icone('lapis', 'sm')} Divergência${n > 1 ? ` · ${n} dias` : ''}</span>` : ''}
+${l.confere === 'pendente' ? html`<span class="badge bad" title="Resumo do Agilizone: ${brl(l.resumo)} · soma dos dias: ${brl(l.total)}">Não bate com o Resumo</span>` : ''}
 ${!l.pix ? html`<a class="badge bad" href="/motoboys/${l.id}">sem PIX</a>` : ''}
 ${edita && !comLogin.has(l.id) ? html`<a class="badge nodot" href="/motoboys/${l.id}#acesso" title="Motoboy ainda não tem acesso: registre as divergências por ele ou crie o acesso">sem login</a>` : ''}</div></div></div></td>
 ${edita ? html`<td><a class="btn btn-soft btn-sm" href="/fechamentos/${f.id}/ajuste?m=${l.id}">${icone('lapis', 'sm')} Registrar divergência</a></td>` : ''}
@@ -380,9 +438,10 @@ ${g.dias.map((d) => { const c = l.dias[d], rec = recs.some((r) => r.motoboy_id =
     const tit = c ? `Agilizone: ${brl(c.agil)} (${c.n} entregas)${c.ajuste ? ` · corrigido para ${brl(c.final)}` : ''}` : 'Sem entregas';
     return html`<td class="n">${edita ? html`<a class="${cls}" href="/fechamentos/${f.id}/ajuste?m=${l.id}&d=${d}" title="${tit}">${v}</a>` : html`<span class="${cls}" title="${tit}">${v}</span>`}</td>`; })}
 <td class="n b">${brl(l.total)}</td>
+${g.temResumo ? html`<td class="n">${l.confere === 'ok' ? html`<span class="ok-t" title="Bate com o Resumo">${icone('check', 'sm')} ${brl(l.resumo)}</span>` : html`<span class="${l.confere === 'pendente' ? 'bad-t b' : 'mut'}" title="${l.confere === 'pendente' ? 'Diferente da soma dos dias' : 'Diferente, com divergência registrada'}">${brl(l.resumo)}</span>`}</td>` : ''}
 ${mostraPago ? html`<td>${l.pago ? html`<span class="badge pago">Pago ${l.pago.pago_em.slice(8, 10)}/${l.pago.pago_em.slice(5, 7)}</span>${paga ? html` <form method="post" action="/fechamentos/${f.id}/despagar" class="in"><input type="hidden" name="m" value="${l.id}"><button class="link-btn" title="Desfazer pagamento">desfazer</button></form>` : ''}`
     : l.total <= 0 ? html`<span class="mut">—</span>` : paga ? html`<form method="post" action="/fechamentos/${f.id}/pagar" class="in"><input type="hidden" name="m" value="${l.id}"><button class="btn btn-ok btn-sm" ${l.pix ? '' : 'disabled'}>${icone('check', 'sm')} Marcar pago</button></form>` : html`<span class="badge">Pendente</span>`}</td>` : ''}</tr>`; })}
-<tr class="tot"><td colspan="${edita ? 3 : 2}">Total</td>${g.dias.map((d) => html`<td class="n">${brl(g.totDia[d])}</td>`)}<td class="n">${brl(g.total)}</td>${mostraPago ? html`<td></td>` : ''}</tr></table></div>
+<tr class="tot"><td colspan="${edita ? 3 : 2}">Total</td>${g.dias.map((d) => html`<td class="n">${brl(g.totDia[d])}</td>`)}<td class="n">${brl(g.total)}</td>${g.temResumo ? html`<td class="n">${brl(totResumo)}</td>` : ''}${mostraPago ? html`<td></td>` : ''}</tr></table></div>
 ${edita ? html`<div class="card-f"><a class="btn btn-ghost btn-sm" href="/fechamentos/${f.id}/ajuste">${icone('mais', 'sm')} Motoboy que rodou mas não aparece na tabela</a></div>` : ''}</div>
 
 ${paga && !g.linhas.some((l) => l.pago) ? html`<form method="post" action="/fechamentos/${f.id}/devolver" class="card" style="margin-top:20px"><div class="card-h"><span class="hico">${icone('desfazer')}</span><div class="t"><h2>Encontrou algum erro?</h2><p>Devolva ao despachante com o motivo. Só é possível antes de marcar pagamentos.</p></div></div>
@@ -417,8 +476,18 @@ app.post('/fechamentos/:fid/mapear', so((r) => podeEditar(r.user, r.f)), (req, r
       db.prepare('INSERT OR REPLACE INTO apelidos (loja_id, nome, motoboy_id) VALUES (?,?,?)').run(f.loja_id, nome, mid);
       db.prepare('UPDATE pedidos SET motoboy_id = ? WHERE fechamento_id = ? AND entregador = ? AND motoboy_id IS NULL').run(mid, f.id, nome);
     }
+    aplicaResumo(f, req.user.id);
   });
   volta(res, `/fechamentos/${f.id}`, 'ok', 'Entregadores identificados.');
+});
+
+// Anexa (ou troca) o Resumo de um fechamento já importado.
+const umResumo = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5e6, files: 1 } }).single('resumo');
+app.post('/fechamentos/:fid/resumo', so((r) => podeEditar(r.user, r.f)), umResumo, (req, res) => {
+  if (!req.file) throw falha('Escolha o arquivo do Resumo (.csv).');
+  const rows = lerResumo(req.file.buffer);
+  tx(() => { confereMesmoPeriodo(req.f, rows); gravaResumo(req.f, rows, req.user.id, req.file.originalname); });
+  volta(res, `/fechamentos/${req.f.id}`, 'ok', 'Resumo anexado. Os totais agora são conferidos com ele.');
 });
 
 // ---------- Divergências ----------
@@ -439,13 +508,18 @@ app.get('/fechamentos/:fid/ajuste', so((r) => podeEditar(r.user, r.f)), (req, re
   const rec = mb && d && db.prepare('SELECT * FROM reclamacoes WHERE fechamento_id = ? AND motoboy_id = ? AND dia = ?').get(f.id, m, d);
   const reais = (c) => (c == null ? '' : (c / 100).toFixed(2).replace('.', ','));
   const trilha = [['Fechamentos', '/'], [`${f.loja} · ${periodo(f)}`, `/fechamentos/${f.id}`], ['Registrar divergência']];
+  // Conferência com o Resumo: quanto falta para a soma dos dias bater com o total certo do Agilizone.
+  const linha = mb && grade(f).linhas.find((l) => l.id === m);
+  const falta = linha && linha.resumo != null ? linha.resumo - linha.total : 0;
+  const avisoResumo = falta ? html`<div class="alert ${linha.confere === 'pendente' ? 'bad' : 'warn'}">${icone('alerta')}<div><b>Não bate com o Resumo do Agilizone: ${falta > 0 ? 'faltam' : 'sobram'} ${brl(Math.abs(falta))}</b>
+Resumo de entregas: <b>${brl(linha.resumo)}</b> · soma atual dos dias: <b>${brl(linha.total)}</b>. Registre a diferença no dia em que ela aconteceu (ex.: pedido finalizado no dia seguinte).</div></div>` : '';
 
   // Passo 1: motoboy escolhido, falta o dia.
   if (mb && !d) {
-    const c = grade(f).linhas.find((l) => l.id === m)?.dias || {};
+    const c = linha?.dias || {};
     return res.send(page(req, { titulo: 'Registrar divergência', sub: html`${mb.nome} · passo 1 de 2: escolha o dia`, trilha }, html`
 <div class="card"><div class="card-h"><div class="who">${avatar(mb.nome)}<div><b>${mb.nome}</b><div class="mut small">Qual dia o valor está diferente?</div></div></div></div>
-<div class="card-b"><div class="daygrid">${diasDoPeriodo(f).map((x) => html`<a class="day ${c[x]?.ajuste ? 'div' : ''}" href="/fechamentos/${f.id}/ajuste?m=${m}&d=${x}">
+<div class="card-b">${avisoResumo}<div class="daygrid">${diasDoPeriodo(f).map((x) => html`<a class="day ${c[x]?.ajuste ? 'div' : ''}" href="/fechamentos/${f.id}/ajuste?m=${m}&d=${x}">
 <div class="d">${diaFmt(x)}</div><div class="v">${brl(c[x]?.final || 0)}</div><div class="e">${c[x]?.n || 0} entregas${c[x]?.ajuste ? ' · já corrigido' : ''}</div></a>`)}</div></div>
 <div class="card-f"><a class="btn btn-ghost" href="/fechamentos/${f.id}">${icone('voltar')} Voltar ao fechamento</a></div></div>`));
   }
@@ -456,12 +530,12 @@ ${mb && d ? html`<div class="card-h"><div class="who">${avatar(mb.nome)}<div><b>
 <div style="text-align:right;margin-left:auto"><div class="mut small">Pelo Agilizone</div><div class="b" style="font-size:20px">${brl(agil)}</div><div class="mut small">${peds.length} entregas</div></div></div>
 <input type="hidden" name="m" value="${m}"><input type="hidden" name="d" value="${d}">` : ''}
 <div class="card-b">
-${rec ? html`<div class="alert warn">${icone('balao')}<div><b>O motoboy informou ${brl(rec.valor)}</b><div style="white-space:pre-wrap">${rec.obs}</div><div class="small" style="margin-top:4px;opacity:.8">em ${rec.criado_em.slice(0, 16)}</div></div></div>` : ''}
+${avisoResumo}${rec ? html`<div class="alert warn">${icone('balao')}<div><b>O motoboy informou ${brl(rec.valor)}</b><div style="white-space:pre-wrap">${rec.obs}</div><div class="small" style="margin-top:4px;opacity:.8">em ${rec.criado_em.slice(0, 16)}</div></div></div>` : ''}
 ${mb && d ? '' : html`<div class="fgrid"><div class="field"><label for="m">Motoboy <span class="req">*</span></label><select id="m" name="m" required><option value="">Escolha…</option>${db.prepare('SELECT id, nome FROM motoboys WHERE ativo = 1 ORDER BY nome').all().map((x) => html`<option value="${x.id}">${x.nome}</option>`)}</select></div>
 <div class="field"><label for="d">Dia <span class="req">*</span></label><input id="d" type="date" name="d" required min="${f.data_ini}" max="${f.data_fim}"></div></div>`}
 <div class="fgrid">
 <div class="field"><label for="informado">Quanto o motoboy disse</label>${campoValor('informado', reais(a?.valor_informado ?? rec?.valor), 'id="informado"')}<p class="hint">Opcional. O valor que ele informou.</p></div>
-<div class="field"><label for="final">Valor a pagar <span class="req">*</span></label>${campoValor('final', reais(a ? a.valor_final : mb && d ? agil : null), 'id="final" required')}<p class="hint">Depois de conferir no Agilizone.</p></div></div>
+<div class="field"><label for="final">Valor a pagar <span class="req">*</span></label>${campoValor('final', reais(a ? a.valor_final : mb && d ? Math.max(0, agil + (linha?.confere === 'pendente' ? falta : 0)) : null), 'id="final" required')}<p class="hint">${!a && linha?.confere === 'pendente' ? `Já preenchido com ${brl(agil)} + ${brl(falta)} para bater com o Resumo. Confira se é este o dia certo.` : 'Depois de conferir no Agilizone.'}</p></div></div>
 <div class="field"><label for="justificativa">Justificativa <span class="req">*</span></label><textarea id="justificativa" name="justificativa" required placeholder="O que aconteceu, quais pedidos, como foi conferido">${a?.justificativa}</textarea>
 <p class="hint">Aparece para o financeiro e para o motoboy. Ex.: "Pedido 0299 entregue por ele, mas ficou sem entregador no Agilizone. Conferido pelo print do app."</p></div>
 <div class="field"><label>Evidências</label><label class="drop" style="padding:20px">${icone('clipe')}<b>Anexar prints, fotos ou PDF</b><span class="small">até 6 arquivos de 10 MB</span><span class="fname"></span>
@@ -530,6 +604,8 @@ app.post('/fechamentos/:fid/enviar', so((r) => podeEditar(r.user, r.f)), (req, r
   const f = req.f;
   if (naoMapeados(f).length) return volta(res, `/fechamentos/${f.id}`, 'erro', 'Identifique todos os entregadores antes de enviar.');
   if (reclamacoesAbertas(f).length) return volta(res, `/fechamentos/${f.id}`, 'erro', 'Há valores informados por motoboys ainda não conferidos.');
+  const pend = grade(f).linhas.filter((l) => l.confere === 'pendente');
+  if (pend.length) return volta(res, `/fechamentos/${f.id}`, 'erro', `Não bate com o Resumo do Agilizone: ${pend.map((l) => l.nome).join(', ')}. Distribua a diferença nos dias.`);
   const semPix = grade(f).linhas.filter((l) => l.total > 0 && !l.pix);
   if (semPix.length) return volta(res, `/fechamentos/${f.id}`, 'erro', `Cadastre a chave PIX de: ${semPix.map((l) => l.nome).join(', ')}.`);
   db.prepare("UPDATE fechamentos SET status = 'enviado' WHERE id = ?").run(f.id);

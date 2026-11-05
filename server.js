@@ -41,7 +41,7 @@ function page(req, o, corpo) {
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>${new Raw(CSS)}</style></head>
 ${u ? html`<body><header class="top"><div class="top-in">${marca}
-<nav class="tabs" aria-label="Menu">${aba('/', 'lista', 'Fechamentos', emFech)}${aba('/motoboys', 'pessoas', 'Motoboys', p.startsWith('/motoboys'))}
+<nav class="tabs" aria-label="Menu">${aba('/', 'lista', 'Fechamentos', emFech)}
 ${u.perfil === 'admin' ? html`${aba('/usuarios', 'escudo', 'Usuários', p.startsWith('/usuarios'))}${aba('/config', 'ajustes', 'Configurações', p.startsWith('/config'))}` : ''}</nav>
 <div class="me"><a href="/senha" title="Minha conta e senha">${avatar(u.nome)}<span class="me-txt"><b>${u.nome}</b><small>${PERFIS[u.perfil]}${u.loja ? ` · ${u.loja}` : ''}</small></span></a>
 <form method="post" action="/logout" class="in"><button class="icon-btn" title="Sair" aria-label="Sair">${icone('sair')}</button></form></div></div></header>
@@ -141,7 +141,9 @@ function grade(f) {
   const aprov = new Set(db.prepare('SELECT motoboy_id FROM aprovacoes WHERE fechamento_id = ?').all(f.id).map((x) => x.motoboy_id));
   const aceites = new Map(db.prepare('SELECT * FROM aceites WHERE fechamento_id = ?').all(f.id).map((a) => [a.motoboy_id, a]));
   // Depois do envio, o PIX é o que foi enviado ao financeiro (não muda se o cadastro mudar).
-  const pixEnvio = f.status !== 'rascunho' ? new Map(db.prepare('SELECT motoboy_id, pix FROM envio_pix WHERE fechamento_id = ?').all(f.id).map((x) => [x.motoboy_id, x.pix])) : null;
+  // PIX do fechamento: digitado pelo despachante (ou congelado no envio) > Resumo do Agilizone > cadastro antigo.
+  const pixF = new Map(db.prepare('SELECT motoboy_id, pix FROM envio_pix WHERE fechamento_id = ? AND pix IS NOT NULL').all(f.id).map((x) => [x.motoboy_id, x.pix]));
+  const pixR = new Map(db.prepare('SELECT motoboy_id, MAX(pix) pix FROM resumo WHERE fechamento_id = ? AND motoboy_id IS NOT NULL AND pix IS NOT NULL GROUP BY 1').all(f.id).map((x) => [x.motoboy_id, x.pix]));
   for (const m of resumo.keys()) if (!cels.has(m)) cels.set(m, {});
   const ids = [...cels.keys()];
   const linhas = db.prepare(`SELECT id, nome, pix FROM motoboys WHERE id IN (${ids.map(Number).join(',') || 0}) ORDER BY nome`).all()
@@ -151,26 +153,24 @@ function grade(f) {
       // ok: bate com o Resumo · aceito: diferença aceita com justificativa (vale para aquele valor exato) · pendente: precisa resolver
       const aceite = aceites.get(m.id);
       const confere = res == null || total === res ? 'ok' : aceite && aceite.diferenca === total - res ? 'aceito' : 'pendente';
-      return { ...m, aprovado: f.status === 'pago' || aprov.has(m.id), pix: pixEnvio?.has(m.id) ? pixEnvio.get(m.id) : m.pix, dias: c, total, resumo: res, confere, aceite };
+      return { ...m, aprovado: f.status === 'pago' || aprov.has(m.id), pix: pixF.get(m.id) ?? pixR.get(m.id) ?? m.pix, dias: c, total, resumo: res, confere, aceite };
     });
   const diasArr = [...dias].sort();
   const totDia = Object.fromEntries(diasArr.map((d) => [d, linhas.reduce((s, l) => s + (l.dias[d]?.final || 0), 0)]));
   return { dias: diasArr, linhas, totDia, total: linhas.reduce((s, l) => s + l.total, 0), temResumo };
 }
 
-// Liga o Resumo aos motoboys (pelos nomes do Agilizone). A chave PIX do Agilizone é a fonte:
-// preenche ou atualiza o cadastro, registrando no histórico do motoboy e do fechamento. CPF só preenche vazio.
-function aplicaResumo(f, uid) {
-  db.prepare('UPDATE resumo SET motoboy_id = (SELECT motoboy_id FROM apelidos WHERE loja_id = ? AND nome = resumo.entregador) WHERE fechamento_id = ? AND motoboy_id IS NULL').run(f.loja_id, f.id);
-  const mudar = db.prepare(`SELECT r.motoboy_id, r.pix, r.cpf, m.pix mpix, m.cpf mcpf, m.nome FROM resumo r JOIN motoboys m ON m.id = r.motoboy_id
-    WHERE r.fechamento_id = ? AND ((r.pix IS NOT NULL AND r.pix IS NOT m.pix) OR (r.cpf IS NOT NULL AND m.cpf IS NULL))`).all(f.id);
-  for (const r of mudar) {
-    const novoPix = r.pix && r.pix !== r.mpix;
-    db.prepare('UPDATE motoboys SET pix = ?, cpf = ? WHERE id = ?').run(r.pix ?? r.mpix, r.mcpf ?? r.cpf, r.motoboy_id);
-    log(uid, `m:${r.motoboy_id}`, [novoPix && `pix: "${r.mpix ?? ''}" → "${r.pix}"`, !r.mcpf && r.cpf && `cpf: "" → "${r.cpf}"`].filter(Boolean).join('; ') + ` (do Resumo do Agilizone, ${f.loja})`);
-    if (novoPix) log(uid, `f:${f.id}`, `PIX de ${r.nome} ${r.mpix ? `atualizado de ${r.mpix} para` : 'cadastrado:'} ${r.pix} (Resumo do Agilizone)`);
+// Motoboy = nome do Agilizone (vem certo de lá): liga automaticamente, criando o registro interno na primeira vez.
+function vincula(fid) {
+  const nomes = db.prepare('SELECT entregador FROM pedidos WHERE fechamento_id = ?1 AND motoboy_id IS NULL AND entregador IS NOT NULL UNION SELECT entregador FROM resumo WHERE fechamento_id = ?1 AND motoboy_id IS NULL').all(fid);
+  for (const { entregador: n } of nomes) {
+    const id = db.prepare('SELECT id FROM motoboys WHERE nome = ? COLLATE NOCASE').get(n)?.id ?? Number(db.prepare('INSERT INTO motoboys (nome) VALUES (?)').run(n).lastInsertRowid);
+    db.prepare('UPDATE pedidos SET motoboy_id = ? WHERE fechamento_id = ? AND entregador = ? AND motoboy_id IS NULL').run(id, fid, n);
+    db.prepare('UPDATE resumo SET motoboy_id = ? WHERE fechamento_id = ? AND entregador = ? AND motoboy_id IS NULL').run(id, fid, n);
   }
 }
+const aplicaResumo = (f) => vincula(f.id);
+for (const { id } of db.prepare("SELECT id FROM fechamentos WHERE status = 'rascunho'").all()) vincula(id); // fechamentos de antes da mudança
 
 function gravaResumo(f, rows, uid, arquivo) {
   db.prepare('DELETE FROM resumo WHERE fechamento_id = ?').run(f.id);
@@ -215,11 +215,11 @@ function agenda(lojas, ini, fim) {
     const f = db.prepare('SELECT id, status FROM fechamentos WHERE loja_id = ? AND pagamento = ? ORDER BY id DESC').get(l.id, p.pagamento);
     const enviado = f && f.status !== 'rascunho';
     const situacao = enviado ? 'enviado' : f ? (p.pagamento < hoje ? 'atrasado' : 'conferencia') : p.pagamento < hoje ? 'atrasado' : p.pagamento === hoje ? 'hoje' : 'futuro';
-    return { ...p, loja: l, f, situacao };
+    return { ...p, loja: l, f, situacao, aprovado: f?.status === 'pago' };
   })).sort((a, b) => a.pagamento.localeCompare(b.pagamento) || a.loja.nome.localeCompare(b.loja.nome));
 }
 const SITUACAO = {
-  enviado: ['ok', 'Enviado ao financeiro'], conferencia: ['warn', 'Em conferência'], hoje: ['warn', 'Importar hoje'],
+  enviado: ['info', 'Aguardando aprovação'], conferencia: ['warn', 'Em conferência'], hoje: ['warn', 'Importar hoje'],
   atrasado: ['bad', 'Atrasado'], futuro: ['nodot', 'Aguardando o período'],
 };
 
@@ -228,7 +228,7 @@ function cardAgenda(u, itens) {
   return html`<div class="card" style="margin-bottom:20px"><div class="card-h"><span class="hico pri">${icone('calendario')}</span><div class="t"><h2>Agenda de pagamentos</h2>
 <p>Segunda paga sexta a domingo; sexta paga segunda a quinta${u.perfil === 'despachante' && !/dirceu/i.test(u.loja || '') ? '' : ' (DIRCEU: quarta paga seg/ter e sexta paga qua/qui)'}. Datas no fuso de Teresina.</p></div></div>
 ${itens.length ? html`<div class="tw"><table><tr><th>Pagamento</th><th>Loja</th><th>Referente a</th><th>Situação</th><th></th></tr>
-${itens.map((p) => { const [cor, txt] = SITUACAO[p.situacao]; return html`<tr${p.f ? new Raw(` data-href="/fechamentos/${p.f.id}"`) : ''}>
+${itens.map((p) => { const [cor, txt] = p.aprovado ? ['ok', 'Aprovado'] : SITUACAO[p.situacao]; return html`<tr${p.f ? new Raw(` data-href="/fechamentos/${p.f.id}"`) : ''}>
 <td><b>${diaLongo(p.pagamento)}</b></td><td>${p.loja.nome}</td><td>${p.dias.map(diaLongo).join(', ')}<div class="mut small">Filtro no Agilizone: ${filtroAgilizone(p)}</div></td>
 <td><span class="badge ${cor}">${txt}</span></td>
 <td class="n">${p.f ? html`<a class="btn btn-ghost btn-sm" href="/fechamentos/${p.f.id}">Abrir ${icone('chevron', 'sm')}</a>`
@@ -238,7 +238,8 @@ ${itens.map((p) => { const [cor, txt] = SITUACAO[p.situacao]; return html`<tr${p
 
 app.get('/', (req, res) => {
   const u = req.user, hoje = agora().data;
-  const todos = db.prepare(`SELECT f.*, l.nome loja, u.nome autor FROM fechamentos f JOIN lojas l ON l.id = f.loja_id LEFT JOIN usuarios u ON u.id = f.criado_por
+  const todos = db.prepare(`SELECT f.*, l.nome loja, u.nome autor,
+    (SELECT MAX(id) FROM log WHERE ref = 'f:' || f.id AND acao LIKE 'Devolveu%') > COALESCE((SELECT MAX(id) FROM log WHERE ref = 'f:' || f.id AND acao LIKE 'Enviou%'), 0) devolvido FROM fechamentos f JOIN lojas l ON l.id = f.loja_id LEFT JOIN usuarios u ON u.id = f.criado_por
     WHERE ? OR f.loja_id = ? ORDER BY f.data_fim DESC, f.id DESC LIMIT 200`).all(veTudo(u) ? 1 : 0, u.loja_id ?? -1)
     .map((f) => { const g = grade(f); return { ...f, total: g.total, n: g.linhas.length }; });
   const lojasVis = veTudo(u) || u.perfil === 'admin' ? db.prepare('SELECT * FROM lojas ORDER BY nome').all() : db.prepare('SELECT * FROM lojas WHERE id = ?').all(u.loja_id ?? -1);
@@ -266,21 +267,23 @@ ${recebidas.map((f) => html`<tr data-href="/fechamentos/${f.id}"><td><b>${f.paga
       : html`<div class="card-b mut">Nenhuma solicitação recebida ainda.</div>`}</div>`;
   res.send(page(req, { titulo: 'Fechamentos', sub, acoes: editaMotoboy(u) ? html`<a class="btn btn-pri" href="/fechamentos/novo">${icone('mais')} Novo fechamento</a>` : '' }, html`
 ${u.perfil === 'financeiro' ? cardRecebidas : ''}
+${editaMotoboy(u) ? (() => { const amanha = AG.soma(hoje, 1), fazer = itens.filter((p) => !p.f && (['hoje', 'atrasado'].includes(p.situacao) || p.pagamento === amanha)); return fazer.length ? html`<div class="next"><span class="hico pri">${icone('calendario')}</span><div class="t"><b>Pagamento para importar</b><ul>${fazer.map((p) => html`<li>${icone(p.situacao === 'atrasado' ? 'alerta' : 'calendario', 'sm')}<span>${p.loja.nome}: ${diaLongo(p.pagamento)}${p.situacao === 'atrasado' ? ' (atrasado)' : p.pagamento === amanha ? ' (amanhã: importe quando o período terminar)' : ' (hoje)'}, referente a ${p.dias.map(diaLongo).join(', ')}</span></li>`)}</ul></div><a class="btn btn-pri btn-lg" href="/fechamentos/novo">${icone('subir')} Importar</a></div>` : ''; })() : ''}
 ${todos.length ? html`<div class="card"><div class="card-h"><div class="t"><h2>${ant ? 'Meses anteriores' : `Fechamentos de ${new Date(hoje + 'T12:00:00Z').toLocaleDateString('pt-BR', { month: 'long', year: 'numeric', timeZone: 'UTC' })}`}</h2><p>Clique em uma linha para abrir.</p>
 <nav class="seg" style="margin-top:8px" aria-label="Mês"><a href="/" class="${ant ? '' : 'on'}">Este mês<span class="c">${todos.filter((f) => mesDe(f) === mes0).length}</span></a><a href="/?m=ant" class="${ant ? 'on' : ''}">Meses anteriores<span class="c">${todos.filter((f) => mesDe(f) !== mes0).length}</span></a></nav></div>
 ${lojas.length ? html`<form method="get" action="/" style="min-width:220px">${filtro ? html`<input type="hidden" name="s" value="${filtro}">` : ''}${ant ? html`<input type="hidden" name="m" value="ant">` : ''}<select name="loja" onchange="this.form.submit()" aria-label="Filtrar por loja"><option value="">Todas as lojas</option>${lojas.map((l) => html`<option value="${l.id}" ${l.id === lojaF ? 'selected' : ''}>${l.nome}</option>`)}</select></form>` : ''}
-<nav class="seg" aria-label="Filtrar por situação">${seg('', 'Todos', daLoja.length)}${seg('rascunho', 'Em conferência', contaL('rascunho'))}${seg('enviado', 'Aguardando aprovação', contaL('enviado'))}${seg('pago', 'Aprovados', contaL('pago'))}</nav></div>
+${u.perfil === 'despachante' ? '' : html`<nav class="seg" aria-label="Filtrar por situação">${seg('', 'Todos', daLoja.length)}${seg('rascunho', 'Em conferência', contaL('rascunho'))}${seg('enviado', 'Aguardando aprovação', contaL('enviado'))}${seg('pago', 'Aprovados', contaL('pago'))}</nav>`}</div>
 <div class="tw"><table><tr><th>Pagamento</th><th>Loja</th><th>Período</th><th>Situação</th><th class="n">Motoboys</th><th class="n">Total</th><th></th></tr>
-${lista.map((f) => html`<tr data-href="/fechamentos/${f.id}"><td><b>${f.pagamento ? diaLongo(f.pagamento) : '—'}</b></td><td>${f.loja}</td><td>${periodo(f)}<div class="mut small">por ${f.autor}</div></td><td>${badgeStatus(f.status)}</td>
+${lista.map((f) => html`<tr data-href="/fechamentos/${f.id}"><td><b>${f.pagamento ? diaLongo(f.pagamento) : '—'}</b></td><td>${f.loja}</td><td>${periodo(f)}<div class="mut small">por ${f.autor}</div></td><td>${f.devolvido && f.status === 'rascunho' ? html`<span class="badge bad">Devolvido para correção</span>` : badgeStatus(f.status)}</td>
 <td class="n">${f.n}</td><td class="n b">${brl(f.total)}</td><td class="n"><a class="btn btn-ghost btn-sm" href="/fechamentos/${f.id}">Abrir ${icone('chevron', 'sm')}</a></td></tr>`)}
 ${lista.length ? '' : html`<tr><td colspan="7" class="mut" style="text-align:center;padding:32px">Nenhum fechamento nesta situação.</td></tr>`}</table></div></div>`
     : html`<div class="card empty"><div class="hico pri">${icone('lista', 'lg')}</div><h2>Nenhum fechamento ainda</h2>
 <p>${editaMotoboy(u) ? 'No dia do pagamento, exporte os dois arquivos do Agilizone e importe aqui. O sistema calcula quanto cada motoboy recebe por dia.' : 'Quando as lojas enviarem as solicitações de pagamento, elas aparecem aqui.'}</p>
 ${editaMotoboy(u) ? html`<div style="max-width:820px;margin:0 auto 20px">${COMO_EXPORTAR}</div><a class="btn btn-pri btn-lg" href="/fechamentos/novo">${icone('subir')} Importar primeiro relatório</a>` : ''}</div>`}
-<div class="stats" style="margin-top:20px">
+${u.perfil === 'despachante' ? '' : html`<div class="stats" style="margin-top:20px">
 <div class="card stat"><span class="hico ${atrasados ? 'warn' : 'ok'}">${icone(atrasados ? 'alerta' : 'check')}</span><div><div class="v">${atrasados}</div><div class="l">Pagamento(s) atrasado(s)</div></div></div>
 <div class="card stat"><span class="hico warn">${icone('lapis')}</span><div><div class="v">${conta('rascunho').length}</div><div class="l">Em conferência nas lojas</div></div></div>
-<div class="card stat"><span class="hico info">${icone('enviar')}</span><div><div class="v">${brl(todos.filter((f) => f.status !== 'rascunho' && f.data_fim >= mes).reduce((s, f) => s + f.total, 0))}</div><div class="l">Enviado ao financeiro nos últimos 30 dias</div></div></div></div>
+<div class="card stat"><span class="hico info">${icone('relogio')}</span><div><div class="v">${brl(conta('enviado').reduce((t, f) => t + f.total, 0))}</div><div class="l">${conta('enviado').length} aguardando aprovação</div></div></div>
+<div class="card stat"><span class="hico ok">${icone('check')}</span><div><div class="v">${brl(todos.filter((f) => f.status === 'pago' && mesDe(f) === mes0).reduce((t, f) => t + f.total, 0))}</div><div class="l">Aprovado este mês</div></div></div></div>`}
 ${cardAgenda(u, itens)}
 `));
 });
@@ -359,17 +362,6 @@ app.post('/fechamentos/novo', so((r) => editaMotoboy(r.user)), doisArquivos, (re
     : volta(res, `/fechamentos/${fid}`, 'ok', pagamento ? `Importado: pagamento de ${diaLongo(pagamento)}. Agora confira os valores.` : 'Importado. Agora confira os valores.');
 });
 
-// Nomes do Agilizone sem motoboy ligado, vindos dos pedidos ou do Resumo.
-const naoMapeados = (f) => db.prepare(`SELECT entregador, SUM(n) n, MAX(v) v FROM (
-  SELECT entregador, COUNT(*) n, SUM(taxa) v FROM pedidos WHERE fechamento_id = ?1 AND motoboy_id IS NULL AND entregador IS NOT NULL GROUP BY 1
-  UNION ALL SELECT entregador, 0, total FROM resumo WHERE fechamento_id = ?1 AND motoboy_id IS NULL) GROUP BY 1 ORDER BY 1`).all(f.id);
-const normaliza = (s) => semAcento(s).split(/\s+/).filter(Boolean);
-// Sugere só quando o nome do Agilizone é igual ao nome completo de um único motoboy (evita homônimos).
-function sugestao(nome, motoboys) {
-  const p = normaliza(nome).join(' ');
-  const c = motoboys.filter((m) => normaliza(m.nome).join(' ') === p);
-  return c.length === 1 ? c[0].id : null;
-}
 const ajustesDetalhados = (f, g) => db.prepare(`SELECT a.*, m.nome motoboy, u.nome autor, (SELECT COUNT(*) FROM evidencias WHERE ajuste_id = a.id) evidencias
   FROM ajustes a JOIN motoboys m ON m.id = a.motoboy_id LEFT JOIN usuarios u ON u.id = a.criado_por WHERE a.fechamento_id = ? ORDER BY m.nome, a.dia`).all(f.id)
   .map((a) => ({ ...a, agil: g.linhas.find((l) => l.id === a.motoboy_id)?.dias[a.dia]?.agil ?? 0 }));
@@ -378,12 +370,7 @@ const diferenca = (v) => html`<span class="${v > 0 ? 'ok-t' : v < 0 ? 'bad-t' : 
 app.get('/fechamentos/:fid', (req, res) => {
   const f = req.f, u = req.user, g = grade(f), edita = podeEditar(u, f), devolve = podeDevolver(u, f);
   const enviado = f.status !== 'rascunho';
-  const nm = naoMapeados(f);
-  const motoboys = db.prepare('SELECT id, nome FROM motoboys WHERE ativo = 1 ORDER BY nome').all();
   const jaPago = db.prepare('SELECT r.entregador, r.pago, m.nome FROM resumo r LEFT JOIN motoboys m ON m.id = r.motoboy_id WHERE r.fechamento_id = ? AND r.pago > 0 ORDER BY 1').all(f.id);
-  const pixMudou = db.prepare("SELECT acao FROM log WHERE ref = ? AND acao LIKE 'PIX de %' ORDER BY id").all(`f:${f.id}`);
-  const cancel = db.prepare("SELECT COUNT(*) n, COALESCE(SUM(taxa),0) v FROM pedidos WHERE fechamento_id = ? AND status = 'Cancelado' AND entregador IS NOT NULL").get(f.id);
-  const entregas = db.prepare('SELECT COUNT(*) n FROM pedidos WHERE fechamento_id = ? AND motoboy_id IS NOT NULL').get(f.id).n;
   const ajustes = ajustesDetalhados(f, g);
   const evid = db.prepare('SELECT id, nome FROM evidencias WHERE ajuste_id = ?');
   const hist = db.prepare('SELECT l.*, u.nome FROM log l LEFT JOIN usuarios u ON u.id = l.usuario_id WHERE ref = ? ORDER BY l.id DESC').all(`f:${f.id}`);
@@ -401,7 +388,6 @@ app.get('/fechamentos/:fid', (req, res) => {
   const ajDe = (id) => ajustes.filter((a) => a.motoboy_id === id);
   const etapa = f.status === 'pago' ? 4 : enviado ? 3 : 1;
   const bloqueios = [
-    nm.length && [`Identifique ${nm.length} entregador(es) do Agilizone`, '#identificar'],
     semPix.length && [`Falta a chave PIX de ${semPix.length} motoboy(s)`, '#pix'],
   ].filter(Boolean);
 
@@ -415,10 +401,10 @@ ${bloqueios.length ? html`<button class="btn btn-pri btn-lg" disabled title="Res
   else if (f.status === 'pago') { const ap = ultimo(/^Aprovou/); proximo = html`<div class="next done"><span class="hico ok">${icone('check')}</span><div class="t"><b>Aprovado pelo financeiro${ap ? ` (${ap.nome}, ${ap.quando.slice(0, 16)})` : ''}.</b><p>O pagamento é feito fora do sistema, com o PDF e as chaves PIX abaixo.</p></div></div>`; }
   else if (devolve) proximo = html`<div class="next"><span class="hico pri">${icone('check')}</span><div class="t"><b>Solicitação aguardando sua aprovação.</b><p>Aprove todos de uma vez, ou marque um por um na tabela e clique em "Aprovar selecionados". Se algo estiver errado, use "Devolver ao despachante" no fim da página.</p></div>
 <form method="post" action="/fechamentos/${f.id}/aprovar" class="in"><button class="btn btn-ok btn-lg">${icone('check')} Aprovar todos</button></form></div>`;
-  else proximo = html`<div class="next done"><span class="hico ok">${icone('check')}</span><div class="t"><b>Enviado ao financeiro${envio ? ` em ${envio.quando.slice(0, 16).split(' ').map((x, i) => (i ? x : dataFmt(x))).join(' às ')}` : ''}.</b>
-<p>O pagamento é feito pelo financeiro, fora do sistema, com o PDF e as chaves PIX abaixo (as chaves ficam como estavam no envio).</p></div></div>`;
+  else proximo = html`<div class="next wait"><span class="hico">${icone('relogio')}</span><div class="t"><b>Aguardando aprovação do financeiro · enviado${envio ? ` em ${envio.quando.slice(0, 16).split(' ').map((x, i) => (i ? x : dataFmt(x))).join(' às ')}` : ''}.</b>
+<p>Se algo estiver errado, o financeiro devolve com o motivo e o fechamento volta para correção. As chaves PIX ficam como estavam no envio.</p></div></div>`;
 
-  const sub = html`${icone('calendario', 'sm')} ${f.pagamento ? html`Pagamento de <b>${diaLongo(f.pagamento)}</b> · ` : ''}período ${periodo(f)} · importado por ${f.autor} em ${f.criado_em.slice(0, 16)}`;
+  const sub = html`${icone('calendario', 'sm')} ${f.pagamento ? html`Pagamento de <b>${diaLongo(f.pagamento)}</b> · ` : ''}período ${periodo(f)} · <b>total ${brl(g.total)}</b> · importado por ${f.autor} em ${f.criado_em.slice(0, 16)}`;
   res.send(page(req, {
     titulo: f.loja, sub, trilha: [['Fechamentos', '/'], [`${f.loja} · ${periodo(f)}`]],
     acoes: html`<a class="btn btn-sec" href="/fechamentos/${f.id}/pdf" target="_blank">${icone('arquivo')} Ver PDF</a><a class="btn btn-sec" href="/fechamentos/${f.id}/csv">${icone('baixar')} Planilha</a>`,
@@ -428,31 +414,16 @@ ${bloqueios.length ? html`<button class="btn btn-pri btn-lg" disabled title="Res
     return html`<li class="${feito ? 'feito' : atual ? 'atual' : ''}" ${atual ? new Raw('aria-current="step"') : ''}><span class="dot">${feito ? icone('check', 'sm') : i + 1}</span><span class="lb">${t}</span></li>`; })}</ol>
 ${devolvido ? html`<div class="alert bad" id="devolvido">${icone('desfazer')}<div><b>Devolvido pelo financeiro para correção</b><span style="white-space:pre-wrap">${devolucao.acao.replace(/^Devolveu para correção: /, '')}</span><div class="small" style="opacity:.8;margin-top:4px">${devolucao.nome || ''} · ${devolucao.quando.slice(0, 16)}</div></div></div>` : ''}
 ${proximo}
-${enviado ? (() => { const e = db.prepare("SELECT acao, quando FROM log WHERE ref = ? AND acao LIKE 'E-mail (solicitação)%' ORDER BY id DESC").get(`f:${f.id}`);
+${enviado && ['admin', 'despachante'].includes(u.perfil) ? (() => { const e = db.prepare("SELECT acao, quando FROM log WHERE ref = ? AND acao LIKE 'E-mail (solicitação)%' ORDER BY id DESC").get(`f:${f.id}`);
     const ok = e && e.acao.includes(' enviado para ');
     return html`<div class="alert ${ok ? 'ok' : 'warn'}" id="email">${icone('email')}<div style="flex:1"><b>${ok ? 'E-mail da solicitação de pagamento enviado' : 'O e-mail da solicitação de pagamento não foi enviado'}</b>
 ${e ? html`${e.acao.replace(/^E-mail \(solicitação\) /, '')} · ${e.quando.slice(0, 16)}` : 'Ainda não houve tentativa de envio.'}${!ok && u.perfil === 'admin' ? html` · <a href="/config">abrir Configurações</a>` : ''}</div>
 ${podeReenviar(u, f) ? html`<a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/enviar">${icone('email', 'sm')} Reenviar e-mail</a>` : ''}</div>`; })() : ''}
 ${fora ? html`<div class="alert warn">${icone('calendario')}<div><b>Período fora do calendário de pagamento</b>${fora.acao.replace(/^Atenção: /, '')}. Confira se o filtro de datas no Agilizone estava certo.</div></div>` : ''}
 
-<div class="stats">
-<div class="card stat hero"><span class="hico pri">${icone('carteira')}</span><div><div class="v">${brl(g.total)}</div><div class="l">Total a pagar</div></div></div>
-<div class="card stat"><span class="hico">${icone('pessoas')}</span><div><div class="v">${g.linhas.length}</div><div class="l">Motoboys</div></div></div>
-<div class="card stat"><span class="hico">${icone('pacote')}</span><div><div class="v">${entregas}</div><div class="l">Entregas no Agilizone</div></div></div>
-<div class="card stat"><span class="hico ${ajustes.length ? 'warn' : ''}">${icone('lapis')}</span><div><div class="v">${ajustes.length}</div><div class="l">Divergências registradas</div></div></div></div>
-
-${nm.length ? html`<div class="card warn" id="identificar" style="margin-bottom:20px"><div class="card-h"><span class="hico warn">${icone('link')}</span><div class="t"><h2>Identificar entregadores</h2>
-<p>Estes nomes do Agilizone ainda não estão ligados a um motoboy cadastrado. Só precisa fazer uma vez por loja: nas próximas importações o sistema já reconhece.</p></div></div>
-${edita ? html`<form method="post" action="/fechamentos/${f.id}/mapear"><div class="tw"><table><tr><th>Nome no Agilizone</th><th class="n">Entregas</th><th class="n">Taxas</th><th>É o motoboy…</th></tr>
-${nm.map((x, i) => { const s = sugestao(x.entregador, motoboys); return html`<tr><td><b>${x.entregador}</b><input type="hidden" name="n${i}" value="${x.entregador}"></td><td class="n">${x.n}</td><td class="n">${brl(x.v)}</td>
-<td style="min-width:260px"><select name="m${i}" required data-busca aria-label="Motoboy para ${x.entregador}"><option value="">Escolha…</option><option value="novo">+ É um motoboy novo: cadastrar "${x.entregador}"</option>
-${motoboys.map((m) => html`<option value="${m.id}" ${m.id === s ? 'selected' : ''}>${m.nome}</option>`)}</select></td></tr>`; })}
-</table></div><div class="card-f"><button class="btn btn-pri">${icone('check')} Salvar identificação</button><span class="mut small">Confira as sugestões: motoboys com nome parecido podem ser pessoas diferentes.</span></div></form>`
-      : html`<div class="card-b chips">${nm.map((x) => html`<span class="badge warn">${x.entregador} · ${brl(x.v)}</span>`)}</div>`}</div>` : ''}
-
 ${semPix.length ? html`<form method="post" action="/fechamentos/${f.id}/pix" class="card warn" id="pix" style="margin-bottom:20px"><div class="card-h"><span class="hico warn">${icone('chave')}</span><div class="t">
-<h2>Falta a chave PIX de ${semPix.length} motoboy(s)</h2><p>Não veio no Resumo do Agilizone.${edita ? ' Digite aqui: fica salvo no cadastro do motoboy.' : ' O despachante precisa cadastrar.'}</p></div></div>
-<div class="items">${semPix.map((l) => html`<div class="item-h"><div class="who">${avatar(l.nome)}<div><b>${l.nome}</b><div class="mut small">a receber ${brl(l.total)} · <a href="/motoboys/${l.id}?voltar=/fechamentos/${f.id}">abrir cadastro</a></div></div></div>
+<h2>Falta a chave PIX de ${semPix.length} motoboy(s)</h2><p>Não veio no Resumo do Agilizone.${edita ? ' Digite aqui (vale só para este fechamento) e peça para corrigirem no Agilizone.' : ' O despachante precisa informar.'}</p></div></div>
+<div class="items">${semPix.map((l) => html`<div class="item-h"><div class="who">${avatar(l.nome)}<div><b>${l.nome}</b><div class="mut small">a receber ${brl(l.total)}</div></div></div>
 ${edita ? html`<div style="flex:1;max-width:380px;min-width:220px"><input name="pix_${l.id}" placeholder="CPF, telefone, e-mail ou chave aleatória" aria-label="Chave PIX de ${l.nome}" autocomplete="off" maxlength="120"></div>` : html`<span class="badge bad">sem PIX</span>`}</div>`)}</div>
 ${edita ? html`<div class="card-f"><button class="btn btn-pri">${icone('check')} Salvar chaves PIX</button><span class="mut small">Preencha só as que você já tem; dá para voltar depois.</span></div>` : ''}</form>` : ''}
 
@@ -467,8 +438,6 @@ ${edita ? html`<details class="fold" style="margin-top:8px"><summary class="mut 
   : html`<div class="alert warn" id="conferencia">${icone('alerta')}<div><b>Sem o Resumo de entregas do Agilizone</b>Os totais deste fechamento não foram conferidos. ${edita ? html`Envie o .csv de "Exportar Resumo" (mesmo filtro de datas):
 <form method="post" action="/fechamentos/${f.id}/resumo" enctype="multipart/form-data" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center"><input type="file" name="resumo" accept=".csv,text/csv" required aria-label="Resumo de entregas (.csv)"><button class="btn btn-sec btn-sm">${icone('subir', 'sm')} Anexar Resumo</button></form>` : 'Peça ao despachante para anexar o Resumo.'}</div></div>`}
 ${jaPago.length ? html`<div class="alert bad">${icone('alerta')}<div><b>O Agilizone indica acerto já feito para ${jaPago.length} motoboy(s)</b>Confira para não pagar duas vezes: ${jaPago.map((r, i) => html`${i ? ', ' : ''}<b>${r.nome || r.entregador}</b> (${brl(r.pago)} já acertado no Agilizone)`)}. Se for o caso, registre a divergência descontando o valor.</div></div>` : ''}
-${pixMudou.length ? html`<details class="alert fold" style="display:block"><summary>${icone('info')} <b style="display:inline">${pixMudou.length} chave(s) PIX cadastrada(s) ou atualizada(s) neste fechamento</b> ${icone('chevron', 'chev')}</summary><ul style="margin:8px 0 0 26px;padding:0">${pixMudou.map((x) => html`<li>${x.acao}</li>`)}</ul></details>` : ''}
-${cancel.n ? html`<div class="alert">${icone('info')}<div><b>${cancel.n} pedido(s) cancelado(s) estão incluídos (${brl(cancel.v)})</b>Igual ao "Resumo de entregas por entregador" do Agilizone. Se algum não deve ser pago, registre uma divergência.</div></div>` : ''}
 
 <div class="card" id="valores"><div class="card-h"><span class="hico pri">${icone('calendario')}</span><div class="t"><h2>Valores por dia</h2>
 <p>Soma da taxa do entregador no Agilizone.${edita ? ' Clique em um valor ou em "Registrar divergência" para corrigir.' : ''}${enviado ? ' Chaves PIX como estavam no envio ao financeiro.' : ''}</p></div>
@@ -484,7 +453,7 @@ ${pend.length ? html`<button type="button" data-f="res" aria-pressed="false">Nã
 <div class="tw"><table class="grade" id="grade" data-f="todos"><tr>${colAprov ? html`<th title="Aprovado pelo financeiro">${marcaAprov ? html`<input type="checkbox" data-todos="aprovar" aria-label="Selecionar todos para aprovar">` : 'Aprov.'}</th>` : ''}<th>Motoboy</th>${edita ? html`<th></th>` : ''}<th>PIX</th>${g.dias.map((d) => html`<th class="n">${diaFmt(d)}</th>`)}<th class="n">Total</th>${g.temResumo ? html`<th class="n" title="Resumo de entregas do Agilizone">Resumo</th>` : ''}</tr>
 ${g.linhas.map((l) => { const n = nDiv(l); return html`<tr data-q="${semAcento(l.nome)}" data-div="${n ? 1 : 0}" data-res="${l.confere === 'pendente' ? 1 : 0}" data-nome="${l.nome}" data-total="${brl(l.total)}" class="${l.confere === 'pendente' ? 'nobate' : n ? 'alt' : ''}">
 ${colAprov ? html`<td>${l.aprovado ? html`<span class="ok-t" title="Aprovado">${icone('check')}</span>` : marcaAprov && l.total > 0 ? html`<input type="checkbox" name="m" value="${l.id}" form="aprovar" aria-label="Aprovar ${l.nome}">` : ''}</td>` : ''}
-<td><div class="who">${avatar(l.nome)}<div><a href="/motoboys/${l.id}?voltar=/fechamentos/${f.id}" class="nome" title="Abrir cadastro"><b>${l.nome}</b></a><div class="chips" style="margin-top:3px">
+<td><div class="who">${avatar(l.nome)}<div><b>${l.nome}</b><div class="chips" style="margin-top:3px">
 ${n ? html`<button type="button" class="badge div nodot" data-abre="${l.id}" aria-expanded="false" title="Ver a divergência">${icone('lapis', 'sm')} Divergência${n > 1 ? ` · ${n} dias` : ''} ${icone('chevron', 'sm')}</button>` : ''}
 ${l.confere === 'pendente' ? html`<span class="badge bad" title="Resumo do Agilizone: ${brl(l.resumo)} · soma dos dias: ${brl(l.total)}">Não bate com o Resumo</span>` : ''}
 ${l.confere === 'aceito' ? html`<span class="badge warn" title="${l.aceite.justificativa}">Diferença aceita</span>` : ''}
@@ -506,15 +475,6 @@ ${edita ? html`<div class="card-f"><a class="btn btn-ghost btn-sm" href="/fecham
 ${devolve ? html`<form method="post" action="/fechamentos/${f.id}/devolver" class="card" style="margin-top:20px"><div class="card-h"><span class="hico">${icone('desfazer')}</span><div class="t"><h2>Encontrou algum erro?</h2><p>Devolva ao despachante com o motivo. Ele recebe um aviso, corrige e envia de novo.</p></div></div>
 <div class="card-b"><textarea name="motivo" required minlength="5" placeholder="O que precisa ser corrigido?" aria-label="Motivo da devolução"></textarea></div><div class="card-f"><button class="btn btn-sec">${icone('desfazer')} Devolver ao despachante</button></div></form>` : ''}
 
-<div class="card" style="margin-top:20px"><div class="card-h"><span class="hico ${ajustes.length ? 'warn' : ''}">${icone('lapis')}</span><div class="t"><h2>Divergências (${ajustes.length})</h2><p>Valores que o despachante corrigiu em relação ao Agilizone, com a justificativa.</p></div></div>
-${ajustes.length ? html`<div class="items">${ajustes.map((a) => html`<div><div class="item-h"><div class="who">${avatar(a.motoboy)}<div><b>${a.motoboy}</b><div class="mut small">${diaFmt(a.dia)}</div></div></div>
-${edita ? html`<a class="btn btn-ghost btn-sm" href="/fechamentos/${f.id}/ajuste?m=${a.motoboy_id}&d=${a.dia}">${icone('lapis', 'sm')} Editar</a>` : ''}</div>
-<div class="flow">Agilizone <b>${brl(a.agil)}</b>${a.valor_informado == null ? '' : html` · motoboy informou <b>${brl(a.valor_informado)}</b>`} ${icone('seta', 'sm')} a pagar <b>${brl(a.valor_final)}</b> ${diferenca(a.valor_final - a.agil)}</div>
-<div class="quote">${a.justificativa}</div>
-<div class="chips" style="margin-top:10px;align-items:center">${evid.all(a.id).map((e) => html`<a class="badge nodot" href="/evidencias/${e.id}" target="_blank">${icone('clipe', 'sm')} ${e.nome}</a>`)}
-<span class="mut small">por ${a.autor} em ${a.criado_em.slice(0, 16)}</span></div></div>`)}</div>`
-    : html`<div class="card-b mut">Nenhuma divergência. Todos os valores estão conforme o Agilizone.</div>`}</div>
-
 <details class="card fold" style="margin-top:20px"><summary class="card-h" style="border-bottom:0"><span class="hico">${icone('historico')}</span><span class="t"><h2>Histórico</h2></span>${icone('chevron', 'chev')}</summary>
 <div class="card-b" style="border-top:1px solid var(--bd)"><ul class="timeline">${hist.map((h) => html`<li>${h.acao}<small>${h.quando} · ${h.nome || 'Sistema'}</small></li>`)}</ul></div></details>
 ${edita ? html`<details class="fold" style="margin-top:20px"><summary class="mut small">${icone('chevron', 'chev')} Importou o arquivo errado?</summary>
@@ -533,41 +493,15 @@ app.post('/fechamentos/:fid/aceite', so((r) => podeEditar(r.user, r.f)), (req, r
   volta(res, `/fechamentos/${f.id}`, 'ok', `Diferença aceita para ${l.nome}.`);
 });
 
-app.post('/fechamentos/:fid/mapear', so((r) => podeEditar(r.user, r.f)), (req, res) => {
-  const f = req.f, pendentes = new Set(naoMapeados(f).map((x) => x.entregador));
-  let n = 0;
-  tx(() => {
-    for (let i = 0; `n${i}` in req.body; i++) {
-      const nome = String(req.body[`n${i}`]), esc_ = String(req.body[`m${i}`] || '');
-      // Só nomes que estão pendentes neste fechamento (evita vínculo inventado e cadastro duplicado em clique duplo).
-      if (!esc_ || !pendentes.has(nome)) continue;
-      let mid = Number(esc_);
-      if (esc_ === 'novo') {
-        mid = Number(db.prepare('INSERT INTO motoboys (nome) VALUES (?)').run(nome).lastInsertRowid);
-        log(req.user.id, `m:${mid}`, `Cadastrou motoboy "${nome}" a partir do Agilizone (${f.loja})`);
-      } else if (!db.prepare('SELECT 1 FROM motoboys WHERE id = ?').get(mid)) throw falha('Motoboy inválido.');
-      db.prepare('INSERT OR REPLACE INTO apelidos (loja_id, nome, motoboy_id) VALUES (?,?,?)').run(f.loja_id, nome, mid);
-      // Aplica também nos outros fechamentos em conferência da mesma loja.
-      db.prepare(`UPDATE pedidos SET motoboy_id = ? WHERE entregador = ? AND motoboy_id IS NULL AND fechamento_id IN (SELECT id FROM fechamentos WHERE loja_id = ? AND status = 'rascunho')`).run(mid, nome, f.loja_id);
-      n++;
-    }
-    for (const x of db.prepare("SELECT f.*, l.nome loja FROM fechamentos f JOIN lojas l ON l.id = f.loja_id WHERE f.loja_id = ? AND f.status = 'rascunho'").all(f.loja_id)) aplicaResumo(x, req.user.id);
-  });
-  volta(res, `/fechamentos/${f.id}`, n ? 'ok' : 'erro', n ? 'Entregadores identificados.' : 'Nada para identificar (talvez já tenha sido salvo).');
-});
-
 app.post('/fechamentos/:fid/pix', so((r) => podeEditar(r.user, r.f)), (req, res) => {
-  const daqui = new Set(grade(req.f).linhas.map((l) => l.id));
+  const linhas = new Map(grade(req.f).linhas.map((l) => [l.id, l]));
   let n = 0;
   tx(() => {
     for (const [k, v] of Object.entries(req.body)) {
-      const id = Number(k.replace(/^pix_/, '')), pix = String(v || '').trim().slice(0, 120);
-      if (!k.startsWith('pix_') || !daqui.has(id) || !pix) continue; // só motoboys deste fechamento
-      const m = db.prepare('SELECT * FROM motoboys WHERE id = ?').get(id);
-      if (!m || m.pix === pix) continue;
-      db.prepare('UPDATE motoboys SET pix = ? WHERE id = ?').run(pix, id);
-      log(req.user.id, `m:${id}`, `pix: "${m.pix ?? ''}" → "${pix}" (digitado no fechamento ${req.f.loja} ${periodo(req.f)})`);
-      log(req.user.id, `f:${req.f.id}`, `PIX de ${m.nome} cadastrado manualmente: ${pix}`);
+      const l = linhas.get(Number(k.replace(/^pix_/, ''))), pix = String(v || '').trim().slice(0, 120);
+      if (!k.startsWith('pix_') || !l || !pix || l.pix === pix) continue;
+      db.prepare('INSERT INTO envio_pix (fechamento_id, motoboy_id, pix) VALUES (?,?,?) ON CONFLICT (fechamento_id, motoboy_id) DO UPDATE SET pix = excluded.pix').run(req.f.id, l.id, pix);
+      log(req.user.id, `f:${req.f.id}`, `PIX de ${l.nome} digitado: ${pix}`);
       n++;
     }
   });
@@ -721,7 +655,6 @@ function destinatariosDigitados(txt) {
   return para;
 }
 function pendenciasEnvio(f) {
-  if (naoMapeados(f).length) return 'Identifique todos os entregadores antes de enviar.';
   const g = grade(f), pend = g.linhas.filter((l) => l.confere === 'pendente'), semPix = g.linhas.filter((l) => l.total > 0 && !l.pix);
   if (semPix.length) return `Cadastre a chave PIX de: ${semPix.map((l) => l.nome).join(', ')}.`;
   return null;
@@ -761,8 +694,9 @@ app.post('/fechamentos/:fid/enviar', so((r) => podeEditar(r.user, r.f)), async (
   tx(() => {
     db.prepare("UPDATE fechamentos SET status = 'enviado' WHERE id = ?").run(f.id);
     // Congela o PIX de cada motoboy como foi enviado ao financeiro.
+    const ls = grade(f).linhas;
     db.prepare('DELETE FROM envio_pix WHERE fechamento_id = ?').run(f.id);
-    for (const l of grade({ ...f, status: 'rascunho' }).linhas) db.prepare('INSERT INTO envio_pix (fechamento_id, motoboy_id, pix) VALUES (?,?,?)').run(f.id, l.id, l.pix);
+    for (const l of ls) db.prepare('INSERT INTO envio_pix (fechamento_id, motoboy_id, pix) VALUES (?,?,?)').run(f.id, l.id, l.pix);
     log(req.user.id, `f:${f.id}`, `Enviou ao financeiro (total ${brl(grade(f).total)})`);
   });
   const erro = await solicitarPagamento({ ...f, status: 'enviado' }, req.user, para);
@@ -861,91 +795,6 @@ app.get('/fechamentos/:fid/csv', (req, res) => {
   res.send('﻿' + linhas.map((r) => r.map(cel).join(';')).join('\r\n'));
 });
 
-// ---------- Motoboys ----------
-app.get('/motoboys', (req, res) => {
-  const ms = db.prepare(`SELECT m.*, (SELECT group_concat(a.nome, ' | ') FROM apelidos a WHERE a.motoboy_id = m.id) apelidos
-    FROM motoboys m ORDER BY m.ativo DESC, m.nome`).all();
-  const ed = editaMotoboy(req.user), semPix = ms.filter((m) => m.ativo && !m.pix).length;
-  res.send(page(req, { titulo: 'Motoboys', sub: `${ms.filter((m) => m.ativo).length} ativos. O cadastro é único para as 4 lojas.`, acoes: ed ? html`<a class="btn btn-pri" href="/motoboys/novo">${icone('mais')} Novo motoboy</a>` : '' }, html`
-${semPix ? html`<div class="alert warn">${icone('alerta')}<div><b>${semPix} motoboy(s) ativo(s) sem chave PIX</b>Sem PIX, o fechamento não pode ser enviado ao financeiro.</div></div>` : ''}
-<div class="card"><div class="card-h"><div class="t"><h2>Cadastro</h2><p>Clique em um motoboy para ver ou editar.</p></div>
-<div class="search">${icone('busca', 'sm')}<input type="search" placeholder="Buscar por nome ou PIX" data-filtro="#lista" aria-label="Buscar motoboy"></div></div>
-${ms.length ? html`<div class="tw"><table id="lista"><tr><th>Motoboy</th><th>Chave PIX</th><th>Nome no Agilizone</th><th></th></tr>
-${ms.map((m) => html`<tr data-href="/motoboys/${m.id}" data-q="${semAcento(`${m.nome} ${m.pix || ''} ${m.apelidos || ''}`)}" style="${m.ativo ? '' : 'opacity:.55'}">
-<td><div class="who">${avatar(m.nome)}<div><b>${m.nome}</b>${m.ativo ? '' : html` <span class="badge nodot">inativo</span>`}${m.cpf ? html`<div class="mut small">CPF ${m.cpf}</div>` : ''}</div></div></td>
-<td>${m.pix ? html`<span class="small">${m.pix}</span>` : html`<span class="badge bad">sem PIX</span>`}</td>
-<td class="mut small">${m.apelidos || '—'}</td>
-<td class="n"><a class="btn btn-ghost btn-sm" href="/motoboys/${m.id}">${ed ? 'Editar' : 'Ver'} ${icone('chevron', 'sm')}</a></td></tr>`)}</table></div>`
-    : html`<div class="empty"><div class="hico pri">${icone('pessoas', 'lg')}</div><h2>Nenhum motoboy ainda</h2><p>Eles são cadastrados automaticamente na primeira importação do Agilizone, ou manualmente aqui.</p></div>`}</div>`));
-});
-
-// "voltar" leva de volta ao fechamento de onde o despachante veio (só aceita /fechamentos/<número>).
-const voltarPara = (v) => (/^\/fechamentos\/\d+$/.test(String(v || '')) ? String(v) : null);
-
-function formMotoboy(req, m) {
-  const voltar = voltarPara(req.query.voltar);
-  const ed = editaMotoboy(req.user), dis = ed ? '' : 'disabled';
-  const apel = m.id ? db.prepare('SELECT a.*, l.nome loja FROM apelidos a JOIN lojas l ON l.id = a.loja_id WHERE a.motoboy_id = ?').all(m.id) : [];
-  const hist = m.id ? db.prepare('SELECT l.*, u.nome FROM log l LEFT JOIN usuarios u ON u.id = l.usuario_id WHERE ref = ? ORDER BY l.id DESC').all(`m:${m.id}`) : [];
-  const fechs = m.id ? db.prepare(`SELECT f.*, l.nome loja FROM fechamentos f JOIN lojas l ON l.id = f.loja_id WHERE f.id IN (SELECT fechamento_id FROM pedidos WHERE motoboy_id = ?1
-    UNION SELECT fechamento_id FROM ajustes WHERE motoboy_id = ?1 UNION SELECT fechamento_id FROM resumo WHERE motoboy_id = ?1) ORDER BY f.data_fim DESC LIMIT 15`).all(m.id)
-    .map((f) => ({ ...f, l: grade(f).linhas.find((x) => x.id === m.id) })) : [];
-  return page(req, { titulo: m.id ? m.nome : 'Novo motoboy', sub: m.id ? (m.ativo ? 'Ativo' : 'Inativo') + (m.pix ? ` · PIX ${m.pix}` : ' · sem chave PIX') : 'Preencha os dados. A chave PIX é para onde vai o pagamento.', trilha: voltar ? [['Fechamento', voltar], [m.id ? m.nome : 'Novo']] : [['Motoboys', '/motoboys'], [m.id ? m.nome : 'Novo']] }, html`${voltar ? html`<div class="alert">${icone('info')}<div><b>Você veio de um fechamento.</b>Ao salvar, volta para ele com os dados já atualizados. <a href="${voltar}">Voltar sem salvar</a></div></div>` : ''}<div class="split">
-<div class="stack"><form method="post" class="card">${voltar ? html`<input type="hidden" name="voltar" value="${voltar}">` : ''}<div class="card-h"><span class="hico pri">${icone('pessoa')}</span><div class="t"><h2>Dados do motoboy</h2></div></div><div class="card-b">
-<div class="field"><label for="nome">Nome completo <span class="req">*</span></label><input id="nome" name="nome" required value="${m.nome}" ${dis}></div>
-<div class="fgrid"><div class="field"><label for="cpf">CPF</label><input id="cpf" name="cpf" value="${m.cpf}" inputmode="numeric" ${dis}></div>
-<div class="field"><label for="pix">Chave PIX</label><input id="pix" name="pix" value="${m.pix}" ${dis}><p class="hint">CPF, telefone, e-mail ou chave aleatória. Toda alteração fica registrada.</p></div></div>
-<label class="check"><input type="checkbox" name="ativo" value="1" ${m.ativo !== 0 ? 'checked' : ''} ${dis}> Ativo (aparece nas listas)</label></div>
-${ed ? html`<div class="card-f"><button class="btn btn-pri">${icone('check')} ${voltar ? 'Salvar e voltar ao fechamento' : 'Salvar'}</button><a class="btn btn-ghost" href="${voltar || '/motoboys'}">Cancelar</a></div>` : ''}</form>
-${hist.length ? html`<details class="card fold"><summary class="card-h" style="border-bottom:0"><span class="hico">${icone('historico')}</span><span class="t"><h2>Histórico de alterações</h2></span>${icone('chevron', 'chev')}</summary>
-<div class="card-b" style="border-top:1px solid var(--bd)"><ul class="timeline">${hist.map((h) => html`<li>${h.acao}<small>${h.quando} · ${h.nome || 'Sistema'}</small></li>`)}</ul></div></details>` : ''}</div>
-
-${m.id ? html`<div class="stack">
-<div class="card"><div class="card-h"><span class="hico">${icone('carteira')}</span><div class="t"><h2>Pagamentos</h2><p>Últimos fechamentos em que o motoboy aparece.</p></div></div>
-${fechs.length ? html`<div class="items">${fechs.map((f) => html`<div class="item-h"><div>${podeVer(req.user, f) ? html`<a href="/fechamentos/${f.id}"><b>${periodo(f)}</b></a>` : html`<b>${periodo(f)}</b>`}<div class="mut small">${f.loja}</div></div>
-<div style="text-align:right"><div class="b">${brl(f.l?.total || 0)}</div>${badgeStatus(f.status)}</div></div>`)}</div>`
-      : html`<div class="card-b mut small">Ainda não aparece em nenhum fechamento.</div>`}</div>
-<div class="card"><div class="card-h"><span class="hico">${icone('link')}</span><div class="t"><h2>Nomes no Agilizone</h2><p>Como ele aparece nos relatórios de cada loja.</p></div></div>
-${apel.length ? html`<div class="items">${apel.map((a) => html`<div class="item-h"><div><b>${a.nome}</b><div class="mut small">${a.loja}</div></div>
-${ed ? html`<form method="post" action="/motoboys/${m.id}/apelido" class="in" onsubmit="return confirm('Desvincular? Na próxima importação o sistema vai perguntar de novo quem é.')"><input type="hidden" name="loja" value="${a.loja_id}"><input type="hidden" name="nome" value="${a.nome}"><button class="link-btn">desvincular</button></form>` : ''}</div>`)}</div>`
-      : html`<div class="card-b mut small">Ainda não apareceu em nenhuma importação.</div>`}</div></div>` : ''}</div>`);
-}
-app.get('/motoboys/novo', so((r) => editaMotoboy(r.user)), (req, res) => res.send(formMotoboy(req, {})));
-app.get('/motoboys/:id', (req, res) => {
-  const m = db.prepare('SELECT * FROM motoboys WHERE id = ?').get(Number(req.params.id));
-  if (!m) throw falha('Motoboy não encontrado.', 404);
-  res.send(formMotoboy(req, m));
-});
-function salvaMotoboy(req, res) {
-  const id = req.params.id ? Number(req.params.id) : null;
-  const v = { nome: String(req.body.nome || '').trim(), cpf: String(req.body.cpf || '').trim() || null, pix: String(req.body.pix || '').trim() || null, ativo: req.body.ativo ? 1 : 0 };
-  if (!v.nome) throw falha('Informe o nome.');
-  const antes = id && db.prepare('SELECT * FROM motoboys WHERE id = ?').get(id);
-  if (id && !antes) throw falha('Motoboy não encontrado.', 404);
-  const mid = id || Number(db.prepare('INSERT INTO motoboys (nome, cpf, pix, ativo) VALUES (?,?,?,?)').run(v.nome, v.cpf, v.pix, v.ativo).lastInsertRowid);
-  if (id) db.prepare('UPDATE motoboys SET nome = ?, cpf = ?, pix = ?, ativo = ? WHERE id = ?').run(v.nome, v.cpf, v.pix, v.ativo, id);
-  // PIX alterado fica registrado: é o campo que define para onde vai o dinheiro.
-  const mud = id ? ['nome', 'cpf', 'pix', 'ativo'].filter((k) => (antes[k] ?? null) !== v[k]).map((k) => `${k}: "${antes[k] ?? ''}" → "${v[k] ?? ''}"`) : ['cadastrado'];
-  if (mud.length) log(req.user.id, `m:${mid}`, mud.join('; '));
-  const voltar = voltarPara(req.body.voltar);
-  voltar ? volta(res, voltar, 'ok', `Cadastro de ${v.nome} salvo${v.pix ? ' (PIX atualizado)' : ''}.`) : volta(res, `/motoboys/${mid}`, 'ok', 'Salvo.');
-}
-app.post('/motoboys/novo', so((r) => editaMotoboy(r.user)), salvaMotoboy);
-app.post('/motoboys/:id', so((r) => editaMotoboy(r.user)), salvaMotoboy);
-app.post('/motoboys/:id/apelido', so((r) => editaMotoboy(r.user)), (req, res) => {
-  const id = Number(req.params.id), loja = Number(req.body.loja), nome = String(req.body.nome);
-  if (req.user.perfil === 'despachante' && req.user.loja_id !== loja) throw falha('Só é possível desvincular nomes da sua loja.', 403);
-  tx(() => {
-    if (!db.prepare('DELETE FROM apelidos WHERE motoboy_id = ? AND loja_id = ? AND nome = ?').run(id, loja, nome).changes) return;
-    // Nos fechamentos ainda em conferência, o nome volta para "Identificar entregadores".
-    const abertos = "SELECT id FROM fechamentos WHERE loja_id = ? AND status = 'rascunho'";
-    db.prepare(`UPDATE pedidos SET motoboy_id = NULL WHERE entregador = ? AND motoboy_id = ? AND fechamento_id IN (${abertos})`).run(nome, id, loja);
-    db.prepare(`UPDATE resumo SET motoboy_id = NULL WHERE entregador = ? AND motoboy_id = ? AND fechamento_id IN (${abertos})`).run(nome, id, loja);
-    log(req.user.id, `m:${id}`, `Desvinculou nome do Agilizone "${nome}"`);
-  });
-  volta(res, `/motoboys/${id}`, 'ok', 'Nome desvinculado. Nos fechamentos em conferência, ele volta para "Identificar entregadores".');
-});
-
 // ---------- Usuários (admin) ----------
 const soAdmin = so((r) => r.user.perfil === 'admin');
 app.get('/usuarios', soAdmin, (req, res) => {
@@ -1029,14 +878,12 @@ ${v('smtp_host') ? '' : html`<div class="alert warn">${icone('alerta')}<div><b>S
 <div class="card-f"><button class="btn btn-sec">${icone('enviar')} Enviar teste</button></div></form>
 
 <form method="post" action="/config/alertas" class="card" id="alertas"><div class="card-h"><span class="hico pri">${icone('relogio')}</span><div class="t"><h2>Alertas automáticos por e-mail</h2><p>Horário de Teresina. Cada alerta sai uma vez por pagamento.</p></div></div><div class="card-b">
-${[['alerta_lembrete', 'hora_lembrete', '17:00', 'Lembrete ao despachante', 'Na véspera do dia de pagamento: "amanhã é dia de pagamento", com as datas exatas para filtrar no Agilizone.'],
-    ['alerta_cobranca', 'hora_cobranca', '12:00', 'Cobrança se atrasar', 'No dia do pagamento, se a loja ainda não enviou: avisa o despachante e a TI.'],
-    ['alerta_resumo', 'hora_resumo', '16:00', 'Resumo diário ao financeiro', 'Nos dias de pagamento: quais lojas já enviaram (com o total) e quais faltam. Vai para os destinatários da solicitação de pagamento.']]
+${[['alerta_resumo', 'hora_resumo', '16:00', 'Resumo diário ao financeiro', 'Nos dias de pagamento: quais lojas já enviaram (com o total) e quais faltam. Vai para os destinatários da solicitação de pagamento.']]
     .map(([k, h, padrao, t, d]) => html`<div class="field" style="display:flex;gap:12px;align-items:flex-start"><label class="check" style="flex:1;margin:0;align-items:flex-start"><input type="checkbox" name="${k}" value="1" ${v(k) !== '0' ? 'checked' : ''} style="margin-top:3px"><span><b>${t}</b><br><span class="mut small" style="font-weight:400">${d}</span></span></label>
 <input type="time" name="${h}" value="${v(h) || padrao}" aria-label="Horário: ${t}" style="width:120px"></div>`)}
 ${process.env.ALERTAS === '0' ? html`<div class="alert warn">${icone('alerta')}<div>Os alertas estão desligados neste servidor (variável ALERTAS=0).</div></div>` : ''}
 ${v('smtp_host') ? '' : html`<div class="alert warn">${icone('alerta')}<div>Sem servidor de e-mail configurado, os alertas não saem.</div></div>`}
-<p class="hint">Despachantes e TI recebem no e-mail do cadastro de Usuários: confira se cada despachante tem e-mail.</p>
+<p class="hint">O despachante vê os avisos (amanhã, hoje, atrasado) na tela inicial do sistema.</p>
 ${ultimosAlertas.length ? html`<details class="fold" style="margin-top:8px"><summary class="mut small">${icone('chevron', 'chev')} Últimos alertas</summary><ul class="timeline" style="margin-top:10px">${ultimosAlertas.map((a) => html`<li>${a.acao}<small>${a.quando}</small></li>`)}</ul></details>` : ''}</div>
 <div class="card-f"><button class="btn btn-sec">${icone('check')} Salvar alertas</button></div></form>
 
@@ -1092,12 +939,12 @@ app.post('/config/lojas/:id', so((r) => r.user.perfil === 'admin'), salvaLoja);
 
 app.post('/config/alertas', so((r) => r.user.perfil === 'admin'), (req, res) => {
   const b = req.body, set = db.prepare('INSERT INTO config (chave, valor) VALUES (?, ?) ON CONFLICT (chave) DO UPDATE SET valor = excluded.valor');
-  for (const h of ['hora_lembrete', 'hora_cobranca', 'hora_resumo']) if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(b[h] || ''))) throw falha('Horário inválido.');
+  for (const h of ['hora_resumo']) if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(b[h] || ''))) throw falha('Horário inválido.');
   tx(() => {
-    for (const k of ['alerta_lembrete', 'alerta_cobranca', 'alerta_resumo']) set.run(k, b[k] ? '1' : '0');
-    for (const h of ['hora_lembrete', 'hora_cobranca', 'hora_resumo']) set.run(h, String(b[h]));
+    set.run('alerta_resumo', b.alerta_resumo ? '1' : '0');
+    set.run('hora_resumo', String(b.hora_resumo));
   });
-  log(req.user.id, 'config', `Alertas: lembrete ${b.alerta_lembrete ? b.hora_lembrete : 'desligado'}, cobrança ${b.alerta_cobranca ? b.hora_cobranca : 'desligada'}, resumo ${b.alerta_resumo ? b.hora_resumo : 'desligado'}`);
+  log(req.user.id, 'config', `Resumo diário ao financeiro: ${b.alerta_resumo ? b.hora_resumo : 'desligado'}`);
   volta(res, '/config', 'ok', 'Alertas salvos.');
 });
 
@@ -1124,22 +971,6 @@ async function verificarAlertas() {
       db.prepare('UPDATE alertas SET resultado = ? WHERE chave = ?').run(resultado, chave);
       log(null, 'alertas', `${msg.subject} → ${resultado}`);
     };
-
-    if (ligado('alerta_lembrete') && horario('hora_lembrete', '17:00'))
-      for (const p of agenda(lojas, AG.soma(hoje, 1), AG.soma(hoje, 1)).filter((x) => x.situacao !== 'enviado'))
-        await dispara(`lembrete:${p.loja.id}:${p.pagamento}`, emails("perfil = 'despachante' AND loja_id = ?", p.loja.id), {
-          subject: `Amanhã é dia de pagamento dos motoboys · ${p.loja.nome}`,
-          text: `Olá,\n\nAmanhã (${diaLongo(p.pagamento)}) é dia de pagamento dos motoboys da ${p.loja.nome}, referente a ${p.dias.map(diaLongo).join(', ')}.\n\n` +
-            `Quando o período terminar:\n1. No Agilizone, abra Relatório de Pedidos e filtre de ${filtroAgilizone(p)}.\n2. Exporte o Relatório de Pedidos e o Resumo de entregas por entregador.\n3. Importe os dois no sistema, confira e envie ao financeiro.${link}`,
-        });
-
-    if (ligado('alerta_cobranca') && horario('hora_cobranca', '12:00'))
-      for (const p of agenda(lojas, hoje, hoje).filter((x) => x.situacao !== 'enviado'))
-        await dispara(`cobranca:${p.loja.id}:${p.pagamento}`, [...new Set([...emails("perfil = 'despachante' AND loja_id = ?", p.loja.id), ...ti])], {
-          subject: `Pagamento dos motoboys ainda não enviado · ${p.loja.nome}`,
-          text: `Olá,\n\nHoje (${diaLongo(p.pagamento)}) é dia de pagamento dos motoboys da ${p.loja.nome}, referente a ${p.dias.map(diaLongo).join(', ')}, e a solicitação ainda não foi enviada ao financeiro` +
-            `${p.f ? ' (o fechamento está em conferência)' : ' (o relatório ainda não foi importado)'}.\n\nFiltro no Agilizone: ${filtroAgilizone(p)}.${link}`,
-        });
 
     if (ligado('alerta_resumo') && horario('hora_resumo', '16:00')) {
       const itens = agenda(lojas, hoje, hoje);

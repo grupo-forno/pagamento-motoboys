@@ -22,7 +22,7 @@
 
   // ---- largura do painel
   const mede = () => {
-    const w = fc.clientWidth, m = w < 640 ? 'estreito' : w < 1100 ? 'medio' : 'largo';
+    const w = fc.clientWidth, m = w < 640 ? 'estreito' : w < 960 ? 'curto' : w < 1200 ? 'medio' : 'largo';
     if (fc.dataset.w !== m) { fc.dataset.w = m; aplicaDias(); totais(); }
   };
 

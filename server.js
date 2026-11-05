@@ -439,7 +439,8 @@ function blocoConferencia(o) {
     return html`<tr class="${temAj(i) ? 'tem-oc' : ''}" data-id="${i.id}" data-q="${semAcento(i.nome)}" data-sit="${grupoDe(i)}" data-base="${i.bruto}" data-aj="${aj}" data-valor="${i.total}" ${i.bloq ? new Raw('data-bloq="1"') : ''}>
 ${decide ? html`<td class="c-sel">${pode ? html`<label class="alvo"><input type="checkbox" name="m" value="${i.id}" aria-label="Selecionar ${i.nome}, ${brl(i.total)}"></label>` : ''}</td>` : ''}
 <th scope="row" class="c-nome"><button type="button" class="nm" data-det="${i.id}" title="Ver detalhes de ${i.nome}"><span>${i.nome}</span></button>
-<div class="meta"><span class="badge ${cor} so-estreito">${txt}</span>${!i.pix && sitDe(i)[1] !== 'Falta chave PIX' ? html`<span class="badge bad so-estreito">Sem PIX</span>` : ''}${temAj(i) ? html`<span class="badge warn nodot so-estreito">${icone('alerta', 'sm')} Ajuste ${aj > 0 ? '+' : ''}${brl(aj)}</span>` : ''}${d ? html`<span class="badge bad nodot" title="Soma dos dias diferente da soma das taxas do Resumo">${icone('alerta', 'sm')} Difere do Resumo ${d > 0 ? '+' : ''}${brl(d)}</span>` : ''}${i.avisoPix ? html`<span class="badge warn nodot">${i.avisoPix}</span>` : ''}</div></th>
+${i.pix ? html`<div class="pix-sub so-medio"><span class="rot-pix">PIX</span><span>${i.pix}</span><button type="button" class="icon-btn" data-copiar="${i.pix}" title="Copiar chave PIX" aria-label="Copiar chave PIX de ${i.nome}">${icone('copiar', 'sm')}</button></div>` : ''}
+<div class="meta"><span class="badge ${cor} so-estreito">${txt}</span>${!i.pix && sitDe(i)[1] !== 'Falta chave PIX' ? html`<span class="badge bad so-medio">Sem PIX</span>` : ''}${temAj(i) ? html`<span class="badge warn nodot so-estreito">${icone('alerta', 'sm')} Ajuste ${aj > 0 ? '+' : ''}${brl(aj)}</span>` : ''}${d ? html`<span class="badge bad nodot" title="Soma dos dias diferente da soma das taxas do Resumo">${icone('alerta', 'sm')} Difere do Resumo ${d > 0 ? '+' : ''}${brl(d)}</span>` : ''}${i.avisoPix ? html`<span class="badge warn nodot" title="${i.avisoPix}">${i.avisoPix.startsWith('Mesma') ? 'PIX repetido' : 'PIX fora do padrão'}</span>` : ''}</div></th>
 <td class="c-pix">${i.pix ? html`<span class="pix">${i.pix}<button type="button" class="icon-btn" data-copiar="${i.pix}" title="Copiar chave PIX" aria-label="Copiar chave PIX de ${i.nome}">${icone('copiar', 'sm')}</button></span>` : html`<span class="badge bad">Sem chave PIX</span>`}</td>
 <td class="n c-base">${brl(i.bruto)}</td>
 <td class="n c-aj">${temAj(i) ? html`<b class="${aj < 0 ? 'bad-t' : ''}">${aj > 0 ? '+' : ''}${brl(aj)}</b><small>${[i.oc || i.qtdOc ? `${i.qtdOc} ocorrência(s)` : '', i.pago ? `já pago ${brl(i.pago)}` : ''].filter(Boolean).join(' · ')}</small>` : html`<span class="mut">–<span class="sr">sem ajustes</span></span>`}</td>
@@ -524,7 +525,7 @@ function conferenciaFin(req, res) {
     : !decide ? html`<div class="alert info">${icone('info')}<div><b>Somente leitura.</b>Quem aprova ou devolve é o financeiro.</div></div>`
     : alterados.length ? html`<div class="alert warn">${icone('alerta')}<div><b>${alterados.length} entregador(es) mudaram depois de aprovados</b>${nomes(alterados)} voltaram para análise. Confira os novos valores e PIX.</div></div>` : '';
   res.send(page(req, {
-    titulo: `Fechamento #${f.id}`, selo: seloFin({ ...f, nAprov }), css: '/marca/conferencia.css', js: '/marca/conferencia.js',
+    titulo: `Fechamento #${f.id}`, selo: seloFin({ ...f, nAprov }), largura: 'larga', css: '/marca/conferencia.css', js: '/marca/conferencia.js',
     sub: html`<b>${f.loja}</b> · período ${periodo(f)}${f.pagamento ? html` · pagamento previsto <b>${diaLongo(f.pagamento)}</b>` : ''}<br><span class="mut">Enviado por ${f.enviou || f.autor}${f.enviado_em ? ` em ${quando(f.enviado_em)}` : ''} · versão ${f.versao}${f.arquivo ? ` · arquivo ${f.arquivo}` : ''}</span>`,
     trilha: [[u.perfil === 'financeiro' ? 'Fila do financeiro' : inicio(u), voltar], [`#${f.id} · ${lojaCurta(f.loja)}`]],
     acoes: html`<a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/pdf" target="_blank">${icone('arquivo', 'sm')} Baixar PDF</a><a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/csv">${icone('baixar', 'sm')} Baixar planilha</a>`,
@@ -779,7 +780,7 @@ ${podeReenviar(u, f) ? html` <a href="/fechamentos/${f.id}/enviar">Reenviar e-ma
 
   const sub = html`${f.pagamento ? html`Pagamento previsto: <b>${diaLongo(f.pagamento)}</b>` : 'Sem data de pagamento no calendário'}${veTudo(u) ? html` · ${f.loja}` : ''} · <span class="mut">importado por ${f.autor}, ${quando(f.criado_em)}</span>`;
   res.send(page(req, {
-    titulo: `Fechamento de ${periodo(f)}`, selo: selo(f, devolvido), sub, css: '/marca/conferencia.css', js: '/marca/conferencia.js', trilha: [[inicio(u), '/'], [periodo(f)]],
+    titulo: `Fechamento de ${periodo(f)}`, selo: selo(f, devolvido), sub, largura: 'larga', css: '/marca/conferencia.css', js: '/marca/conferencia.js', trilha: [[inicio(u), '/'], [periodo(f)]],
     acoes: html`<a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/pdf" target="_blank">${icone('arquivo', 'sm')} Baixar PDF</a><a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/csv">${icone('baixar', 'sm')} Baixar planilha</a>`,
   }, html`
 ${devolvido ? html`<div class="motivo" role="note" id="devolvido"><b>Devolvido pelo financeiro${devolucao.nome ? ` (${devolucao.nome})` : ''} em ${quando(devolucao.quando)}</b>

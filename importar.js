@@ -20,18 +20,30 @@ function centavos(v) {
   return Number.isFinite(n) ? Math.round(n * 100) : NaN;
 }
 
+// Valor digitado por uma pessoa, só no formato brasileiro: "152", "152,50", "1.500", "1.500,00", "R$ 12,5".
+// Ponto sem vírgula é milhar ("1.500" = mil e quinhentos). Retorna centavos ou NaN (vazio, negativo, "1e3", acima de R$ 100.000).
+function valorDigitado(v) {
+  const s = String(v ?? '').replace(/R\$|\s/g, '');
+  if (!/^(\d{1,3}(\.\d{3})+|\d+)(,\d{1,2})?$/.test(s)) return NaN;
+  const c = Math.round(Number(s.replace(/\./g, '').replace(',', '.')) * 100);
+  return c <= 10000000 ? c : NaN;
+}
+
 // Lê o .xlsx de "Relatório de Pedidos > Exportar Pedidos" do Agilizone.
 function lerRelatorio(buf) {
   let wb;
-  try { wb = XLSX.read(buf, { type: 'buffer' }); } catch { throw erro('Não consegui ler o arquivo. Envie o .xlsx de "Exportar Pedidos" do Agilizone.'); }
-  const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { raw: false, defval: '' });
+  try { wb = XLSX.read(buf, { type: 'buffer', cellDates: true }); } catch { throw erro('Não consegui ler o arquivo. Envie o .xlsx de "Exportar Pedidos" do Agilizone.'); }
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  // Se o Agilizone mandar datas como célula de data (e não texto), formata igual ao texto: dd/mm/aaaa hh:mm:ss.
+  for (const k in ws) if (k[0] !== '!' && ws[k].t === 'd') { ws[k].z = 'dd/mm/yyyy hh:mm:ss'; delete ws[k].w; }
+  const rows = XLSX.utils.sheet_to_json(ws, { raw: false, defval: '' });
   const cols = ['Número', 'Loja', 'Entregador', 'Taxa do Entregador', 'Data e Hora Início de Preparo'];
   if (!rows.length || cols.some((c) => !(c in rows[0])))
     throw erro('Este arquivo não parece o "Relatório de Pedidos" do Agilizone (faltam colunas como "Taxa do Entregador").');
 
   const lojas = new Set();
   const pedidos = rows.map((r) => {
-    const inicio = String(r['Data e Hora Início de Preparo']).trim();
+    const inicio = String(r['Data e Hora Início de Preparo']).trim(), fim = String(r['Data e Hora Finalizado'] ?? '').trim();
     const dia = diaOperacional(inicio) || diaOperacional(r['Data e Hora Finalizado']);
     if (!dia) throw erro(`Pedido ${r['Número']} sem data válida.`);
     const taxa = centavos(r['Taxa do Entregador']);
@@ -40,7 +52,8 @@ function lerRelatorio(buf) {
     lojas.add(String(r['Loja']).trim());
     return {
       numero: String(r['Número']).trim(),
-      chave: `${String(r['Número']).trim()}|${inicio}`,
+      // Número reinicia todo dia: a chave junta com a hora de início (ou de finalização, se faltar).
+      chave: `${String(r['Número']).trim()}|${diaOperacional(inicio) ? inicio : `fim ${fim}`}`,
       dia,
       entregador: ent && ent !== '—' && ent !== '-' ? ent : null,
       taxa,
@@ -73,4 +86,4 @@ function lerResumo(buf) {
   return rows;
 }
 
-module.exports = { lerRelatorio, lerResumo, diaOperacional, centavos };
+module.exports = { lerRelatorio, lerResumo, diaOperacional, centavos, valorDigitado };

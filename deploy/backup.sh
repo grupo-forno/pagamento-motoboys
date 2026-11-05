@@ -1,6 +1,7 @@
 #!/bin/sh
 # Backup diário do banco (cópia consistente com o sistema rodando) e das evidências. Guarda 30 dias.
 set -e
+umask 077  # backups têm dados pessoais e a senha do e-mail: só root lê
 DATA=${DATA_DIR:-/opt/motoboys/data}
 DEST=${BACKUP_DIR:-/var/backups/motoboys}
 DIA=$(date +%F)

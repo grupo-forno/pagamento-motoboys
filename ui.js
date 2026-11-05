@@ -106,6 +106,8 @@ form.in{display:inline}
 .badge.enviado,.badge.info{background:var(--info-soft);color:var(--info);border-color:var(--info-bd)}
 .badge.pago,.badge.ok{background:var(--ok-soft);color:var(--ok);border-color:var(--ok-bd)}
 .badge.bad{background:var(--bad-soft);color:var(--bad);border-color:var(--bad-bd)}a.badge:hover{filter:brightness(.96)}
+button.badge{cursor:pointer;font:inherit;font-size:12px;font-weight:600}button.badge[aria-expanded=true] .ico:last-child{transform:rotate(90deg)}tr.det>td{background:#fffbeb;white-space:normal;padding:0}.grade tr.det>td:first-child{position:static;box-shadow:inset 4px 0 0 #f59e0b}
+.busca-sel{margin-bottom:6px;height:36px!important}a.nome{color:inherit;text-decoration:none}a.nome:hover b{color:var(--pri);text-decoration:underline}
 .alert{display:flex;gap:12px;padding:14px 16px;border-radius:var(--r);border:1px solid var(--info-bd);background:var(--info-soft);color:#1e3a8a;margin-bottom:16px;font-size:14px}
 .alert>.ico{margin-top:1px}.alert>div>b:first-child{display:block;font-size:15px}
 .alert.ok{background:var(--ok-soft);border-color:var(--ok-bd);color:#14532d}.alert.warn{background:var(--warn-soft);border-color:var(--warn-bd);color:#78350f}.alert.bad{background:var(--bad-soft);border-color:var(--bad-bd);color:#7f1d1d}
@@ -203,6 +205,12 @@ document.querySelectorAll('form').forEach(function(f){f.addEventListener('submit
 document.addEventListener('click',function(e){var b=e.target.closest('[data-copiar]');if(!b)return;e.preventDefault();
 navigator.clipboard.writeText(b.dataset.copiar).then(function(){var t=b.title;b.title='Copiado!';b.classList.add('ok-t');setTimeout(function(){b.title=t;b.classList.remove('ok-t')},1500)})});
 document.querySelectorAll('[data-div-filtro]').forEach(function(seg){seg.addEventListener('click',function(e){var b=e.target.closest('button[data-f]');if(!b)return;
-seg.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b);x.setAttribute('aria-pressed',x===b)});document.querySelector(seg.dataset.divFiltro).dataset.f=b.dataset.f})});`;
+seg.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b);x.setAttribute('aria-pressed',x===b)});document.querySelector(seg.dataset.divFiltro).dataset.f=b.dataset.f})});
+document.addEventListener('click',function(e){var b=e.target.closest('[data-abre]');if(!b)return;var r=document.querySelector('tr[data-det="'+b.dataset.abre+'"]');if(!r)return;r.hidden=!r.hidden;b.setAttribute('aria-expanded',!r.hidden)});
+document.querySelectorAll('[data-todos]').forEach(function(t){t.addEventListener('change',function(){document.querySelectorAll('input[name=m][form='+t.dataset.todos+']').forEach(function(c){c.checked=t.checked})})});
+document.querySelectorAll('select[data-busca]').forEach(function(s){var n=function(t){return t.normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase()};
+var i=document.createElement('input');i.type='search';i.placeholder='Buscar motoboy por nome…';i.className='busca-sel';i.setAttribute('aria-label','Buscar motoboy por nome');s.parentNode.insertBefore(i,s);
+i.addEventListener('input',function(){var q=n(i.value.trim()),vis=[];[].forEach.call(s.options,function(o){var fixa=!o.value||o.value==='novo',ok=fixa||!q||n(o.text).indexOf(q)>=0;o.hidden=!ok;o.disabled=!ok;if(ok&&!fixa)vis.push(o)});
+if(q&&vis.length===1)s.value=vis[0].value;else if(s.selectedOptions[0]&&s.selectedOptions[0].disabled)s.value=''})});`;
 
 module.exports = { Raw, html, esc, icone, iniciais, semAcento, CSS, JS };

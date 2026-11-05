@@ -51,7 +51,7 @@ function gerarPdf(f, g, ajustes) {
       if (doc.y > FIM - 40) doc.addPage();
       doc.moveDown(0.4).font('Helvetica-Bold').fontSize(9).text(
         `${a.motoboy} · ${diaFmt(a.dia)} — Agilizone ${brl(a.agil)}` +
-        `${a.valor_informado == null ? '' : ` · motoboy informou ${brl(a.valor_informado)}`} · pago ${brl(a.valor_final)} (${a.valor_final - a.agil >= 0 ? '+' : ''}${brl(a.valor_final - a.agil)})`, L);
+        `${a.valor_informado == null ? '' : ` · motoboy informou ${brl(a.valor_informado)}`} · a pagar ${brl(a.valor_final)} (${a.valor_final - a.agil >= 0 ? '+' : ''}${brl(a.valor_final - a.agil)})`, L);
       doc.font('Helvetica').text(`${a.justificativa}${a.evidencias ? `  [${a.evidencias} evidência(s) no sistema]` : ''}  — ${a.autor || ''}`, { width: W });
     }
     doc.end();
@@ -61,7 +61,7 @@ function gerarPdf(f, g, ajustes) {
 // Configuração de e-mail: tela "Configurações" (tabela config), com as variáveis de ambiente como reserva.
 const ENV = { smtp_host: 'SMTP_HOST', smtp_port: 'SMTP_PORT', smtp_user: 'SMTP_USER', smtp_pass: 'SMTP_PASS', smtp_from: 'SMTP_FROM', app_url: 'APP_URL', email_para: 'EMAIL_PARA', email_copia: 'EMAIL_COPIA' };
 const cfg = (k) => db.prepare('SELECT valor FROM config WHERE chave = ?').get(k)?.valor ?? process.env[ENV[k]] ?? '';
-const listaEmails = (txt) => String(txt || '').split(/[s,;]+/).map((e) => e.trim()).filter(Boolean);
+const listaEmails = (txt) => String(txt || '').split(/[\s,;]+/).map((e) => e.trim()).filter(Boolean);
 
 // Envia; sem servidor configurado, grava o .eml em data/emails e avisa (não lança erro).
 // Retorna { enviado: true } ou { salvo: caminho }. Erros do servidor de e-mail são lançados.

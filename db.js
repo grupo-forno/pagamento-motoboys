@@ -57,10 +57,20 @@ CREATE TABLE IF NOT EXISTS ajustes (
 CREATE TABLE IF NOT EXISTS evidencias (
   id INTEGER PRIMARY KEY, ajuste_id INTEGER NOT NULL REFERENCES ajustes ON DELETE CASCADE,
   arquivo TEXT NOT NULL, nome TEXT NOT NULL, tipo TEXT);
-CREATE TABLE IF NOT EXISTS pagamentos (
-  fechamento_id INTEGER NOT NULL REFERENCES fechamentos ON DELETE CASCADE, motoboy_id INTEGER NOT NULL,
-  valor INTEGER NOT NULL, pix TEXT, pago_por INTEGER, pago_em TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+-- PIX de cada motoboy congelado no envio ao financeiro (o PDF enviado e a tela mostram o mesmo)
+CREATE TABLE IF NOT EXISTS envio_pix (
+  fechamento_id INTEGER NOT NULL REFERENCES fechamentos ON DELETE CASCADE, motoboy_id INTEGER NOT NULL, pix TEXT,
   PRIMARY KEY (fechamento_id, motoboy_id));
+-- diferença com o Resumo aceita conscientemente pelo despachante (vale só para aquele valor de diferença)
+CREATE TABLE IF NOT EXISTS aceites (
+  fechamento_id INTEGER NOT NULL REFERENCES fechamentos ON DELETE CASCADE, motoboy_id INTEGER NOT NULL,
+  diferenca INTEGER NOT NULL, justificativa TEXT NOT NULL, criado_por INTEGER,
+  criado_em TEXT NOT NULL DEFAULT (datetime('now','localtime')), PRIMARY KEY (fechamento_id, motoboy_id));
+-- aprovação do financeiro por motoboy (todos com valor aprovados → fechamento 'pago' = Aprovado)
+CREATE TABLE IF NOT EXISTS aprovacoes (fechamento_id INTEGER NOT NULL REFERENCES fechamentos ON DELETE CASCADE, motoboy_id INTEGER NOT NULL,
+  aprovado_por INTEGER, aprovado_em TEXT NOT NULL DEFAULT (datetime('now','localtime')), PRIMARY KEY (fechamento_id, motoboy_id));
+-- alertas por e-mail já disparados (um por chave), para não repetir
+CREATE TABLE IF NOT EXISTS alertas (chave TEXT PRIMARY KEY, enviado_em TEXT NOT NULL DEFAULT (datetime('now','localtime')), resultado TEXT);
 -- "Resumo de entregas por entregador" do Agilizone: total confiável por entregador no período
 CREATE TABLE IF NOT EXISTS resumo (
   fechamento_id INTEGER NOT NULL REFERENCES fechamentos ON DELETE CASCADE, entregador TEXT NOT NULL,
@@ -68,22 +78,22 @@ CREATE TABLE IF NOT EXISTS resumo (
   PRIMARY KEY (fechamento_id, entregador));
 -- configurações editáveis pela TI (e-mail, destinatários...)
 CREATE TABLE IF NOT EXISTS config (chave TEXT PRIMARY KEY, valor TEXT);
--- valor que o próprio motoboy informou no sistema; o despachante resolve com um ajuste
-CREATE TABLE IF NOT EXISTS reclamacoes (
-  id INTEGER PRIMARY KEY, fechamento_id INTEGER NOT NULL REFERENCES fechamentos ON DELETE CASCADE,
-  motoboy_id INTEGER NOT NULL REFERENCES motoboys, dia TEXT NOT NULL, valor INTEGER NOT NULL, obs TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'aberta' CHECK (status IN ('aberta','resolvida')),
-  criado_em TEXT NOT NULL DEFAULT (datetime('now','localtime')), UNIQUE (fechamento_id, motoboy_id, dia));
 CREATE TABLE IF NOT EXISTS log (
   id INTEGER PRIMARY KEY, quando TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   usuario_id INTEGER, ref TEXT, acao TEXT NOT NULL);
 `);
 
 // Colunas adicionadas depois da tabela existir em bancos já em uso.
-if (!db.prepare("SELECT 1 FROM pragma_table_info('resumo') WHERE name = 'pago'").get()) db.exec('ALTER TABLE resumo ADD COLUMN pago INTEGER NOT NULL DEFAULT 0');
+const temColuna = (t, c) => !!db.prepare(`SELECT 1 FROM pragma_table_info('${t}') WHERE name = ?`).get(c);
+if (!temColuna('resumo', 'pago')) db.exec('ALTER TABLE resumo ADD COLUMN pago INTEGER NOT NULL DEFAULT 0');
+if (!temColuna('lojas', 'calendario')) db.exec('ALTER TABLE lojas ADD COLUMN calendario TEXT'); // dias de pagamento (agenda.js)
+if (!temColuna('fechamentos', 'pagamento')) db.exec('ALTER TABLE fechamentos ADD COLUMN pagamento TEXT'); // data do pagamento a que se refere
 
 for (const nome of ['FORNO PAULISTA DIRCEU', 'FORNO PAULISTA DOM SEVERINO ATIVA', 'FORNO PAULISTA SUL', 'Forno Paulista Centro de Distribuição Leste'])
   db.prepare('INSERT OR IGNORE INTO lojas (nome) VALUES (?)').run(nome);
+// Calendário inicial: DIRCEU paga seg/qua/sex; as demais seg/sex (editável em Configurações).
+const { PADRAO, PADRAO_DIRCEU } = require('./agenda');
+db.prepare("UPDATE lojas SET calendario = CASE WHEN nome LIKE '%DIRCEU%' THEN ? ELSE ? END WHERE calendario IS NULL").run(PADRAO_DIRCEU, PADRAO);
 
 function hashSenha(senha) {
   const sal = crypto.randomBytes(16).toString('hex');

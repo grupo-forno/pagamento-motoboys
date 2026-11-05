@@ -10,7 +10,7 @@ Environment=PORT=3000
 Environment=HOST=127.0.0.1
 Environment=DATA_DIR=/opt/motoboys/data
 Environment=COOKIE_SECURE=1
-# E-mail (APP_URL, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM) em arquivo separado, só root lê:
+# Opcional: variáveis extras (ex.: TZ_ALERTAS). E-mail e alertas se configuram na tela Configurações.
 EnvironmentFile=-/etc/motoboys.env
 ExecStart=/usr/bin/node server.js
 Restart=always

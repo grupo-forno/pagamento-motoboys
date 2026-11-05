@@ -1,7 +1,31 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const XLSX = require('xlsx');
-const { lerRelatorio, lerResumo, diaOperacional, centavos } = require('./importar');
+const { lerRelatorio, lerResumo, diaOperacional, centavos, valorDigitado } = require('./importar');
+
+test('valor digitado: só formato brasileiro', () => {
+  for (const [v, c] of [['152', 15200], ['152,50', 15250], ['12,5', 1250], ['1.500', 150000], ['1.500,00', 150000], ['R$ 1.234,56', 123456], [' 10 ', 1000], ['0', 0]])
+    assert.equal(valorDigitado(v), c, v);
+  for (const v of ['', '   ', '-5', 'abc', '1e3', '0x10', '12.5', '1.5', '10,999', '1,234.50', '999999999'])
+    assert.ok(Number.isNaN(valorDigitado(v)), v);
+});
+
+test('datas como célula de data do Excel', () => {
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([['Número', 'Status', 'Loja', 'Data e Hora Início de Preparo', 'Entregador', 'Taxa do Entregador'],
+    ['0313', 'Finalizado', 'L', new Date(2026, 10, 2, 22, 58, 14), 'Ana', 6]], { cellDates: true });
+  XLSX.utils.book_append_sheet(wb, ws, 'R');
+  const r = lerRelatorio(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', cellDates: true }));
+  assert.equal(r.pedidos[0].dia, '2026-11-02');
+});
+
+test('chave do pedido usa a finalização quando falta o início', () => {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Número', 'Loja', 'Data e Hora Início de Preparo', 'Data e Hora Finalizado', 'Entregador', 'Taxa do Entregador'],
+    ['0001', 'L', '—', '02/11/2026 20:00:00', 'Ana', '6'], ['0001', 'L', '—', '03/11/2026 20:00:00', 'Ana', '6']]), 'R');
+  const r = lerRelatorio(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }));
+  assert.notEqual(r.pedidos[0].chave, r.pedidos[1].chave);
+});
 
 test('lê resumo de entregadores (CSV do Agilizone)', () => {
   const csv = 'Entregador;Pedidos;CPF;Chave Pix;Data de Nascimento;Soma das taxas de entrega;Pago;Saldo a pagar\n' +

@@ -41,3 +41,19 @@
 @media(max-width:520px){.envio-fim .btn-lg{width:100%}}
 
 .anexos{display:grid;gap:8px}.anexos-t{margin:0 0 4px;font-size:13px;font-weight:700;color:var(--tx-2)}
+
+/* Resumo em faixa horizontal e barra de envio sempre visível */
+.envio-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr)) minmax(0,1.3fr);gap:0;margin:0 0 24px;background:var(--surface);border:1px solid var(--bd);border-radius:var(--r);overflow:hidden}
+.envio-strip>div{padding:16px 20px;border-right:1px solid var(--bd)}
+.envio-strip dt{font-size:13px;color:var(--tx-2);margin-bottom:2px}
+.envio-strip dd{margin:0;font-size:18px;font-weight:700;color:var(--tx);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.envio-strip .envio-total{background:var(--pri-soft);border-right:0}
+.envio-strip .envio-total dd{font-size:26px;color:var(--pri);letter-spacing:-.01em}
+@media(max-width:1000px){.envio-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.envio-strip>div{border-bottom:1px solid var(--bd)}.envio-strip .envio-total{grid-column:1/-1;border-bottom:0}}
+.envio-grid{margin-bottom:16px}
+@media(min-width:960px){.envio-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
+.envio-nota{display:flex;gap:8px;align-items:flex-start;margin:0 0 16px}
+.envio-barra{margin-top:8px}
+.envio-barra .barra-in{justify-content:flex-end}
+.envio-barra .btn-lg{min-width:260px}
+@media(max-width:640px){.envio-barra .barra-in>div{flex:1 1 100%}.envio-barra .btn{flex:1 1 0;min-width:0}}

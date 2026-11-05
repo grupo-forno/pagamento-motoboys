@@ -41,6 +41,7 @@ const SOL = `<svg viewBox="0 0 44 26" aria-hidden="true" width="34" height="20">
 
 // ---------- Layout ----------
 // o: { titulo, sub, trilha: [['Fechamentos', '/'], ['Loja']], acoes }
+const nomeArq = (n) => { n = String(n || ''); return /[^\u0000-\u00ff]/.test(n) || !/[ÃÂ]/.test(n) ? n : Buffer.from(n, 'latin1').toString('utf8'); };
 const versao = (u) => { try { return Math.trunc(fs.statSync(path.join(__dirname, 'public', u.replace('/marca/', ''))).mtimeMs); } catch { return 0; } };
 function page(req, o, corpo) {
   if (typeof o === 'string') o = { titulo: o };
@@ -440,9 +441,8 @@ function blocoConferencia(o) {
     return html`<tr class="${temAj(i) ? 'tem-oc' : ''}" data-id="${i.id}" data-q="${semAcento(i.nome)}" data-sit="${grupoDe(i)}" data-base="${i.bruto}" data-aj="${aj}" data-valor="${i.total}" ${i.bloq ? new Raw('data-bloq="1"') : ''}>
 ${decide ? html`<td class="c-sel">${pode ? html`<label class="alvo"><input type="checkbox" name="m" value="${i.id}" aria-label="Selecionar ${i.nome}, ${brl(i.total)}"></label>` : ''}</td>` : ''}
 <th scope="row" class="c-nome"><button type="button" class="nm" data-det="${i.id}" title="Ver detalhes de ${i.nome}"><span>${i.nome}</span></button>
-${i.pix ? html`<div class="pix-sub so-medio"><span class="rot-pix">PIX</span><span>${i.pix}</span><button type="button" class="icon-btn" data-copiar="${i.pix}" title="Copiar chave PIX" aria-label="Copiar chave PIX de ${i.nome}">${icone('copiar', 'sm')}</button></div>` : ''}
-<div class="meta"><span class="badge ${cor} so-estreito">${txt}</span>${!i.pix && sitDe(i)[1] !== 'Falta chave PIX' ? html`<span class="badge bad so-medio">Sem PIX</span>` : ''}${temAj(i) ? html`<span class="badge warn nodot so-estreito">${icone('alerta', 'sm')} Ajuste ${aj > 0 ? '+' : ''}${brl(aj)}</span>` : ''}${d ? html`<span class="badge bad nodot" title="Soma dos dias diferente da soma das taxas do Resumo">${icone('alerta', 'sm')} Difere do Resumo ${d > 0 ? '+' : ''}${brl(d)}</span>` : ''}${i.avisoPix ? html`<span class="badge warn nodot" title="${i.avisoPix}">${i.avisoPix.startsWith('Mesma') ? 'PIX repetido' : 'PIX fora do padrão'}</span>` : ''}</div></th>
-<td class="c-pix">${i.pix ? html`<span class="pix">${i.pix}<button type="button" class="icon-btn" data-copiar="${i.pix}" title="Copiar chave PIX" aria-label="Copiar chave PIX de ${i.nome}">${icone('copiar', 'sm')}</button></span>` : html`<span class="badge bad">Sem chave PIX</span>`}</td>
+${i.pix ? html`<div class="pix-sub"><span class="rot-pix">PIX</span><span>${i.pix}</span><button type="button" class="icon-btn" data-copiar="${i.pix}" title="Copiar chave PIX" aria-label="Copiar chave PIX de ${i.nome}">${icone('copiar', 'sm')}</button></div>` : ''}
+<div class="meta"><span class="badge ${cor} so-estreito">${txt}</span>${!i.pix && sitDe(i)[1] !== 'Falta chave PIX' ? html`<span class="badge bad">Sem PIX</span>` : ''}${temAj(i) ? html`<span class="badge warn nodot so-estreito">${icone('alerta', 'sm')} Ajuste ${aj > 0 ? '+' : ''}${brl(aj)}</span>` : ''}${d ? html`<span class="badge bad nodot" title="Soma dos dias diferente da soma das taxas do Resumo">${icone('alerta', 'sm')} Difere do Resumo ${d > 0 ? '+' : ''}${brl(d)}</span>` : ''}${i.avisoPix ? html`<span class="badge warn nodot" title="${i.avisoPix}">${i.avisoPix.startsWith('Mesma') ? 'PIX repetido' : 'PIX fora do padrão'}</span>` : ''}</div></th>
 <td class="n c-base">${brl(i.bruto)}</td>
 <td class="n c-aj">${temAj(i) ? html`<b class="${aj < 0 ? 'bad-t' : ''}">${aj > 0 ? '+' : ''}${brl(aj)}</b><small>${[i.oc || i.qtdOc ? `${i.qtdOc} ocorrência(s)` : '', i.pago ? `já pago ${brl(i.pago)}` : ''].filter(Boolean).join(' · ')}</small>` : html`<span class="mut">–<span class="sr">sem ajustes</span></span>`}</td>
 <td class="n c-tot"><b>${brl(i.total)}</b></td>
@@ -460,18 +460,18 @@ ${g.dias.map((d, k) => { const c = i.dias[d]; return html`<td class="n dcol" dat
 <button type="button" role="tab" id="t-hist" aria-controls="hist" aria-selected="false" tabindex="-1">Histórico <span class="c">${modo === 'desp' ? hist.length : decisoes.length}</span></button></div>
 <div class="fc-bar" role="search" aria-label="Buscar e filtrar entregadores">
 <div class="search">${icone('busca', 'sm')}<input type="search" id="fc-q" placeholder="Buscar entregador" aria-label="Buscar entregador" autocomplete="off"></div>
-<button type="button" class="btn btn-sec fc-filtros" id="fc-filtros-btn" aria-expanded="false" aria-controls="fc-seg">${icone('ajustes', 'sm')} Filtros <span class="c" data-fc-nfiltros>0</span></button>
-<div class="seg fc-seg" id="fc-seg" role="group" aria-label="Mostrar por situação">${filtro.filter(([k, , n]) => k === 'todos' || n).map(([k, t, n]) => html`<button type="button" data-f="${k}" class="${k === 'todos' ? 'on' : ''}" aria-pressed="${k === 'todos'}">${t}<span class="c">${n}</span></button>`)}</div>
+<button type="button" class="btn btn-sec fc-filtros" id="fc-filtros-btn" aria-expanded="false" aria-controls="fc-seg" ${new Raw(filtro.filter(([k, , n]) => k === 'todos' || (n && n < itens.length)).length < 2 ? 'data-sem-filtros' : '')}>${icone('ajustes', 'sm')} Filtros <span class="c" data-fc-nfiltros>0</span></button>
+<div class="seg fc-seg" id="fc-seg" role="group" aria-label="Mostrar por situação" ${new Raw(filtro.filter(([k, , n]) => k === 'todos' || (n && n < itens.length)).length < 2 ? 'hidden' : '')}><span class="fc-seg-rot">Mostrar:</span>${filtro.filter(([k, , n]) => k === 'todos' || (n && n < itens.length)).map(([k, t, n]) => html`<button type="button" data-f="${k}" class="${k === 'todos' ? 'on' : ''}" aria-pressed="${k === 'todos'}">${t}<span class="c">${n}</span></button>`)}</div>
 ${decide ? html`<label class="sel-todos"><input type="checkbox" id="sel-todos"> Selecionar todos os visíveis</label>` : ''}</div>
 <form id="dec" method="post" action="/fechamentos/${f.id}/aprovar" data-aprovar="/fechamentos/${f.id}/aprovar" data-devolver="/fechamentos/${f.id}/devolver">
 <input type="hidden" name="versao" value="${f.versao}"><input type="hidden" name="volta" value="${voltar}"><input type="hidden" name="uma" value="">
 <section class="card painel" id="conf" role="tabpanel" aria-labelledby="t-conf">
 <div class="tw fc-tw"><table class="fc-t ${decide ? 'com-sel' : ''}" id="fc-resumo"><caption class="sr">Resumo por entregador</caption>
-<thead><tr>${decide ? html`<th scope="col" class="c-sel"><span class="sr">Selecionar</span></th>` : ''}<th scope="col" class="c-nome">Entregador</th><th scope="col" class="c-pix">PIX</th><th scope="col" class="n c-base">Valor base</th><th scope="col" class="n c-aj" title="Ocorrências do Agilizone (acréscimo ou desconto, sem data) e valor já pago no Agilizone">Ajustes</th><th scope="col" class="n c-tot">Total do fechamento</th><th scope="col" class="c-sit">Situação</th>${decide || edita ? html`<th scope="col" class="n c-acoes">Ações</th>` : ''}</tr></thead>
+<thead><tr>${decide ? html`<th scope="col" class="c-sel"><span class="sr">Selecionar</span></th>` : ''}<th scope="col" class="c-nome">Entregador</th><th scope="col" class="n c-base">Valor base</th><th scope="col" class="n c-aj" title="Ocorrências do Agilizone (acréscimo ou desconto, sem data) e valor já pago no Agilizone">Ajustes</th><th scope="col" class="n c-tot">Total do fechamento</th><th scope="col" class="c-sit">Situação</th>${decide || edita ? html`<th scope="col" class="n c-acoes">Ações</th>` : ''}</tr></thead>
 <tbody>${itens.map(linhaResumo)}</tbody>
-<tfoot><tr class="tot">${decide ? html`<td class="c-sel"></td>` : ''}<th scope="row" class="c-nome"><span data-esc>Total do fechamento</span><small data-esc-n></small></th><td class="c-pix"></td><td class="n c-base" data-t="base">${brl(g.linhas.reduce((t, l) => t + l.bruto, 0))}</td><td class="n c-aj" data-t="aj">${brl(g.totOc - g.totPago)}</td><td class="n c-tot" data-t="tot">${brl(g.total)}</td><td class="c-sit"></td>${decide || edita ? html`<td class="c-acoes"></td>` : ''}</tr></tfoot></table></div>
+<tfoot><tr class="tot">${decide ? html`<td class="c-sel"></td>` : ''}<th scope="row" class="c-nome"><span data-esc>Total do fechamento</span><small data-esc-n></small></th><td class="n c-base" data-t="base">${brl(g.linhas.reduce((t, l) => t + l.bruto, 0))}</td><td class="n c-aj" data-t="aj">${brl(g.totOc - g.totPago)}</td><td class="n c-tot" data-t="tot">${brl(g.total)}</td><td class="c-sit"></td>${decide || edita ? html`<td class="c-acoes"></td>` : ''}</tr></tfoot></table></div>
 <p class="fc-vazio" data-vazio hidden>Nenhum entregador com esta busca ou filtro. <button type="button" class="btn btn-sec btn-sm" data-limpar-filtros>Limpar busca e filtros</button></p>
-<p class="fin-legenda">Valor base: Relatório de Pedidos do Agilizone. Ajustes: ocorrências do Agilizone (acréscimo ou desconto, sem data) e o que já foi pago lá; já estão no total. "Difere do Resumo": a soma dos dias não bate com o Resumo de entregas do Agilizone.${decide ? ' "Selecionar todos os visíveis" marca só as linhas que a busca e o filtro mostram.' : ''}</p>
+<details class="fin-legenda"><summary>Como ler esta tabela</summary><p>Valor base: Relatório de Pedidos do Agilizone. Ajustes: ocorrências do Agilizone (acréscimo ou desconto, sem data) e o que já foi pago lá; já estão no total. "Difere do Resumo": a soma dos dias não bate com o Resumo de entregas do Agilizone.${decide ? ' "Selecionar todos os visíveis" marca só as linhas que a busca e o filtro mostram.' : ''}</p></details>
 ${decide ? html`<div class="barra" role="region" aria-label="Decisão sobre os selecionados"><div class="barra-in">
 <div><span class="mut small" data-sel-n aria-live="polite">Nenhum entregador selecionado</span><b data-sel-v>${brl(0)}</b></div>
 <span class="small bad-t" data-sel-bloq hidden></span>
@@ -491,7 +491,7 @@ ${decide ? html`<div class="barra" role="region" aria-label="Decisão sobre os s
 <tbody>${itens.map(linhaDia)}</tbody>
 <tfoot><tr class="tot"><th scope="row" class="c-nome"><span data-esc>Total do intervalo</span><small data-esc-n></small></th>${g.dias.map((d, k) => html`<td class="n dcol" data-d="${d}" data-sem="${Math.floor(k / 7)}" data-tdia="${d}">${brl(g.totDia[d])}</td>`)}<td class="n c-int" data-tint>${brl(0)}</td></tr></tfoot></table></div>
 <p class="fc-vazio" data-vazio hidden>Nenhum entregador com esta busca ou filtro. <button type="button" class="btn btn-sec btn-sm" data-limpar-filtros>Limpar busca e filtros</button></p>
-<p class="fin-legenda">Valores do Relatório de Pedidos do Agilizone (taxa do entregador) por dia. Ajustes (ocorrências e já pago) não têm data: aparecem só no Resumo, por isso o total do intervalo não inclui ajustes.</p>
+<details class="fin-legenda"><summary>Como ler esta tabela</summary><p>Valores do Relatório de Pedidos do Agilizone (taxa do entregador) por dia. Ajustes (ocorrências e já pago) não têm data: aparecem só no Resumo, por isso o total do intervalo não inclui ajustes.</p></details>
 </section></form>
 <section class="card painel" id="hist" role="tabpanel" aria-labelledby="t-hist" hidden>
 ${decisoes.length ? html`<div class="tw"><table><caption class="sr">Decisões do financeiro</caption><thead><tr><th scope="col">Quando</th><th scope="col">Decisão</th><th scope="col">Entregador</th><th scope="col" class="n">Valor</th><th scope="col">PIX considerado</th><th scope="col" class="n">Versão</th><th scope="col">Responsável</th></tr></thead><tbody>
@@ -500,6 +500,7 @@ ${decisoes.map((d) => html`<tr><td>${quando(d.quando)}</td><td><span class="badg
     : html`<p class="vazio-p">Nenhuma decisão registrada ainda.</p>`}
 <div class="card-b"><h3 class="sec-t">Linha do tempo</h3><ul class="timeline">${hist.map((h) => html`<li>${h.acao}<small>${quando(h.quando)} · ${h.nome || 'Sistema'}</small></li>`)}</ul></div></section></div>
 <script type="application/json" id="fc-dados">${json}</script>
+<details class="fold fc-mais"><summary>Dados do envio</summary><dl class="fc-mais-dl"><div><dt>Enviado por</dt><dd>${f.enviou || f.autor || '—'}</dd></div><div><dt>Enviado em</dt><dd>${f.enviado_em ? quando(f.enviado_em) : '—'}</dd></div><div><dt>Versão</dt><dd>${f.versao}</dd></div><div><dt>Arquivo importado</dt><dd>${nomeArq(f.arquivo) || '—'}</dd></div></dl></details>
 <dialog id="dlg-det" class="dlg sheet" aria-labelledby="det-t"><div class="sheet-h"><div><h2 id="det-t"></h2><span class="badge" id="det-sit"></span></div><button type="button" class="icon-btn alvo-ic" data-det-fecha aria-label="Fechar detalhe">${icone('erro')}</button></div>
 <div class="sheet-b" id="det-corpo"></div><div class="sheet-f" id="det-acoes"></div></dialog>`;
 }
@@ -527,7 +528,7 @@ function conferenciaFin(req, res) {
     : alterados.length ? html`<div class="alert warn">${icone('alerta')}<div><b>${alterados.length} entregador(es) mudaram depois de aprovados</b>${nomes(alterados)} voltaram para análise. Confira os novos valores e PIX.</div></div>` : '';
   res.send(page(req, {
     titulo: `Fechamento #${f.id}`, selo: seloFin({ ...f, nAprov }), largura: 'larga', css: '/marca/conferencia.css', js: '/marca/conferencia.js',
-    sub: html`<b>${f.loja}</b> · período ${periodo(f)}${f.pagamento ? html` · pagamento previsto <b>${diaLongo(f.pagamento)}</b>` : ''}<br><span class="mut">Enviado por ${f.enviou || f.autor}${f.enviado_em ? ` em ${quando(f.enviado_em)}` : ''} · versão ${f.versao}${f.arquivo ? ` · arquivo ${f.arquivo}` : ''}</span>`,
+    sub: html`<b>${f.loja}</b> · período ${periodo(f)}${f.pagamento ? html` · pagamento previsto <b>${diaLongo(f.pagamento)}</b>` : ''}`,
     trilha: [[u.perfil === 'financeiro' ? 'Fila do financeiro' : inicio(u), voltar], [`#${f.id} · ${lojaCurta(f.loja)}`]],
     acoes: html`<a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/pdf" target="_blank">${icone('arquivo', 'sm')} Baixar PDF</a><a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/xlsx">${icone('baixar', 'sm')} Baixar Excel</a>`,
   }, html`${aviso}${vinculo(f)}
@@ -669,7 +670,7 @@ function importarDia(req, res, arq) {
   const pagamento = AG.pagamentoDoDia(calendarioDa(l), dia);
   const fid = tx(() => {
     const fid = Number(db.prepare('INSERT INTO fechamentos (loja_id, data_ini, data_fim, criado_por, arquivo, pagamento, so_resumo) VALUES (?,?,?,?,?,?,1)')
-      .run(l.id, dia, dia, req.user.id, arq.originalname, pagamento).lastInsertRowid);
+      .run(l.id, dia, dia, req.user.id, nomeArq(arq.originalname), pagamento).lastInsertRowid);
     log(req.user.id, `f:${fid}`, `Importou o Resumo de ${dataFmt(dia)} (fechamento de 1 dia): ${resumo.length} entregadores`);
     gravaResumo({ id: fid }, resumo, req.user.id, arq.originalname);
     return fid;
@@ -710,7 +711,7 @@ function importar(req, res) {
 
   const fid = tx(() => {
     const fid = Number(db.prepare("INSERT INTO fechamentos (loja_id, data_ini, data_fim, criado_por, arquivo, pagamento) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(l.id, dias[0], dias[dias.length - 1], req.user.id, req.file.originalname, pagamento).lastInsertRowid);
+      .run(l.id, dias[0], dias[dias.length - 1], req.user.id, nomeArq(req.file.originalname), pagamento).lastInsertRowid);
     const ins = db.prepare(`INSERT INTO pedidos (fechamento_id, loja_id, chave, numero, dia, entregador, motoboy_id, taxa, status)
       VALUES (?,?,?,?,?,?,(SELECT motoboy_id FROM apelidos WHERE loja_id = ? AND nome = ?),?,?)`);
     const vistos = new Set();
@@ -719,7 +720,7 @@ function importar(req, res) {
       vistos.add(p.chave);
       ins.run(fid, l.id, p.chave, p.numero, p.dia, p.entregador, l.id, p.entregador, p.taxa, p.status);
     }
-    log(req.user.id, `f:${fid}`, `Importou ${req.file.originalname}: ${comMotoboy.length} pedidos com motoboy` + (semMotoboy ? `; ${semMotoboy} sem motoboy descartados` : ''));
+    log(req.user.id, `f:${fid}`, `Importou ${nomeArq(req.file.originalname)}: ${comMotoboy.length} pedidos com motoboy` + (semMotoboy ? `; ${semMotoboy} sem motoboy descartados` : ''));
     if (pagamento) log(req.user.id, `f:${fid}`, `Pagamento de ${diaLongo(pagamento)} (referente a ${ref.map(diaLongo).join(', ')})`);
     if (fora.length) log(req.user.id, `f:${fid}`, `Atenção: dias fora do período desse pagamento: ${fora.map(diaLongo).join(', ')}`);
     const f = { id: fid, loja_id: l.id, loja };
@@ -903,22 +904,21 @@ app.get('/fechamentos/:fid/enviar', so((r) => podeEditar(r.user, r.f) || podeRee
   res.send(page(req, { titulo, css: '/marca/envio.css', js: '/marca/envio.js', trilha: [[inicio(req.user), '/'], [periodo(f), `/fechamentos/${f.id}`], [titulo]],
     sub: reenvio ? 'O fechamento já foi enviado. Isto manda o e-mail com o PDF de novo.' : 'Confira o resumo e escolha quem recebe o e-mail com o PDF. Depois é só confirmar.' }, html`
 <form method="post" action="/fechamentos/${f.id}/${reenvio ? 'email' : 'enviar'}" id="form-envio" ${new Raw(conferir ? 'data-confirma="dlg-div"' : '')}>
-<div class="envio-grid">
-<section class="card envio-card" aria-labelledby="env-h1">
-<div class="card-h"><span class="hico pri">${icone('lista')}</span><div class="t"><h2 id="env-h1">1. O que será enviado</h2><p>${f.loja}</p></div></div>
-<div class="card-b">
-<dl class="envio-dl">
+<dl class="envio-strip" aria-label="Resumo do envio">
+<div><dt>Loja</dt><dd>${lojaCurta(f.loja)}</dd></div>
 <div><dt>Período</dt><dd>${dataFmt(f.data_ini).slice(0, 5)} a ${dataFmt(f.data_fim).slice(0, 5)}</dd></div>
 <div><dt>Pagamento previsto</dt><dd>${f.pagamento ? diaLongo(f.pagamento) : '—'}</dd></div>
 <div><dt>Motoboys a pagar</dt><dd>${aPagar.length}</dd></div>
-<div class="envio-total"><dt>Total</dt><dd>${brl(g.total)}</dd></div></dl>
+<div class="envio-total"><dt>Total a pagar</dt><dd>${brl(g.total)}</dd></div></dl>
 ${pend.length && !reenvio ? html`<div class="alert warn">${icone('alerta')}<div><b>${pend.length} motoboy(s) com diferença com o Resumo do Agilizone</b>${pend.map((l) => l.nome).join(', ')}. <a href="/fechamentos/${f.id}#conferencia">Revisar antes de enviar</a></div></div>` : ''}
-<div class="anexos"><p class="anexos-t">Anexos do e-mail (vão juntos, nesta ordem)</p>
+<div class="envio-grid">
+<section class="card envio-card" aria-labelledby="env-h1">
+<div class="card-h"><span class="hico pri">${icone('arquivo')}</span><div class="t"><h2 id="env-h1">1. O que vai anexado</h2><p>Os dois arquivos vão juntos no mesmo e-mail, nesta ordem.</p></div></div>
+<div class="card-b"><div class="anexos">
 <a class="anexo" href="/fechamentos/${f.id}/xlsx"><span class="hico">${icone('baixar')}</span><span class="anexo-t"><b>1. Planilha (Excel)</b><small>Valores por motoboy e por dia, ocorrências, chaves PIX e total.</small></span><span class="btn btn-sec btn-sm">Baixar Excel</span></a>
-<a class="anexo" href="/fechamentos/${f.id}/pdf" target="_blank" rel="noopener"><span class="hico">${icone('arquivo')}</span><span class="anexo-t"><b>2. Solicitação de pagamento (PDF)</b><small>Resumo, tabela por motoboy, chaves PIX e assinaturas.</small></span><span class="btn btn-sec btn-sm">Ver o PDF</span></a></div>
-</div></section>
+<a class="anexo" href="/fechamentos/${f.id}/pdf" target="_blank" rel="noopener"><span class="hico">${icone('arquivo')}</span><span class="anexo-t"><b>2. Solicitação de pagamento (PDF)</b><small>Resumo, tabela por motoboy, chaves PIX e assinaturas.</small></span><span class="btn btn-sec btn-sm">Ver o PDF</span></a></div></div></section>
 <section class="card envio-card" aria-labelledby="env-h2">
-<div class="card-h"><span class="hico pri">${icone('email')}</span><div class="t"><h2 id="env-h2">2. Para quem enviar</h2><p>Todos desta lista recebem o e-mail com o PDF. Vale só para este envio.</p></div></div>
+<div class="card-h"><span class="hico pri">${icone('email')}</span><div class="t"><h2 id="env-h2">2. Para quem enviar</h2><p>Todos desta lista recebem o e-mail. Vale só para este envio.</p></div></div>
 <div class="card-b">
 <label class="para-rot" for="para-novo">Destinatários <span class="req" aria-hidden="true">*</span> <span class="para-n" data-para-n></span></label>
 <div class="para-box" data-para>
@@ -933,9 +933,10 @@ ${pend.length && !reenvio ? html`<div class="alert warn">${icone('alerta')}<div>
 ${!reenvio && alterados.length ? html`<div class="alert warn">${icone('alerta')}<div><b>Entregadores já aprovados que mudaram</b>O financeiro vai precisar aprovar de novo:
 <ul>${alterados.map((l) => html`<li>${l.nome}: aprovado ${brl(l.aprovacao.valor)} (PIX ${l.aprovacao.pix}) → agora ${brl(l.total)} (PIX ${l.pix})</li>`)}</ul>
 <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" name="revisei" value="1" required> Revisei essas mudanças</label></div></div>` : ''}
-<div class="envio-fim">
-${reenvio ? '' : html`<p class="small mut">${icone('info', 'sm')} Depois de enviar, o fechamento fica travado para edição até o financeiro aprovar ou devolver. Entregadores já aprovados continuam aprovados.</p>`}
-<div class="acoes-f"><button class="btn btn-pri btn-lg" data-envio>${icone('enviar')} <span class="lbl" data-rotulo="${rotulo}">${rotulo}</span></button><a class="btn btn-ghost" href="/fechamentos/${f.id}">Voltar</a></div></div>
+${reenvio ? '' : html`<p class="small mut envio-nota">${icone('info', 'sm')} Depois de enviar, o fechamento fica travado para edição até o financeiro aprovar ou devolver. Entregadores já aprovados continuam aprovados.</p>`}
+<div class="barra envio-barra" role="region" aria-label="Enviar"><div class="barra-in"><div><span class="mut small">Total a pagar</span><b>${brl(g.total)}</b></div>
+<a class="btn btn-ghost" href="/fechamentos/${f.id}">Voltar</a>
+<button class="btn btn-pri btn-lg" data-envio>${icone('enviar')} <span class="lbl" data-rotulo="${rotulo}">${rotulo}</span></button></div></div>
 ${conferir ? html`<dialog id="dlg-div" class="dlg" aria-labelledby="dlg-t"><h2 id="dlg-t">Há diferença com o Resumo. Enviar mesmo assim?</h2>
 <ul class="dlg-l">${pend.map((l) => html`<li class="bad"><b>${l.nome}</b>: soma dos dias ${brl(l.bruto)} · Resumo ${brl(l.resumo)}</li>`)}</ul>
 <div class="acoes-f"><button type="submit" class="btn btn-pri" data-confirmado>Enviar mesmo assim</button><button type="button" class="btn btn-ghost" data-fecha-dlg>Voltar e corrigir</button></div></dialog>` : ''}

@@ -142,3 +142,38 @@ dl.det .total{font-weight:700;font-size:16px;padding-top:8px;border-top:1px soli
 .fc-t .c-aj{min-width:96px}
 body.larga .main .wrap{max-width:1600px}
 @media(prefers-reduced-motion:reduce){.fc *{transition:none!important}}
+
+/* Faixa de abas sem barra de rolagem, filtros como botões claros, tabela com colunas fixas e total em destaque */
+.fc .abas{overflow:visible}
+.fc-seg{border:0;gap:8px;flex-wrap:wrap;align-items:center;padding:0}
+.fc-seg-rot{font-size:13px;font-weight:600;color:var(--tx-2);margin-right:4px}
+.fc-seg button{border:1px solid var(--bd-2);border-radius:99px;padding:0 14px;height:36px;background:var(--surface);font-weight:600;color:var(--tx);display:inline-flex;align-items:center;gap:8px;border-bottom-width:1px}
+.fc-seg button .c{background:var(--surface-2);border-radius:99px;padding:0 8px;font-size:12px}
+.fc-seg button.on{background:var(--tx);border-color:var(--tx);color:#fff}
+.fc-seg button.on .c{background:rgba(255,255,255,.2);color:#fff}
+.fc-filtros[data-sem-filtros]{display:none!important}
+#fc-resumo{table-layout:fixed}
+#fc-resumo .c-sel{width:48px}
+#fc-resumo .c-nome{width:auto;min-width:0}
+#fc-resumo .c-base{width:108px}
+#fc-resumo .c-aj{width:116px;min-width:0}
+#fc-resumo .c-tot{width:128px}
+#fc-resumo .c-sit{width:156px;min-width:0}
+#fc-resumo .c-acoes{width:178px}
+.fc[data-w=curto] #fc-resumo .c-acoes{width:96px}
+.pix-sub{display:flex}
+#fc-resumo tfoot th,#fc-resumo tfoot td{background:var(--pri-soft);color:var(--tx);font-size:15px;border-top:2px solid var(--pri-bd);padding:16px 10px}
+#fc-resumo tfoot [data-esc]{font-size:16px;font-weight:800}
+#fc-resumo tfoot .c-tot{font-size:20px;font-weight:800;color:var(--pri)}
+#fc-dia tfoot th,#fc-dia tfoot td{background:var(--pri-soft);color:var(--tx);font-size:15px;border-top:2px solid var(--pri-bd)}
+.fin-legenda summary{cursor:pointer;font-weight:600;color:var(--tx-2)}
+.fin-legenda p{margin:8px 0 0}
+.fc-mais{margin-top:16px}
+.fc-mais-dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px 24px;margin:12px 0 0}
+.fc-mais-dl dt{font-size:12.5px;color:var(--tx-2)}
+.fc-mais-dl dd{margin:2px 0 0;font-weight:600;overflow-wrap:anywhere}
+.fc[data-w=estreito] #fc-resumo tfoot .c-tot{font-size:20px}
+.fc .fc-seg button{border:1px solid var(--bd-2);border-radius:99px;background:var(--surface);color:var(--tx)}
+.fc .fc-seg button.on{background:var(--tx);border-color:var(--tx);color:#fff}
+.fc .fc-seg button.on .c{background:rgba(255,255,255,.22);color:#fff}
+.fc .fc-seg button.on{background:var(--tx)!important;border-color:var(--tx)!important;color:#fff!important}

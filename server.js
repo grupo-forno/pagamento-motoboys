@@ -63,7 +63,6 @@ ${u ? html`<body class="${o.largura || ''}"><a class="pular" href="#conteudo">Pu
     : aba('/', 'lista', 'Fechamentos', emFech)}
 ${u.perfil === 'admin' ? html`${aba('/usuarios', 'escudo', 'Usuários', p.startsWith('/usuarios'))}${aba('/config', 'ajustes', 'Configurações', p.startsWith('/config'))}` : ''}</nav>
 <div class="side-user"><div class="who">${avatar(u.nome)}<div class="tx"><b>${u.nome}</b><small>${PERFIS[u.perfil]}${u.loja ? ` · ${lojaCurta(u.loja)}` : ''}</small></div></div>
-<a href="/senha" class="${p === '/senha' ? 'on' : ''}" title="Minha conta e senha">${icone('chave', 'sm')}<span class="tx">Minha conta e senha</span></a>
 <form method="post" action="/logout"><button title="Sair do sistema">${icone('sair', 'sm')}<span class="tx">Sair</span></button></form></div></aside>
 <div class="veu" data-fecha-menu aria-hidden="true"></div>
 <div class="main"><header class="top"><div class="top-in"><button type="button" class="icon-btn abre-menu" data-abre-menu aria-label="Abrir menu" aria-controls="menu-lateral">${icone('menu')}</button>
@@ -119,20 +118,6 @@ app.use((req, res, next) => {
   next();
 });
 app.post('/logout', (req, res) => { db.prepare('DELETE FROM sessoes WHERE token = ?').run(req.sid); res.clearCookie('sid'); res.redirect('/login'); });
-
-app.get('/senha', (req, res) => res.send(page(req, { titulo: 'Minha conta', largura: 'estreita', sub: `${req.user.nome} · login ${req.user.login}` }, html`
-<form method="post" class="card" style="max-width:460px"><div class="card-h"><span class="hico pri">${icone('chave')}</span><div class="t"><h2>Trocar senha</h2><p>Use pelo menos 8 caracteres.</p></div></div>
-<div class="card-b"><div class="field"><label for="atual">Senha atual</label><input id="atual" name="atual" type="password" required autocomplete="current-password"></div>
-<div class="field"><label for="nova">Nova senha</label><input id="nova" name="nova" type="password" minlength="8" required autocomplete="new-password"></div></div>
-<div class="card-f"><button class="btn btn-pri">Salvar nova senha</button><a class="btn btn-ghost" href="/">Cancelar</a></div></form>`)));
-app.post('/senha', (req, res) => {
-  const nova = String(req.body.nova || '');
-  if (!confereSenha(String(req.body.atual || ''), req.user.senha)) return volta(res, '/senha', 'erro', 'Senha atual incorreta.');
-  if (nova.length < 8) return volta(res, '/senha', 'erro', 'A nova senha precisa ter 8 caracteres ou mais.');
-  db.prepare('UPDATE usuarios SET senha = ? WHERE id = ?').run(hashSenha(nova), req.user.id);
-  db.prepare('DELETE FROM sessoes WHERE usuario_id = ? AND token <> ?').run(req.user.id, req.sid);
-  volta(res, '/', 'ok', 'Senha alterada.');
-});
 
 // ---------- Permissões ----------
 const veTudo = (u) => ['admin', 'gestao', 'financeiro'].includes(u.perfil);
@@ -1206,7 +1191,7 @@ ${us.map((u) => html`<details class="${u.ativo ? '' : 'inativo'}"><summary><div 
 <div><dt>TI / Admin</dt><dd>Tudo isso, mais usuários, lojas e configurações de e-mail.</dd></div></dl></section>
 <dialog id="dlg-novo" class="dlg" aria-labelledby="novo-t"><form method="post"><h2 id="novo-t">Novo usuário</h2>
 <div class="field"><label for="n-login">Login <span class="req">*</span></label><input id="n-login" name="login" required autocapitalize="none" autocomplete="off"></div>${campos({ perfil: 'despachante' }, 'n-')}
-<div class="field"><label for="n-senha">Senha inicial <span class="req">*</span></label><input id="n-senha" name="senha" type="password" minlength="8" required autocomplete="new-password"><p class="hint">Mínimo 8 caracteres. A pessoa pode trocar em "Minha conta".</p></div>
+<div class="field"><label for="n-senha">Senha inicial <span class="req">*</span></label><input id="n-senha" name="senha" type="password" minlength="8" required autocomplete="new-password"><p class="hint">Mínimo 8 caracteres. Só a TI altera senhas: se alguém esquecer, edite o cadastro aqui e informe a nova senha.</p></div>
 <div class="acoes-dlg"><button type="button" class="btn btn-ghost" data-fecha>Cancelar</button><button class="btn btn-pri">${icone('mais')} Criar usuário</button></div></form></dialog>`));
 });
 function dadosUsuario(b) {

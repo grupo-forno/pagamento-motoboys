@@ -39,3 +39,5 @@
 .envio-fim .small{display:flex;gap:8px;align-items:flex-start;color:var(--tx-2);margin:0}
 .envio-fim .acoes-f{margin-top:0}
 @media(max-width:520px){.envio-fim .btn-lg{width:100%}}
+
+.anexos{display:grid;gap:8px}.anexos-t{margin:0 0 4px;font-size:13px;font-weight:700;color:var(--tx-2)}

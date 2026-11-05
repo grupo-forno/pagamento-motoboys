@@ -40,7 +40,7 @@ const status = () => ({ ...db.prepare('SELECT status, versao FROM fechamentos WH
 
 test('financeiro não acessa fechamento não enviado nem de outra loja', async () => {
   const fin = await entra('fin'), fin2 = await entra('fin2');
-  for (const u of ['', '/pdf', '/csv']) assert.strictEqual((await get(fin, `/fechamentos/${F2}${u}`)).status, 404, `rascunho${u}`);
+  for (const u of ['', '/pdf', '/xlsx']) assert.strictEqual((await get(fin, `/fechamentos/${F2}${u}`)).status, 404, `rascunho${u}`);
   assert.strictEqual((await get(fin2, `/fechamentos/${F1}`)).status, 404);
   const fila = await (await get(fin, '/?aba=todos')).text();
   assert.ok(fila.includes(`#${F1}`) && !fila.includes(`#${F2}<`));

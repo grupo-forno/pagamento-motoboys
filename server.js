@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { db, UPLOADS, hashSenha, confereSenha, log, tx } = require('./db');
+const XLSX = require('xlsx');
 const { lerRelatorio, lerResumo, valorDigitado, pixValido } = require('./importar');
 const AG = require('./agenda');
 const { gerarPdf, enviarEmail, cfg, listaEmails, brl, diaFmt, dataFmt } = require('./relatorio');
@@ -528,7 +529,7 @@ function conferenciaFin(req, res) {
     titulo: `Fechamento #${f.id}`, selo: seloFin({ ...f, nAprov }), largura: 'larga', css: '/marca/conferencia.css', js: '/marca/conferencia.js',
     sub: html`<b>${f.loja}</b> · período ${periodo(f)}${f.pagamento ? html` · pagamento previsto <b>${diaLongo(f.pagamento)}</b>` : ''}<br><span class="mut">Enviado por ${f.enviou || f.autor}${f.enviado_em ? ` em ${quando(f.enviado_em)}` : ''} · versão ${f.versao}${f.arquivo ? ` · arquivo ${f.arquivo}` : ''}</span>`,
     trilha: [[u.perfil === 'financeiro' ? 'Fila do financeiro' : inicio(u), voltar], [`#${f.id} · ${lojaCurta(f.loja)}`]],
-    acoes: html`<a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/pdf" target="_blank">${icone('arquivo', 'sm')} Baixar PDF</a><a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/csv">${icone('baixar', 'sm')} Baixar planilha</a>`,
+    acoes: html`<a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/pdf" target="_blank">${icone('arquivo', 'sm')} Baixar PDF</a><a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/xlsx">${icone('baixar', 'sm')} Baixar Excel</a>`,
   }, html`${aviso}${vinculo(f)}
 <dl class="resumo" aria-label="Valores do fechamento">
 <div><dt>Total solicitado</dt><dd>${brl(g.total)}</dd><dd>${conta(() => true)} entregador(es)${g.temOc ? html` · inclui ${g.totOc > 0 ? '+' : ''}${brl(g.totOc)} de ocorrências` : ''}</dd></div>
@@ -781,7 +782,7 @@ ${podeReenviar(u, f) ? html` <a href="/fechamentos/${f.id}/enviar">Reenviar e-ma
   const sub = html`${f.pagamento ? html`Pagamento previsto: <b>${diaLongo(f.pagamento)}</b>` : 'Sem data de pagamento no calendário'}${veTudo(u) ? html` · ${f.loja}` : ''} · <span class="mut">importado por ${f.autor}, ${quando(f.criado_em)}</span>`;
   res.send(page(req, {
     titulo: `Fechamento de ${periodo(f)}`, selo: selo(f, devolvido), sub, largura: 'larga', css: '/marca/conferencia.css', js: '/marca/conferencia.js', trilha: [[inicio(u), '/'], [periodo(f)]],
-    acoes: html`<a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/pdf" target="_blank">${icone('arquivo', 'sm')} Baixar PDF</a><a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/csv">${icone('baixar', 'sm')} Baixar planilha</a>`,
+    acoes: html`<a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/pdf" target="_blank">${icone('arquivo', 'sm')} Baixar PDF</a><a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/xlsx">${icone('baixar', 'sm')} Baixar Excel</a>`,
   }, html`
 ${devolvido ? html`<div class="motivo" role="note" id="devolvido"><b>Devolvido pelo financeiro${devolucao.nome ? ` (${devolucao.nome})` : ''} em ${quando(devolucao.quando)}</b>
 <p>${devolucao.acao.replace(/^Devolveu para correção: /, '')}</p>${(() => { const d = db.prepare('SELECT motoboy_id FROM devolucoes WHERE fechamento_id = ? AND versao = ?').all(f.id, f.versao).map((x) => g.linhas.find((l) => l.id === x.motoboy_id)?.nome).filter(Boolean); return d.length ? html`<p class="small"><b>Entregadores devolvidos:</b> ${d.join(', ')}</p>` : ''; })()}${edita ? html`<span class="small">Corrija abaixo e envie de novo.</span>` : ''}</div>` : ''}
@@ -912,7 +913,9 @@ app.get('/fechamentos/:fid/enviar', so((r) => podeEditar(r.user, r.f) || podeRee
 <div><dt>Motoboys a pagar</dt><dd>${aPagar.length}</dd></div>
 <div class="envio-total"><dt>Total</dt><dd>${brl(g.total)}</dd></div></dl>
 ${pend.length && !reenvio ? html`<div class="alert warn">${icone('alerta')}<div><b>${pend.length} motoboy(s) com diferença com o Resumo do Agilizone</b>${pend.map((l) => l.nome).join(', ')}. <a href="/fechamentos/${f.id}#conferencia">Revisar antes de enviar</a></div></div>` : ''}
-<a class="anexo" href="/fechamentos/${f.id}/pdf" target="_blank" rel="noopener"><span class="hico">${icone('arquivo')}</span><span class="anexo-t"><b>Anexo: solicitação de pagamento (PDF)</b><small>Valores por motoboy e por dia, ocorrências, chaves PIX e assinaturas.</small></span><span class="btn btn-sec btn-sm">Ver o PDF</span></a>
+<div class="anexos"><p class="anexos-t">Anexos do e-mail (vão juntos, nesta ordem)</p>
+<a class="anexo" href="/fechamentos/${f.id}/xlsx"><span class="hico">${icone('baixar')}</span><span class="anexo-t"><b>1. Planilha (Excel)</b><small>Valores por motoboy e por dia, ocorrências, chaves PIX e total.</small></span><span class="btn btn-sec btn-sm">Baixar Excel</span></a>
+<a class="anexo" href="/fechamentos/${f.id}/pdf" target="_blank" rel="noopener"><span class="hico">${icone('arquivo')}</span><span class="anexo-t"><b>2. Solicitação de pagamento (PDF)</b><small>Resumo, tabela por motoboy, chaves PIX e assinaturas.</small></span><span class="btn btn-sec btn-sm">Ver o PDF</span></a></div>
 </div></section>
 <section class="card envio-card" aria-labelledby="env-h2">
 <div class="card-h"><span class="hico pri">${icone('email')}</span><div class="t"><h2 id="env-h2">2. Para quem enviar</h2><p>Todos desta lista recebem o e-mail com o PDF. Vale só para este envio.</p></div></div>
@@ -995,7 +998,7 @@ ${resumo.map(([k, v]) => `<tr><td style="${td};color:#6b6360;width:55%">${esc(k)
 <tr><td style="padding:14px 12px;font-size:14px;color:#6b6360">Total a pagar</td><td style="padding:14px 12px;text-align:right;font-size:24px;font-weight:bold;color:#c2521a">${esc(brl(g.total))}</td></tr></table></td></tr>
 ${link ? `<tr><td style="padding:20px 24px 4px"><a href="${esc(link)}" style="display:inline-block;background:#c2521a;color:#ffffff;text-decoration:none;font-weight:bold;font-size:15px;padding:12px 22px;border-radius:8px">Abrir no sistema e aprovar</a></td></tr>` : ''}
 <tr><td style="padding:20px 24px 4px;font-size:15px;font-weight:bold;color:#140a08">Anexos neste e-mail</td></tr>
-<tr><td style="padding:0 24px 8px;font-size:14px;line-height:1.6;color:#140a08">1. <b>Planilha (.csv)</b>: valores por motoboy e por dia, ocorrências, chaves PIX e total.<br>2. <b>PDF</b>: a mesma solicitação para conferência e assinatura.</td></tr>
+<tr><td style="padding:0 24px 8px;font-size:14px;line-height:1.6;color:#140a08">1. <b>Planilha (Excel)</b>: valores por motoboy e por dia, ocorrências, chaves PIX e total.<br>2. <b>PDF</b>: a mesma solicitação para conferência e assinatura.</td></tr>
 <tr><td style="padding:12px 24px 4px;font-size:15px;font-weight:bold;color:#140a08">Motoboys a pagar (${pagar.length})</td></tr>
 <tr><td style="padding:0 24px 16px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e7e2df;border-radius:8px;border-collapse:separate">
 <tr style="background:#140a08"><td style="padding:8px 12px;font-size:12px;color:#ffffff;font-weight:bold">Motoboy</td><td style="padding:8px 12px;font-size:12px;color:#ffffff;font-weight:bold">Chave PIX</td><td style="padding:8px 12px;font-size:12px;color:#ffffff;font-weight:bold;text-align:right">Total</td></tr>
@@ -1006,14 +1009,14 @@ ${pagar.map((l, i) => `<tr style="background:${i % 2 ? '#faf8f7' : '#ffffff'}"><
   const texto = `Olá,\n\n${autor.nome} enviou a solicitação de pagamento dos motoboys da loja ${f.loja}${quem ? `, ${quem}` : ''}.\n\n` +
     resumo.map(([k, v]) => `${k}: ${v}`).join('\n') + `\nTOTAL A PAGAR: ${brl(g.total)}\n\n` +
     'Motoboys a pagar:\n' + pagar.map((l) => `• ${l.nome}: ${brl(l.total)} · PIX ${l.pix || '—'}`).join('\n') +
-    '\n\nAnexos: 1) planilha (.csv) com os valores por dia; 2) PDF da solicitação.' + (link ? `\nAbrir no sistema e aprovar: ${link}` : '') +
+    '\n\nAnexos: 1) planilha em Excel com os valores por dia; 2) PDF da solicitação.' + (link ? `\nAbrir no sistema e aprovar: ${link}` : '') +
     '\n\nAprovar no sistema não é pagar: o pagamento é feito fora do sistema.';
   return enviaELoga(f, 'solicitação', para, {
     subject: `Solicitação de pagamento · Motoboys · ${f.loja} · ${f.pagamento ? `pagamento ${dataFmt(f.pagamento)} · ` : ''}${brl(g.total)}`,
     text: texto, html: corpoHtml,
     // Os dois anexos vão juntos, na ordem: planilha e depois o PDF.
     attachments: [
-      { filename: `planilha-motoboys-${nome}-${ref}.csv`, content: csvFechamento(g), contentType: 'text/csv; charset=utf-8' },
+      { filename: `planilha-motoboys-${nome}-${ref}.xlsx`, content: xlsxFechamento(f, g), contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
       { filename: `solicitacao-pagamento-motoboys-${nome}-${ref}.pdf`, content: await gerarPdf(f, g), contentType: 'application/pdf' },
     ],
   });
@@ -1142,22 +1145,30 @@ app.post('/fechamentos/:fid/recuperar', so((r) => podeRecuperar(r.user, r.f)), (
   volta(res, `/fechamentos/${f.id}`, 'ok', 'Fechamento recuperado.');
 });
 
-// Planilha do fechamento (CSV com ; e BOM, abre direto no Excel). Aspas sempre; texto começando com = + - @ vira texto, não fórmula.
-function csvFechamento(g) {
-  const cel = (v) => { let s = String(v ?? ''); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
-  const num = (c) => (c / 100).toFixed(2).replace('.', ',');
-  const linhas = [
-    ['NOME', 'PIX', ...g.dias.map(diaFmt), ...(g.temOc ? ['OCORRÊNCIAS'] : []), ...(g.temPago ? ['JÁ PAGO'] : []), 'TOTAL'],
-    ...g.linhas.map((l) => [l.nome, l.pix, ...g.dias.map((d) => num(l.dias[d]?.final || 0)), ...(g.temOc ? [num(l.oc)] : []), ...(g.temPago ? [num(-l.pago)] : []), num(l.total)]),
-    ['TOTAL', '', ...g.dias.map((d) => num(g.totDia[d])), ...(g.temOc ? [num(g.totOc)] : []), ...(g.temPago ? [num(-g.totPago)] : []), num(g.total)],
-  ];
-  return '\ufeff' + linhas.map((r) => r.map(cel).join(';')).join('\r\n');
+// Planilha do fechamento em Excel (.xlsx): valores como número (somam no Excel), uma aba com os dados e outra com o resumo.
+function xlsxFechamento(f, g) {
+  const R = (c) => c / 100;
+  const cab = ['Motoboy', 'Chave PIX', ...g.dias.map(diaFmt), ...(g.temOc ? ['Ocorrências'] : []), ...(g.temPago ? ['Já pago'] : []), 'Total a pagar'];
+  const linhas = g.linhas.map((l) => [l.nome, l.pix || '', ...g.dias.map((d) => R(l.dias[d]?.final || 0)), ...(g.temOc ? [R(l.oc)] : []), ...(g.temPago ? [R(-l.pago)] : []), R(l.total)]);
+  const tot = ['TOTAL', '', ...g.dias.map((d) => R(g.totDia[d])), ...(g.temOc ? [R(g.totOc)] : []), ...(g.temPago ? [R(-g.totPago)] : []), R(g.total)];
+  const ws = XLSX.utils.aoa_to_sheet([cab, ...linhas, tot]);
+  const ref = XLSX.utils.decode_range(ws['!ref']);
+  for (let r = 1; r <= ref.e.r; r++) for (let c = 2; c <= ref.e.c; c++) { const cel = ws[XLSX.utils.encode_cell({ r, c })]; if (cel) { cel.t = 'n'; cel.z = '#,##0.00'; } }
+  ws['!cols'] = [{ wch: 36 }, { wch: 34 }, ...Array(ref.e.c - 1).fill({ wch: 13 })];
+  ws['!freeze'] = { xSplit: 1, ySplit: 1 };
+  const info = XLSX.utils.aoa_to_sheet([['Loja', f.loja], ['Período das entregas', periodo(f)], ['Pagamento previsto', f.pagamento ? diaLongo(f.pagamento) : '—'], ['Motoboys a pagar', g.linhas.filter((l) => l.total > 0).length],
+    ['Total a pagar', R(g.total)], ...(g.temOc ? [['Ocorrências do Agilizone (já no total)', R(g.totOc)]] : []), ['Gerado em', new Date().toLocaleString('pt-BR', { timeZone: TZ })]]);
+  info['!cols'] = [{ wch: 38 }, { wch: 40 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Pagamento'); XLSX.utils.book_append_sheet(wb, info, 'Dados do fechamento');
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 }
-app.get('/fechamentos/:fid/csv', (req, res) => {
+const nomeArquivo = (f) => `${f.loja.replace(/\W+/g, '_')}-${f.data_ini}-a-${f.data_fim}`;
+app.get('/fechamentos/:fid/xlsx', (req, res) => {
   const f = req.f;
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="motoboys-${f.loja.replace(/\W+/g, '_')}-${f.data_ini}-a-${f.data_fim}.csv"`);
-  res.send(csvFechamento(grade(f)));
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="motoboys-${nomeArquivo(f)}.xlsx"`);
+  res.send(xlsxFechamento(f, grade(f)));
 });
 
 // ---------- Usuários (admin) ----------

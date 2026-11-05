@@ -69,10 +69,12 @@ function gerarPdf(f0, g0) {
     y += 40;
 
     // ---- tabela por motoboy e dia
+    const mostraDias = g.dias.length <= 7; // mais que isso não cabe uma coluna por dia: aparece o valor base e os dias ficam na planilha
     const cols = [{ t: '#', w: 22, n: true }, { t: 'Motoboy', w: 150 }, { t: 'Chave PIX', w: 125 },
-      ...g.dias.map((d) => ({ t: diaFmt(d), w: 0, n: true, dia: d })), ...(g.temOc ? [{ t: 'Ocorrências', w: 80, n: true }] : []), ...(g.temPago ? [{ t: 'Já pago', w: 60, n: true }] : []), { t: 'Total a pagar', w: 78, n: true }, ...(g.temResumo ? [{ t: 'Resumo', w: 68, n: true }] : [])];
+      ...(mostraDias ? g.dias.map((d) => ({ t: diaFmt(d), w: 0, n: true, dia: d })) : [{ t: 'Valor base', w: 90, n: true }]), ...(g.temOc ? [{ t: 'Ocorrências', w: 80, n: true }] : []), ...(g.temPago ? [{ t: 'Já pago', w: 60, n: true }] : []), { t: 'Total a pagar', w: 78, n: true }, ...(g.temResumo ? [{ t: 'Resumo', w: 68, n: true }] : [])];
     const livre = (W - cols.reduce((s, c) => s + c.w, 0)) / Math.max(g.dias.length, 1);
     cols.forEach((c) => { if (!c.w) c.w = Math.min(livre, 95); });
+    if (!mostraDias) { const sobra = W - cols.reduce((s, c) => s + c.w, 0); cols[1].w += sobra * 0.55; cols[2].w += sobra * 0.45; }
     const TW = cols.reduce((s, c) => s + c.w, 0), H = 18;
     const titulo = (t) => { doc.rect(L, y, 3, 13).fill(COR.laranja); doc.font('Helvetica-Bold').fontSize(11).fillColor(COR.preto).text(t, L + 9, y + 1); y += 20; };
     const novaPagina = () => { doc.addPage(); y = cabecalho(); };
@@ -96,7 +98,8 @@ function gerarPdf(f0, g0) {
         else if (c.dia) {
           const cel = l.dias[c.dia]; v = cel ? brl(cel.final) : '–';
           if (!cel) cor = '#B5ADA9';
-        } else if (c.t === 'Ocorrências') { v = l.oc || l.qtdOc ? `${l.oc > 0 ? '+' : ''}${brl(l.oc)} (${l.qtdOc})` : '–'; if (l.oc < 0) cor = COR.vermelho; }
+        } else if (c.t === 'Valor base') { v = brl(l.bruto); }
+        else if (c.t === 'Ocorrências') { v = l.oc || l.qtdOc ? `${l.oc > 0 ? '+' : ''}${brl(l.oc)} (${l.qtdOc})` : '–'; if (l.oc < 0) cor = COR.vermelho; }
         else if (c.t === 'Já pago') { v = l.pago ? `-${brl(l.pago)}` : '–'; if (l.pago) cor = COR.vermelho; }
         else if (c.t === 'Total a pagar') { v = brl(l.total); bold = true; }
         else { v = l.resumo == null ? '–' : brl(l.resumo); cor = l.confere === 'ok' ? COR.verde : l.confere === 'pendente' ? COR.vermelho : COR.laranjaEsc; }
@@ -112,13 +115,13 @@ function gerarPdf(f0, g0) {
     doc.rect(L, y, TW, H + 2).fill(COR.laranjaSoft);
     let x = L;
     for (const c of cols) {
-      const v = c.t === 'Motoboy' ? 'TOTAL' : c.dia ? brl(g.totDia[c.dia]) : c.t === 'Total a pagar' ? brl(g.total) : c.t === 'Ocorrências' ? brl(g.totOc) : c.t === 'Já pago' ? `-${brl(g.totPago)}` : c.t === 'Resumo' ? brl(g.linhas.reduce((s, l) => s + (l.resumo || 0), 0)) : '';
+      const v = c.t === 'Motoboy' ? 'TOTAL' : c.dia ? brl(g.totDia[c.dia]) : c.t === 'Valor base' ? brl(g.linhas.reduce((t, l) => t + l.bruto, 0)) : c.t === 'Total a pagar' ? brl(g.total) : c.t === 'Ocorrências' ? brl(g.totOc) : c.t === 'Já pago' ? `-${brl(g.totPago)}` : c.t === 'Resumo' ? brl(g.linhas.reduce((s, l) => s + (l.resumo || 0), 0)) : '';
       doc.font('Helvetica-Bold').fontSize(8.5).fillColor(c.t === 'Total a pagar' ? COR.laranjaEsc : COR.preto).text(v, x + 5, y + 6, { width: c.w - 10, align: c.n ? 'right' : 'left', lineBreak: false });
       x += c.w;
     }
     y += H + 8;
-    doc.font('Helvetica').fontSize(7.5).fillColor(COR.cinza).text(`Valores conforme o Agilizone.${g.temOc ? '  Ocorrências (qtd.): acréscimo ou desconto do Agilizone, sem data, já no total.' : ''}${g.temPago ? '  Já pago: acerto do Agilizone, descontado.' : ''}${g.temResumo ? '  Resumo (soma das taxas): verde = bate com os dias.' : ''}`, L, y);
-    y += 18;
+    doc.font('Helvetica').fontSize(7.5).fillColor(COR.cinza).text(`Valores conforme o Agilizone.${mostraDias ? '' : `  Período de ${g.dias.length} dias: os valores de cada dia estão na planilha (Excel).`}${g.temOc ? '  Ocorrências (qtd.): acréscimo ou desconto do Agilizone, sem data, já no total.' : ''}${g.temPago ? '  Já pago: acerto do Agilizone, descontado.' : ''}${g.temResumo ? '  Resumo (soma das taxas): verde = bate com os dias.' : ''}`, L, y);
+    y += 10;
 
     // ---- assinaturas
     if (y + 32 > FIM) novaPagina();

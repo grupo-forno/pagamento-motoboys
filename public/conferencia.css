@@ -177,3 +177,27 @@ body.larga .main .wrap{max-width:1600px}
 .fc .fc-seg button.on{background:var(--tx);border-color:var(--tx);color:#fff}
 .fc .fc-seg button.on .c{background:rgba(255,255,255,.22);color:#fff}
 .fc .fc-seg button.on{background:var(--tx)!important;border-color:var(--tx)!important;color:#fff!important}
+
+/* Linhas compactas (fora do estreito): nome em cima; PIX e avisos lado a lado na segunda linha */
+.fc:not([data-w=estreito]) #fc-resumo .c-nome .nm{display:block;padding:0;min-height:0}
+.fc:not([data-w=estreito]) #fc-resumo .c-nome .pix-sub{display:inline-flex;margin:2px 10px 0 0;vertical-align:middle}
+.fc:not([data-w=estreito]) #fc-resumo .c-nome .meta{display:inline-flex;vertical-align:middle;gap:6px}
+.fc:not([data-w=estreito]) #fc-resumo .c-nome .meta .badge{margin-top:2px}
+.fc:not([data-w=estreito]) #fc-resumo tbody>tr>*{padding-top:10px;padding-bottom:10px}
+/* Situação legível numa linha no desktop largo */
+@media(min-width:1400px){.fc[data-w=largo] #fc-resumo .c-sit,.fc[data-w=medio] #fc-resumo .c-sit{width:200px}}
+.fc[data-w=medio] #fc-resumo .c-base{width:100px}.fc[data-w=medio] #fc-resumo .c-aj{width:92px}.fc[data-w=medio] #fc-resumo .c-tot{width:116px}
+.fc[data-w=largo] .fc-t .sit-d,.fc[data-w=medio] .fc-t .sit-d{max-width:none}
+/* Aviso de PIX junto da chave: ícone + texto no desktop largo; só ícone (texto para leitor de tela) abaixo de 1400px */
+.pix-av{display:inline-flex;align-items:center;gap:4px;color:var(--warn);font-size:12px;font-weight:600;white-space:nowrap;margin-left:2px}
+@media(max-width:1399px){.pix-av-t{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}}
+.pix-sub .rot-pix{white-space:nowrap}
+/* Selecionar todos: caixa no cabeçalho da coluna de seleção; no estreito, linha própria com texto */
+.c-sel .sel-txt{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.fc[data-w=estreito] .fc-t.com-sel thead{display:block;border-bottom:1px solid var(--bd)}
+.fc[data-w=estreito] .fc-t.com-sel thead tr{display:flex;padding:4px 16px 4px 4px}
+.fc[data-w=estreito] .fc-t.com-sel thead th:not(.c-sel){display:none}
+.fc[data-w=estreito] .fc-t.com-sel thead .c-sel{display:block;width:auto;background:none;padding:0;border:0}
+.fc[data-w=estreito] .c-sel .alvo{width:auto;margin:0;gap:12px;padding-left:12px;min-height:44px;display:flex;align-items:center;font-weight:600;font-size:14px}
+.fc[data-w=estreito] .c-sel .sel-txt{position:static;width:auto;height:auto;clip:auto}
+.fc[data-w=estreito] #fc-resumo thead .c-sel{width:auto;flex:1}.fc[data-w=estreito] #fc-resumo thead .alvo{padding-left:10px}

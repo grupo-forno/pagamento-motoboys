@@ -60,7 +60,7 @@ function page(req, o, corpo) {
 <style>${new Raw(CSS)}</style>${o.css ? html`<link rel="stylesheet" href="${o.css}?v=${versao(o.css)}">` : ''}</head>
 ${u ? html`<body class="${o.largura || ''}"><a class="pular" href="#conteudo">Pular para o conteúdo</a><div class="app"><aside class="side" id="menu-lateral"><div class="side-top">${marca}<button type="button" class="icon-btn recolher" data-recolher aria-label="Recolher ou expandir o menu" title="Recolher/expandir menu">${icone('painel')}</button></div>
 <nav class="tabs" aria-label="Menu">${desp ? html`${aba('/', 'lista', 'Pendências', emFech)}${aba('/historico', 'historico', 'Histórico', p === '/historico' || (p.startsWith('/fechamentos') && !emFech))}`
-    : aba('/', 'lista', 'Fechamentos', emFech)}
+    : html`${aba('/', 'lista', 'Fechamentos', emFech)}${decideFin(u) ? aba('/pagar', 'carteira', 'A pagar', p.startsWith('/pagar')) : ''}`}
 ${u.perfil === 'admin' ? html`${aba('/usuarios', 'escudo', 'Usuários', p.startsWith('/usuarios'))}${aba('/config', 'ajustes', 'Configurações', p.startsWith('/config'))}` : ''}</nav>
 <div class="side-user"><div class="who">${avatar(u.nome)}<div class="tx"><b>${u.nome}</b><small>${PERFIS[u.perfil]}${u.loja ? ` · ${lojaCurta(u.loja)}` : ''}</small></div></div>
 <form method="post" action="/logout"><button title="Sair do sistema">${icone('sair', 'sm')}<span class="tx">Sair</span></button></form></div></aside>
@@ -179,7 +179,7 @@ function grade(f) {
       const pix = pixF.get(m.id) ?? pixR.get(m.id) ?? m.pix, ap = aprov.get(m.id);
       // A aprovação vale para o valor e o PIX aprovados; se mudarem (reenvio), o item volta para análise.
       const aprovado = ap ? ap.valor == null || (ap.valor === total && ap.pix === pix) : f.status === 'pago';
-      return { ...m, aprovado, aprovacao: ap, alterado: !!ap && !aprovado, pix, pixDigitado: f.status === 'rascunho' && pixF.has(m.id) && !pixR.has(m.id), dias: c, bruto, oc, qtdOc, pago, total, resumo: res, noResumo: temResumo && !resumo.has(m.id), confere };
+      return { ...m, aprovado, aprovacao: ap, alterado: !!ap && !aprovado, pix, pixDigitado: f.status === 'rascunho' && pixF.has(m.id) && !pixR.has(m.id), obs: e?.obs || '', dias: c, bruto, oc, qtdOc, pago, total, resumo: res, noResumo: temResumo && !resumo.has(m.id), confere };
     }).sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
   const diasArr = [...dias].sort();
   const totDia = Object.fromEntries(diasArr.map((d) => [d, linhas.reduce((s, l) => s + (l.dias[d]?.final || 0), 0)]));
@@ -402,7 +402,7 @@ function blocoConferencia(o) {
   const filtro = modo === 'desp'
     ? [['todos', 'Todos', itens.length], ['semp', 'Falta PIX', itens.filter((i) => !i.pix && i.total > 0).length], ['oc', 'Com ajuste', itens.filter((i) => i.oc || i.qtdOc || i.pago).length], ['dif', 'Difere do Resumo', itens.filter((i) => g.temResumo && !i.noResumo && i.bruto !== (i.resumo || 0)).length]]
     : [['todos', 'Todos', itens.length], ['pendente', 'Aguardando', itens.filter(ehPend).filter((i) => i.sit !== 'semvalor').length], ['bloqueado', 'Bloqueados', nBloq], ['aprovado', 'Aprovados', nAprov], ['devolvido', 'Devolvidos', conta(ehDev)], ['oc', 'Com ajuste', itens.filter((i) => i.oc || i.qtdOc || i.pago).length]];
-  const detalheSit = (i) => (i.sit === 'aprovado' ? (i.aprovacao ? (() => { const q = quando(i.aprovacao.aprovado_em); return `${i.aprovacao.por || '—'} · ${q.slice(0, 5)} ${q.slice(-5)}`; })() : '')
+  const detalheSit = (i) => (i.sit === 'aprovado' ? (i.aprovacao ? (() => { const q = quando(i.aprovacao.aprovado_em); return `${i.aprovacao.por || '—'} · ${q.slice(0, 5)} ${q.slice(-5)}${i.aprovacao.pago_em ? ` · pago em ${quando(i.aprovacao.pago_em).slice(0, 5)}` : ''}`; })() : '')
     : i.sit === 'devolvido' ? `Motivo: ${i.dev.motivo}`
     : i.sit === 'bloqueado' ? `Não pode ser aprovado: ${i.bloq}.${i.alterado ? ' Também mudou depois de aprovado.' : ''}`
     : i.sit === 'alterado' ? `Aprovado antes com ${brl(i.aprovacao.valor)} (PIX ${i.aprovacao.pix}); a loja mudou. Confira de novo.`
@@ -417,6 +417,7 @@ function blocoConferencia(o) {
       if (i.sit === 'bloqueado') return ['bad', i.bloq === 'sem chave PIX' ? 'Falta chave PIX' : 'Atenção'];
       if (i.sit === 'aguardando') return difDe(i) ? ['warn', 'Confira a diferença'] : ['ok', 'Pronto'];
     }
+    if (i.sit === 'aprovado' && i.aprovacao?.pago_em) return ['ok', 'Pago'];
     return SIT_ITEM[i.sit];
   };
   const detSit = (i) => (modo === 'desp' && f.status === 'rascunho' ? (i.sit === 'bloqueado' ? (i.bloq === 'sem chave PIX' ? 'Informe a chave PIX (botão Editar).' : `Atenção: ${i.bloq}.`) : '') : modo === 'desp' && i.sit === 'aprovado' ? '' : detalheSit(i));
@@ -425,7 +426,7 @@ function blocoConferencia(o) {
   const dados = {
     decide, edit: edita ? `/fechamentos/${f.id}/motoboy/` : '', temResumo: g.temResumo, dias: g.dias.map((d, k) => ({ d, rot: diaFmt(d), sem: Math.floor(k / 7) })),
     itens: itens.map((i) => ({ id: i.id, nome: i.nome, pix: i.pix || '', aviso: i.avisoPix, bruto: i.bruto, oc: i.oc, qtdOc: i.qtdOc, pago: i.pago, total: i.total, resumo: i.resumo, noResumo: !!i.noResumo, dif: difDe(i),
-      sit: i.sit, sitTxt: sitDe(i)[1], sitCor: sitDe(i)[0], det: detSit(i), bloq: i.bloq, pode: podeSelDe(i), dias: g.dias.map((d) => (i.dias[d] ? [i.dias[d].final, i.dias[d].n] : null)) })),
+      obs: i.obs, sit: i.sit, sitTxt: sitDe(i)[1], sitCor: sitDe(i)[0], det: detSit(i), bloq: i.bloq, pode: podeSelDe(i), dias: g.dias.map((d) => (i.dias[d] ? [i.dias[d].final, i.dias[d].n] : null)) })),
   };
   const json = new Raw(JSON.stringify(dados).replace(/</g, '\\u003c'));
   const linhaResumo = (i) => {
@@ -434,6 +435,7 @@ function blocoConferencia(o) {
 ${decide ? html`<td class="c-sel">${pode ? html`<label class="alvo"><input type="checkbox" name="m" value="${i.id}" aria-label="Selecionar ${i.nome}, ${brl(i.total)}"></label>` : ''}</td>` : ''}
 <th scope="row" class="c-nome"><button type="button" class="nm" data-det="${i.id}" title="Ver detalhes de ${i.nome}"><span>${i.nome}</span></button>
 ${i.pix ? html`<div class="pix-sub"><span class="rot-pix">PIX</span><span>${i.pix}</span><button type="button" class="icon-btn" data-copiar="${i.pix}" title="Copiar chave PIX" aria-label="Copiar chave PIX de ${i.nome}">${icone('copiar', 'sm')}</button>${i.avisoPix ? html`<span class="pix-av" title="${i.avisoPix}">${icone('alerta', 'sm')}<span class="pix-av-t">${i.avisoPix.startsWith('Mesma') ? 'PIX repetido' : 'PIX fora do padrão'}</span></span>` : ''}</div>` : ''}
+${i.obs ? html`<div class="obs-sub" title="Observação do despachante">${icone('balao', 'sm')} ${i.obs}</div>` : ''}
 <div class="meta"><span class="badge ${cor} so-estreito">${txt}</span>${!i.pix && sitDe(i)[1] !== 'Falta chave PIX' ? html`<span class="badge bad">Sem PIX</span>` : ''}${temAj(i) ? html`<span class="badge warn nodot so-estreito">${icone('alerta', 'sm')} Ajuste ${aj > 0 ? '+' : ''}${brl(aj)}</span>` : ''}${d ? html`<span class="badge bad nodot" title="Soma dos dias diferente da soma das taxas do Resumo">${icone('alerta', 'sm')} Difere do Resumo ${d > 0 ? '+' : ''}${brl(d)}</span>` : ''}</div></th>
 <td class="n c-base">${brl(i.bruto)}</td>
 <td class="n c-aj">${temAj(i) ? html`<b class="${aj < 0 ? 'bad-t' : ''}">${aj > 0 ? '+' : ''}${brl(aj)}</b><small>${[i.oc || i.qtdOc ? `${i.qtdOc} ocorrência(s)` : '', i.pago ? `já pago ${brl(i.pago)}` : ''].filter(Boolean).join(' · ')}</small>` : html`<span class="mut">–<span class="sr">sem ajustes</span></span>`}</td>
@@ -819,21 +821,22 @@ app.get('/fechamentos/:fid/motoboy/:m', so((r) => podeEditar(r.user, r.f)), (req
   res.send(page(req, { titulo: 'Editar motoboy', sub: html`Vale só para o fechamento de <b>${periodo(f)}</b>. Para corrigir de vez, ajuste o cadastro no Agilizone.`, trilha: [[inicio(req.user), '/'], [periodo(f), voltar], ['Editar motoboy']], largura: 'estreita' }, html`
 <form method="post" class="card"><div class="card-b fgrid">
 <div class="field" style="grid-column:1/-1"><label for="nome">Nome <span class="req" aria-hidden="true">*</span></label><input id="nome" name="nome" value="${l.nome}" required minlength="3" maxlength="120" autocomplete="off">${l.nomeAgil ? html`<p class="hint">No Agilizone: ${l.nomeAgil}</p>` : ''}</div>
-<div class="field" style="grid-column:1/-1"><label for="pix">Chave PIX <span class="req" aria-hidden="true">*</span></label><input id="pix" name="pix" value="${l.pix}" required maxlength="120" autocomplete="off" placeholder="CPF, telefone, e-mail ou chave aleatória"><p class="hint">Confira com o motoboy. É para essa chave que o financeiro vai pagar.</p></div></div>
+<div class="field" style="grid-column:1/-1"><label for="pix">Chave PIX <span class="req" aria-hidden="true">*</span></label><input id="pix" name="pix" value="${l.pix}" required maxlength="120" autocomplete="off" placeholder="CPF, telefone, e-mail ou chave aleatória"><p class="hint">Confira com o motoboy. É para essa chave que o financeiro vai pagar.</p></div>
+<div class="field" style="grid-column:1/-1"><label for="obs">Observação</label><textarea id="obs" name="obs" maxlength="300" rows="2" placeholder="Ex.: chave PIX alterada em 04/11">${l.obs}</textarea><p class="hint">Aparece para o financeiro junto ao valor. Opcional.</p></div></div>
 <div class="card-f"><button class="btn btn-pri">Salvar</button><a class="btn btn-ghost" href="${voltar}">Cancelar</a></div></form>`));
 });
 
 app.post('/fechamentos/:fid/motoboy/:m', so((r) => podeEditar(r.user, r.f)), (req, res) => {
   const f = req.f, l = grade(f).linhas.find((x) => x.id === Number(req.params.m));
   if (!l) throw falha('Motoboy não está neste fechamento.', 404);
-  const nome = String(req.body.nome || '').trim().replace(/\s+/g, ' ').slice(0, 120), pix = String(req.body.pix || '').trim().slice(0, 120);
+  const nome = String(req.body.nome || '').trim().replace(/\s+/g, ' ').slice(0, 120), pix = String(req.body.pix || '').trim().slice(0, 120), obs = String(req.body.obs || '').trim().replace(/\s+/g, ' ').slice(0, 300);
   if (nome.length < 3) throw falha('Digite o nome do motoboy.');
   if (!pix) throw falha('Digite a chave PIX.');
-  if (nome === l.nome && pix === l.pix) return volta(res, `/fechamentos/${f.id}`, 'ok', 'Nada mudou.');
+  if (nome === l.nome && pix === l.pix && obs === l.obs) return volta(res, `/fechamentos/${f.id}`, 'ok', 'Nada mudou.');
   const agil = l.nomeAgil || l.nome;
-  db.prepare('INSERT INTO edicoes (fechamento_id, motoboy_id, nome, pix) VALUES (?,?,?,?) ON CONFLICT (fechamento_id, motoboy_id) DO UPDATE SET nome = excluded.nome, pix = excluded.pix')
-    .run(f.id, l.id, nome === agil ? null : nome, pix);
-  log(req.user.id, `f:${f.id}`, `Editou motoboy ${l.nome}: ${nome !== l.nome ? `nome → ${nome}; ` : ''}${pix !== l.pix ? `PIX ${l.pix || '(vazio)'} → ${pix}` : ''}`);
+  db.prepare('INSERT INTO edicoes (fechamento_id, motoboy_id, nome, pix, obs) VALUES (?,?,?,?,?) ON CONFLICT (fechamento_id, motoboy_id) DO UPDATE SET nome = excluded.nome, pix = excluded.pix, obs = excluded.obs')
+    .run(f.id, l.id, nome === agil ? null : nome, pix, obs || null);
+  log(req.user.id, `f:${f.id}`, `Editou motoboy ${l.nome}: ${nome !== l.nome ? `nome → ${nome}; ` : ''}${pix !== l.pix ? `PIX ${l.pix || '(vazio)'} → ${pix}; ` : ''}${obs !== l.obs ? `observação: ${obs || '(removida)'}` : ''}`);
   volta(res, `/fechamentos/${f.id}`, 'ok', `${nome} atualizado neste fechamento.`);
 });
 
@@ -1061,7 +1064,7 @@ app.post('/fechamentos/:fid/aprovar', so((r) => decideFin(r.user)), (req, res) =
     return { url, n: sel.length, total, faltam, loja: f.loja };
   });
   volta(res, r.url, 'ok', r.faltam ? `${r.n} aprovado(s), ${brl(r.total)}. Faltam ${r.faltam} entregador(es).`
-    : `Solicitação de ${r.loja} aprovada por completo. Lembrete: aprovar não é pagar; o pagamento é feito fora do sistema.`);
+    : `Solicitação de ${r.loja} aprovada por completo. Ele já aparece em A pagar; marque como pago lá depois de pagar.`);
 });
 
 // Quem recebe o aviso de devolução: quem importou e os despachantes da loja.
@@ -1162,6 +1165,84 @@ app.get('/fechamentos/:fid/xlsx', (req, res) => {
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="motoboys-${nomeArquivo(f)}.xlsx"`);
   res.send(xlsxFechamento(f, grade(f)));
+});
+
+// ---------- A pagar (financeiro): aprovados ainda não pagos, somados por entregador e por loja ----------
+const soPagar = so((r) => decideFin(r.user));
+const urlPagar = (v) => (typeof v === 'string' && /^\/pagar(\?[\w=&%.+-]*)?$/.test(v) ? v : '/pagar');
+const SQL_APROV = `SELECT a.fechamento_id fid, a.motoboy_id mid, a.valor, a.pix, a.pago_em, f.loja_id, l.nome loja, f.data_ini, f.data_fim, COALESCE(e.nome, m.nome) nome, e.obs, up.nome pagou
+  FROM aprovacoes a JOIN fechamentos f ON f.id = a.fechamento_id JOIN lojas l ON l.id = f.loja_id JOIN motoboys m ON m.id = a.motoboy_id
+  LEFT JOIN edicoes e ON e.fechamento_id = a.fechamento_id AND e.motoboy_id = a.motoboy_id LEFT JOIN usuarios up ON up.id = a.pago_por
+  WHERE a.valor <> 0 AND f.arquivado_em IS NULL AND f.versao > 0 AND (? = 0 OR f.loja_id = ?)`;
+
+app.get('/pagar', soPagar, (req, res) => {
+  const u = req.user, q = req.query, soma = (xs, k = 'valor') => xs.reduce((t, x) => t + x[k], 0), dm = (d) => dataFmt(d).slice(0, 5);
+  const lojas = db.prepare('SELECT * FROM lojas ORDER BY nome').all().filter((l) => !u.loja_id || l.id === u.loja_id);
+  const loja = lojas.some((l) => l.id === Number(q.loja)) ? Number(q.loja) : 0, ate = /^\d{4}-\d{2}-\d{2}$/.test(q.ate || '') ? q.ate : '', pagos = q.aba === 'pagos';
+  const todas = db.prepare(SQL_APROV).all(u.loja_id ? 1 : 0, u.loja_id ?? 0), abertas = todas.filter((a) => !a.pago_em), feitos = todas.filter((a) => a.pago_em);
+  const daLoja = (xs) => xs.filter((a) => !loja || a.loja_id === loja);
+  const qs = (m = {}) => { const p = new URLSearchParams(Object.entries({ aba: pagos ? 'pagos' : '', loja: loja || '', ate, ...m }).filter(([, x]) => x)); return p.size ? `/pagar?${p}` : '/pagar'; };
+  const aqui = qs();
+  // Previsão: o que já está aprovado (a pagar) e o que ainda espera aprovação, por loja.
+  const aguard = new Map();
+  for (const f of fechamentosDe(u)) if (f.status === 'enviado' && !f.arquivado_em) aguard.set(f.loja_id, (aguard.get(f.loja_id) || 0) + f.total - f.aprovado);
+  const porLoja = lojas.map((l) => { const x = abertas.filter((a) => a.loja_id === l.id); return { l, valor: soma(x), n: new Set(x.map((a) => a.mid)).size, aguard: aguard.get(l.id) || 0 }; }).filter((r) => r.valor || r.aguard);
+  const grupos = new Map();
+  for (const a of daLoja(abertas).filter((x) => !ate || x.data_fim <= ate)) { const k = `${a.loja_id}|${a.mid}`; grupos.set(k, [...(grupos.get(k) || []), a]); }
+  const linhas = [...grupos.values()].map((xs) => { xs.sort((a, b) => a.data_fim.localeCompare(b.data_fim)); const ult = xs[xs.length - 1];
+    return { loja: ult.loja, nome: ult.nome, pix: ult.pix, pixMudou: new Set(xs.map((a) => a.pix)).size > 1, ini: xs[0].data_ini, fim: ult.data_fim, n: xs.length, valor: soma(xs), obs: [...new Set(xs.map((a) => a.obs).filter(Boolean))], sel: xs.map((a) => `${a.fid}:${a.mid}:${a.valor}`).join(',') }; })
+    .sort((a, b) => a.loja.localeCompare(b.loja) || a.nome.localeCompare(b.nome, 'pt-BR'));
+  const lista = daLoja(feitos).sort((a, b) => b.pago_em.localeCompare(a.pago_em)).slice(0, 200);
+  const obsH = (xs) => xs.map((o) => html`<div class="obs-sub">${icone('balao', 'sm')} ${o}</div>`);
+  res.send(page(req, { titulo: 'A pagar', sub: 'Valores já aprovados e ainda não pagos, somados por entregador. Depois de pagar, marque como pago.', css: '/marca/admin.css', js: '/marca/pagar.js', largura: 'larga' }, html`
+<div class="stats"><div class="card stat"><span class="hico ok">${icone('carteira')}</span><div><div class="v">${brl(soma(abertas))}</div><div class="l">Aprovado, a pagar · ${new Set(abertas.map((a) => `${a.loja_id}|${a.mid}`)).size} entregador(es)</div></div></div>
+<div class="card stat"><span class="hico info">${icone('relogio')}</span><div><div class="v">${brl([...aguard.values()].reduce((t, x) => t + x, 0))}</div><div class="l">Ainda aguardando aprovação (previsto)</div></div></div></div>
+${porLoja.length ? html`<section class="card" style="margin-bottom:20px" aria-labelledby="prev-t"><div class="card-h"><div class="t"><h2 id="prev-t">Previsão por loja</h2><p>Clique em uma loja para ver só os entregadores dela.</p></div></div><div class="tw"><table><thead><tr><th scope="col">Loja</th><th scope="col" class="n">A pagar (aprovado)</th><th scope="col" class="n">Entregadores</th><th scope="col" class="n">Aguardando aprovação</th><th scope="col"><span class="sr">Ação</span></th></tr></thead><tbody>
+${porLoja.map((r) => html`<tr><td><b>${r.l.nome}</b></td><td class="n b">${brl(r.valor)}</td><td class="n">${r.n}</td><td class="n mut">${r.aguard ? brl(r.aguard) : '—'}</td><td class="n"><a class="btn btn-ghost btn-sm" href="${qs({ loja: r.l.id, aba: '' })}">Ver ${icone('chevron', 'sm')}</a></td></tr>`)}</tbody></table></div></section>` : ''}
+<div class="card"><div class="card-h"><div class="t"><h2>${pagos ? 'Pagamentos já feitos' : 'Entregadores a pagar'}</h2><p>${pagos ? 'Os 200 mais recentes. Se marcou errado, use Desfazer.' : 'Marque quem você vai pagar agora e confirme no fim da tela.'}</p></div></div>
+<nav class="seg" style="padding:0 20px;margin:0" aria-label="Situação"><a href="${qs({ aba: '' })}" class="${pagos ? '' : 'on'}">A pagar<span class="c">${linhas.length}</span></a><a href="${qs({ aba: 'pagos' })}" class="${pagos ? 'on' : ''}">Pagos<span class="c">${daLoja(feitos).length}</span></a></nav>
+<form method="get" action="/pagar" class="ferramentas" style="padding-top:14px">${pagos ? html`<input type="hidden" name="aba" value="pagos">` : ''}
+<label class="sr" for="f-loja">Loja</label><select id="f-loja" name="loja" onchange="this.form.submit()"><option value="">Todas as lojas</option>${lojas.map((l) => html`<option value="${l.id}" ${l.id === loja ? 'selected' : ''}>${l.nome}</option>`)}</select>
+${pagos ? '' : html`<label for="f-ate" class="small mut">Somar até o dia</label><input id="f-ate" type="date" name="ate" value="${ate}" style="width:auto;height:38px"><button class="btn btn-sec btn-sm">Filtrar</button>`}
+${loja || ate ? html`<a class="btn btn-ghost btn-sm" href="${pagos ? '/pagar?aba=pagos' : '/pagar'}">Limpar filtros</a>` : ''}</form>
+${pagos ? html`<div class="tw"><table><thead><tr><th scope="col">Entregador</th><th scope="col">Loja</th><th scope="col">Período</th><th scope="col" class="n">Valor</th><th scope="col">Pago em</th><th scope="col"><span class="sr">Ação</span></th></tr></thead><tbody>
+${lista.map((a) => html`<tr><td><b>${a.nome}</b><div class="mut small">PIX ${a.pix}</div>${obsH(a.obs ? [a.obs] : [])}</td><td>${lojaCurta(a.loja)}</td><td>${dm(a.data_ini)} a ${dm(a.data_fim)}</td><td class="n b">${brl(a.valor)}</td><td>${quando(a.pago_em)}<div class="mut small">por ${a.pagou || '—'}</div></td>
+<td class="n"><form method="post" action="/pagar/desfazer" onsubmit="return confirm('Desfazer o pagamento de ${a.nome.replace(/['"\\<>&]/g, '')}? Ele volta para a lista A pagar.')"><input type="hidden" name="par" value="${a.fid}:${a.mid}"><input type="hidden" name="volta" value="${aqui}"><button class="btn btn-ghost btn-sm">${icone('desfazer', 'sm')} Desfazer</button></form></td></tr>`)}
+${lista.length ? '' : html`<tr><td colspan="6" class="mut" style="text-align:center;padding:32px">Nenhum pagamento marcado ainda.</td></tr>`}</tbody></table></div>`
+  : html`<form method="post" action="/pagar" data-pagar><input type="hidden" name="volta" value="${aqui}"><div class="tw"><table><thead><tr><th scope="col" style="width:44px"><input type="checkbox" data-todos aria-label="Selecionar todos"></th><th scope="col">Entregador</th><th scope="col">Loja</th><th scope="col">Período</th><th scope="col" class="n">Valor acumulado</th></tr></thead><tbody>
+${linhas.map((l) => html`<tr><td><input type="checkbox" name="sel" value="${l.sel}" data-v="${l.valor}" aria-label="Selecionar ${l.nome}"></td><td><b>${l.nome}</b><div class="mut small">PIX ${l.pix}${l.pixMudou ? html` <span class="badge warn nodot">PIX mudou entre os dias</span>` : ''}</div>${obsH(l.obs)}</td><td>${lojaCurta(l.loja)}</td><td>${dm(l.ini)} a ${dm(l.fim)}<div class="mut small">${l.n} fechamento(s)</div></td><td class="n b">${brl(l.valor)}</td></tr>`)}
+${linhas.length ? '' : html`<tr><td colspan="5" class="mut" style="text-align:center;padding:32px">Nada aprovado para pagar${loja || ate ? ' com esses filtros' : ''}. Aprove os fechamentos enviados pelas lojas.</td></tr>`}</tbody>
+${linhas.length ? html`<tfoot><tr><th colspan="4" scope="row">Total na tela</th><td class="n b">${brl(soma(linhas))}</td></tr></tfoot>` : ''}</table></div>
+${linhas.length ? html`<div class="barra" role="region" aria-label="Marcar como pago"><div class="barra-in"><div><span class="mut small">Selecionados: <b id="sel-n">0</b></span><b id="sel-total">R$ 0,00</b></div><button class="btn btn-pri btn-lg" data-pagar-btn disabled>${icone('check')} Marcar como pago</button></div></div>` : ''}</form>`}</div>`));
+});
+
+app.post('/pagar', soPagar, (req, res) => {
+  const u = req.user, url = urlPagar(req.body.volta);
+  const trios = [].concat(req.body.sel ?? []).flatMap((s) => String(s).split(',')).map((s) => s.split(':').map(Number)).filter((t) => t.length === 3 && t.every(Number.isInteger));
+  if (!trios.length) recusa('Selecione pelo menos um entregador.', url);
+  const r = tx(() => {
+    let total = 0; const porF = new Map();
+    for (const [fid, mid, valor] of trios) {
+      const a = db.prepare('SELECT a.valor, a.pago_em, f.loja_id FROM aprovacoes a JOIN fechamentos f ON f.id = a.fechamento_id WHERE a.fechamento_id = ? AND a.motoboy_id = ?').get(fid, mid);
+      if (!a || (u.loja_id && a.loja_id !== u.loja_id)) recusa('Item não encontrado. Atualize a tela. Nada foi marcado.', url);
+      if (a.pago_em) recusa('Algum item já estava pago. Atualize a tela. Nada foi marcado.', url);
+      if (a.valor !== valor) recusa('Algum valor mudou. Atualize a tela. Nada foi marcado.', url);
+      db.prepare("UPDATE aprovacoes SET pago_em = datetime('now','localtime'), pago_por = ? WHERE fechamento_id = ? AND motoboy_id = ?").run(u.id, fid, mid);
+      total += valor; const x = porF.get(fid) || { n: 0, v: 0 }; x.n++; x.v += valor; porF.set(fid, x);
+    }
+    for (const [fid, x] of porF) log(u.id, `f:${fid}`, `Marcou como pago: ${x.n} entregador(es), ${brl(x.v)}`);
+    return { n: trios.length, total };
+  });
+  volta(res, url, 'ok', `${r.n} pagamento(s) marcado(s) como pago, ${brl(r.total)}.`);
+});
+
+app.post('/pagar/desfazer', soPagar, (req, res) => {
+  const u = req.user, url = urlPagar(req.body.volta), [fid, mid] = String(req.body.par || '').split(':').map(Number);
+  const a = db.prepare('SELECT a.pago_em, f.loja_id FROM aprovacoes a JOIN fechamentos f ON f.id = a.fechamento_id WHERE a.fechamento_id = ? AND a.motoboy_id = ?').get(fid, mid);
+  if (!a || !a.pago_em || (u.loja_id && a.loja_id !== u.loja_id)) recusa('Esse pagamento não está marcado como pago.', url);
+  db.prepare('UPDATE aprovacoes SET pago_em = NULL, pago_por = NULL WHERE fechamento_id = ? AND motoboy_id = ?').run(fid, mid);
+  log(u.id, `f:${fid}`, `Desfez o pagamento de ${db.prepare('SELECT nome FROM motoboys WHERE id = ?').get(mid)?.nome || mid}`);
+  volta(res, url, 'ok', 'Pagamento desfeito: voltou para a lista A pagar.');
 });
 
 // ---------- Usuários (admin) ----------

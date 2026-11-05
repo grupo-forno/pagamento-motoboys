@@ -127,3 +127,20 @@ test('fechamento de 1 dia: só o Resumo, valor do dia = total do Resumo, sem sob
   assert.match(await envia('2999-01-01'), /erro=/); // futuro
 });
 
+
+test('A pagar: soma aprovados não pagos, marca como pago uma só vez, recusa valor mudado e outra loja, e desfaz', async () => {
+  const fin = await entra('fin'), fin2 = await entra('fin2');
+  const pag = (await (await get(fin, '/pagar')).text()).replace(/ /g, ' ');
+  assert.ok(pag.includes('Ana') && pag.includes('Bia') && pag.includes('data-pagar'));
+  const par = (m, v) => `${F1}:${ids[m]}:${v}`, pago = (m) => db.prepare('SELECT pago_em FROM aprovacoes WHERE fechamento_id = ? AND motoboy_id = ?').get(F1, ids[m]).pago_em;
+  assert.match(await post(fin2, '/pagar', { sel: par('Ana', 1000) }), /erro=/); // financeiro de outra loja
+  assert.match(await post(fin, '/pagar', { sel: par('Ana', 999) }), /erro=/);   // valor mudou
+  assert.strictEqual(pago('Ana'), null);
+  assert.match(await post(fin, '/pagar', { sel: par('Ana', 1000) }), /ok=/);
+  assert.ok(pago('Ana'));
+  assert.match(await post(fin, '/pagar', { sel: [par('Ana', 1000), par('Bia', 2000)] }), /erro=/); // Ana já paga: nada é marcado
+  assert.strictEqual(pago('Bia'), null);
+  assert.ok(!(await (await get(fin, '/pagar')).text()).includes('value="' + par('Ana', 1000)));
+  assert.match(await post(fin, '/pagar/desfazer', { par: `${F1}:${ids.Ana}` }), /ok=/);
+  assert.strictEqual(pago('Ana'), null);
+});

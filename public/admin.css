@@ -32,3 +32,5 @@
 .dlg .acoes-dlg{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
 .lista-ed.lojas>details>summary,.lista-cab.lojas{grid-template-columns:minmax(0,1.2fr) minmax(0,2.2fr) 110px 18px}.cfg-estreito{max-width:760px}
 @media(max-width:760px){.lista-cab{display:none}.lista-ed>details>summary,.lista-ed.lojas>details>summary{grid-template-columns:minmax(0,1fr) auto}.lista-ed>details>summary>:nth-child(2),.lista-ed>details>summary>:nth-child(3){grid-column:1}}
+
+.obs-sub{display:inline-block;max-width:100%;margin-top:4px;padding:3px 8px;border-radius:6px;background:var(--warn-soft);color:var(--tx-2);font-size:13px;overflow-wrap:anywhere}

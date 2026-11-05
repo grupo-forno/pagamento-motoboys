@@ -129,6 +129,10 @@ if (!temColuna('fechamentos', 'origem_id')) db.exec('ALTER TABLE fechamentos ADD
 // Aprovação guarda o valor, o PIX e a versão aprovados: se mudarem num reenvio, o item volta para análise.
 if (!temColuna('aprovacoes', 'valor')) db.exec('ALTER TABLE aprovacoes ADD COLUMN valor INTEGER; ALTER TABLE aprovacoes ADD COLUMN pix TEXT; ALTER TABLE aprovacoes ADD COLUMN versao INTEGER;');
 
+// Pago de verdade (marcado pelo financeiro) e observação do despachante por entregador.
+if (!temColuna('aprovacoes', 'pago_em')) db.exec('ALTER TABLE aprovacoes ADD COLUMN pago_em TEXT; ALTER TABLE aprovacoes ADD COLUMN pago_por INTEGER;');
+if (!temColuna('edicoes', 'obs')) db.exec('ALTER TABLE edicoes ADD COLUMN obs TEXT');
+
 for (const nome of ['FORNO PAULISTA DIRCEU', 'FORNO PAULISTA DOM SEVERINO ATIVA', 'FORNO PAULISTA SUL', 'Forno Paulista Centro de Distribuição Leste'])
   db.prepare('INSERT OR IGNORE INTO lojas (nome) VALUES (?)').run(nome);
 // Calendário inicial: DIRCEU paga seg/qua/sex; as demais seg/sex (editável em Configurações).

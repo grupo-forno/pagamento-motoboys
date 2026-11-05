@@ -201,3 +201,5 @@ body.larga .main .wrap{max-width:1600px}
 .fc[data-w=estreito] .c-sel .alvo{width:auto;margin:0;gap:12px;padding-left:12px;min-height:44px;display:flex;align-items:center;font-weight:600;font-size:14px}
 .fc[data-w=estreito] .c-sel .sel-txt{position:static;width:auto;height:auto;clip:auto}
 .fc[data-w=estreito] #fc-resumo thead .c-sel{width:auto;flex:1}.fc[data-w=estreito] #fc-resumo thead .alvo{padding-left:10px}
+
+.obs-sub{display:inline-block;max-width:100%;margin-top:4px;padding:3px 8px;border-radius:6px;background:var(--warn-soft);color:var(--tx-2);font-size:13px;overflow-wrap:anywhere}

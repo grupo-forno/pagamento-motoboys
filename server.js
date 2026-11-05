@@ -12,6 +12,12 @@ const { Raw, html, esc, icone, iniciais, semAcento, CSS, JS } = require('./ui');
 
 const app = express();
 app.set('trust proxy', 1);
+// Cabeçalhos de segurança: sem iframe, sem adivinhar tipo de arquivo, HSTS quando em HTTPS.
+app.use((req, res, next) => {
+  res.set({ 'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin' });
+  if (process.env.COOKIE_SECURE === '1') res.set('Strict-Transport-Security', 'max-age=15552000');
+  next();
+});
 app.use(express.urlencoded({ extended: false }));
 app.use('/marca', express.static(path.join(__dirname, 'public'), { maxAge: '7d' })); // logos do Grupo Forno
 
@@ -474,7 +480,7 @@ ${decide ? html`<div class="barra" role="region" aria-label="Decisão sobre os s
 <button type="button" class="btn btn-ok" data-dec="aprovar">${icone('check', 'sm')} Aprovar selecionados</button></div></div>
 <dialog id="dlg-dec" class="dlg" aria-labelledby="dlg-dec-t" aria-describedby="dlg-dec-r"><h2 id="dlg-dec-t">Confirmar decisão</h2><p id="dlg-dec-r"></p><ul class="dlg-l" data-dlg-lista></ul>
 <div class="field" data-dlg-motivo hidden style="margin-top:12px"><label for="motivo">Motivo da devolução <span class="req" aria-hidden="true">*</span></label><textarea id="motivo" name="motivo" minlength="5" maxlength="2000" aria-describedby="dica-motivo"></textarea>
-<p class="hint" id="dica-motivo">Vai para ${avisados.length ? avisados.map((a) => `${a.nome}${a.email ? ` (${a.email})` : ' (sem e-mail: vê no sistema)'}`).join(', ') : 'ninguém: a loja não tem despachante cadastrado'}. Entregadores já aprovados continuam aprovados.</p></div>
+<p class="hint" id="dica-motivo">O aviso aparece na tela inicial de ${avisados.length ? avisados.map((a) => a.nome).join(', ') : 'ninguém: a loja não tem despachante cadastrado'}. Entregadores já aprovados continuam aprovados.</p></div>
 <div class="acoes-f"><button class="btn btn-ok" data-dlg-ok>Confirmar</button><button type="button" class="btn btn-ghost" data-dlg-cancela>Cancelar</button></div></dialog>` : ''}
 </section>
 <section class="card painel" id="pordia" role="tabpanel" aria-labelledby="t-dia" hidden>
@@ -868,7 +874,6 @@ app.post('/fechamentos/:fid/resumo', so((r) => podeEditar(r.user, r.f)), umResum
 // Destinatários padrão da solicitação (Configurações) + cópia para quem envia, se ativada.
 function destinatariosPadrao(autor) {
   const para = listaEmails(cfg('email_para'));
-  if (cfg('email_copia') === '1' && autor.email && !para.includes(autor.email)) para.push(autor.email);
   return para;
 }
 // Destinatários digitados na confirmação (valem só para este envio).
@@ -1068,12 +1073,12 @@ app.post('/fechamentos/:fid/aprovar', so((r) => decideFin(r.user)), (req, res) =
 });
 
 // Quem recebe o aviso de devolução: quem importou e os despachantes da loja.
-const avisadosDevolucao = (f) => db.prepare("SELECT nome, email FROM usuarios WHERE ativo = 1 AND (id = ? OR (perfil = 'despachante' AND loja_id = ?)) ORDER BY nome").all(f.criado_por, f.loja_id);
+const avisadosDevolucao = (f) => db.prepare("SELECT nome FROM usuarios WHERE ativo = 1 AND (id = ? OR (perfil = 'despachante' AND loja_id = ?)) ORDER BY nome").all(f.criado_por, f.loja_id);
 
 app.post('/fechamentos/:fid/devolver', so((r) => decideFin(r.user)), async (req, res) => {
   const motivo = String(req.body.motivo || '').trim().slice(0, 2000);
   if (motivo.length < 5) recusa('Escreva o motivo da devolução (mínimo 5 caracteres). Nada foi alterado.', detalheFin(req.f, req.body.volta));
-  const avisados = avisadosDevolucao(req.f), para = [...new Set(avisados.map((a) => a.email).filter(Boolean))];
+  const avisados = avisadosDevolucao(req.f);
   const r = tx(() => {
     const { f, url, sel, total, itens } = decisao(req);
     const apr = sel.filter((i) => i.sit === 'aprovado');
@@ -1106,14 +1111,8 @@ app.post('/fechamentos/:fid/devolver', so((r) => decideFin(r.user)), async (req,
     log(req.user.id, `f:${alvo.id}`, `Entregadores devolvidos (versão ${f.versao}, ${brl(total)}): ${quais}`);
     return { f: alvo, url: alvo.id === f.id ? url : detalheFin(alvo, req.body.volta), sel, total, separado: alvo.id !== f.id, origem: f };
   });
-  const app_url = cfg('app_url').replace(/\/$/, '');
-  const erro = await enviaELoga(r.f, 'devolução', para, {
-    subject: `Fechamento devolvido para correção · ${r.f.loja} · ${periodo(r.f)}`,
-    text: `${req.user.nome} (financeiro) devolveu o fechamento de ${r.f.loja}, período ${periodo(r.f)}, para correção.\n\nMotivo:\n${motivo}\n\nEntregadores devolvidos:\n${r.sel.map((i) => `• ${i.nome}: ${brl(i.total)}`).join('\n')}\n\n${r.separado ? `Os entregadores já aprovados ficaram fechados no fechamento #${r.origem.id}. Este novo fechamento (#${r.f.id}) tem só os que não foram aprovados: corrija e envie de novo.` : 'Nenhum entregador tinha sido aprovado; corrija e envie de novo.'}` + (app_url ? `\n\nAbrir no sistema: ${app_url}/fechamentos/${r.f.id}` : ''),
-  });
   const sep = r.separado ? ` Os aprovados ficaram fechados no #${r.origem.id}; os não aprovados estão neste novo fechamento #${r.f.id}.` : '';
-  volta(res, r.url, erro ? 'erro' : 'ok', (erro ? `Devolvido à loja (${r.sel.length} entregador(es)), mas o e-mail não saiu: ${erro}. A loja vê a devolução ao entrar no sistema.`
-    : `Devolvido à loja (${r.sel.length} entregador(es), ${brl(r.total)}). Aviso enviado para ${para.join(', ')}.`) + sep);
+  volta(res, r.url, 'ok', `Devolvido à loja (${r.sel.length} entregador(es), ${brl(r.total)}). O despachante vê o aviso e o motivo ao entrar no sistema.` + sep);
 });
 
 // Arquivar (no lugar de excluir): sai da lista, deixa de ser válido e libera os pedidos para outro fechamento. Nada é apagado.
@@ -1251,7 +1250,6 @@ app.get('/usuarios', soAdmin, (req, res) => {
   const us = db.prepare("SELECT u.*, l.nome loja FROM usuarios u LEFT JOIN lojas l ON l.id = u.loja_id WHERE u.perfil <> 'motoboy' ORDER BY u.ativo DESC, u.nome").all();
   const lojas = db.prepare('SELECT * FROM lojas ORDER BY nome').all();
   const campos = (u = {}, p = '') => html`<div class="field"><label for="${p}nome">Nome <span class="req">*</span></label><input id="${p}nome" name="nome" required value="${u.nome}"></div>
-<div class="field"><label for="${p}email">E-mail</label><input id="${p}email" name="email" type="email" value="${u.email}" placeholder="nome@grupofornopaulista.com"><p class="hint">Para avisos do sistema (ex.: o despachante recebe quando o financeiro devolve um fechamento).</p></div>
 <div class="fgrid"><div class="field"><label for="${p}perfil">Perfil</label><select id="${p}perfil" name="perfil">${Object.entries(PERFIS).map(([k, v]) => html`<option value="${k}" ${u.perfil === k ? 'selected' : ''}>${v}</option>`)}</select></div>
 <div class="field"><label for="${p}loja">Loja</label><select id="${p}loja" name="loja"><option value="">—</option>${lojas.map((l) => html`<option value="${l.id}" ${u.loja_id === l.id ? 'selected' : ''}>${l.nome}</option>`)}</select><p class="hint">Obrigatória para despachante. No financeiro, vazia = vê todas as lojas.</p></div></div>`;
   res.send(page(req, { titulo: 'Usuários', sub: 'Quem acessa o sistema: despachantes, financeiro, gestão e TI.', css: '/marca/admin.css', js: '/marca/admin.js',
@@ -1260,7 +1258,7 @@ app.get('/usuarios', soAdmin, (req, res) => {
 <div class="admin-barra"><label class="sr" for="busca-u">Buscar pessoa</label><input id="busca-u" type="search" placeholder="Buscar por nome, login ou e-mail" data-busca=".lista-ed>details" autocomplete="off"></div>
 <div class="lista-cab" aria-hidden="true"><span>Pessoa</span><span>Perfil</span><span>Loja</span><span></span></div>
 <div class="lista-ed">
-${us.map((u) => html`<details class="${u.ativo ? '' : 'inativo'}"><summary><div class="who">${avatar(u.nome)}<div><div class="nome-l">${u.nome}</div><div class="sub">${u.login}${u.email ? ` · ${u.email}` : ''}</div></div></div>
+${us.map((u) => html`<details class="${u.ativo ? '' : 'inativo'}"><summary><div class="who">${avatar(u.nome)}<div><div class="nome-l">${u.nome}</div><div class="sub">${u.login}</div></div></div>
 <span><span class="badge nodot">${PERFIS[u.perfil]}</span>${u.ativo ? '' : html` <span class="badge bad">Inativo</span>`}</span><span class="cal">${u.loja || '—'}</span>${icone('chevron', 'chev')}</summary>
 <div class="corpo"><form method="post" action="/usuarios/${u.id}">${campos(u, `u${u.id}-`)}<div class="fgrid"><div class="field"><label for="u${u.id}-senha">Nova senha</label><input id="u${u.id}-senha" name="senha" type="password" minlength="8" placeholder="Deixe vazio para manter" autocomplete="new-password"></div></div>
 <label class="check"><input type="checkbox" name="ativo" value="1" ${u.ativo ? 'checked' : ''}> Ativo (pode entrar no sistema)</label><button class="btn btn-pri">${icone('check', 'sm')} Salvar alterações</button></form></div></details>`)}
@@ -1276,9 +1274,8 @@ ${us.map((u) => html`<details class="${u.ativo ? '' : 'inativo'}"><summary><div 
 <div class="acoes-dlg"><button type="button" class="btn btn-ghost" data-fecha>Cancelar</button><button class="btn btn-pri">${icone('mais')} Criar usuário</button></div></form></dialog>`));
 });
 function dadosUsuario(b) {
-  const v = { nome: String(b.nome || '').trim(), perfil: String(b.perfil), loja_id: Number(b.loja) || null, email: String(b.email || '').trim() || null };
+  const v = { nome: String(b.nome || '').trim(), perfil: String(b.perfil), loja_id: Number(b.loja) || null };
   if (!v.nome || !PERFIS[v.perfil]) throw falha('Dados inválidos.');
-  if (v.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.email)) throw falha('E-mail inválido.');
   if (v.perfil === 'despachante' && !v.loja_id) throw falha('Despachante precisa ter loja.');
   if (v.loja_id && !db.prepare('SELECT 1 FROM lojas WHERE id = ?').get(v.loja_id)) throw falha('Loja inválida.');
   if (!['despachante', 'financeiro'].includes(v.perfil)) v.loja_id = null; // financeiro com loja só vê essa loja
@@ -1289,7 +1286,7 @@ app.post('/usuarios', soAdmin, (req, res) => {
   const v = dadosUsuario(req.body), login = String(req.body.login || '').trim().toLowerCase();
   if (!login || !req.body.senha) throw falha('Informe login e senha.');
   if (db.prepare('SELECT 1 FROM usuarios WHERE login = ?').get(login)) throw falha('Login já existe.');
-  db.prepare('INSERT INTO usuarios (nome, login, senha, perfil, loja_id, email) VALUES (?,?,?,?,?,?)').run(v.nome, login, hashSenha(String(req.body.senha)), v.perfil, v.loja_id, v.email);
+  db.prepare('INSERT INTO usuarios (nome, login, senha, perfil, loja_id) VALUES (?,?,?,?,?)').run(v.nome, login, hashSenha(String(req.body.senha)), v.perfil, v.loja_id);
   log(req.user.id, 'usuarios', `Criou usuário ${login} (${v.perfil})`);
   volta(res, '/usuarios', 'ok', 'Usuário criado.');
 });
@@ -1297,7 +1294,7 @@ app.post('/usuarios/:id', soAdmin, (req, res) => {
   const id = Number(req.params.id), v = dadosUsuario(req.body), ativo = req.body.ativo ? 1 : 0;
   if (!db.prepare('SELECT 1 FROM usuarios WHERE id = ?').get(id)) throw falha('Usuário não encontrado.', 404);
   if (id === req.user.id && (!ativo || v.perfil !== 'admin')) throw falha('Você não pode remover seu próprio acesso de admin.');
-  db.prepare('UPDATE usuarios SET nome = ?, perfil = ?, loja_id = ?, email = ?, ativo = ? WHERE id = ?').run(v.nome, v.perfil, v.loja_id, v.email, ativo, id);
+  db.prepare('UPDATE usuarios SET nome = ?, perfil = ?, loja_id = ?, ativo = ? WHERE id = ?').run(v.nome, v.perfil, v.loja_id, ativo, id);
   if (req.body.senha) db.prepare('UPDATE usuarios SET senha = ? WHERE id = ?').run(hashSenha(String(req.body.senha)), id);
   if (req.body.senha || !ativo) db.prepare('DELETE FROM sessoes WHERE usuario_id = ?').run(id);
   log(req.user.id, 'usuarios', `Alterou usuário #${id}${req.body.senha ? ' (senha redefinida)' : ''}`);
@@ -1316,7 +1313,6 @@ app.get('/config', so((r) => r.user.perfil === 'admin'), (req, res) => {
 ${semSmtp ? html`<div class="alert warn">${icone('alerta')}<div><b>Servidor de e-mail ainda não configurado</b>Enquanto isso, os e-mails não saem: ficam salvos no servidor (pasta data/emails) e o fechamento mostra o aviso.</div></div>` : ''}
 <div class="card"><div class="card-h"><span class="hico pri">${icone('email')}</span><div class="t"><h2>Solicitação de pagamento</h2><p>Quando o despachante clica em "Enviar ao financeiro", sai um e-mail com a planilha e o PDF em anexo.</p></div></div><div class="card-b">
 <div class="field"><label for="email_para">Enviar para <span class="req">*</span></label><textarea id="email_para" name="email_para" style="min-height:80px" placeholder="financeiro@grupofornopaulista.com">${v('email_para')}</textarea><p class="hint">Um ou mais e-mails, um por linha ou separados por vírgula.</p></div>
-<label class="check"><input type="checkbox" name="email_copia" value="1" ${v('email_copia') === '1' ? 'checked' : ''}> Enviar cópia para quem enviou o fechamento (se tiver e-mail no cadastro)</label>
 <div class="field"><label for="app_url">Endereço do sistema</label><input id="app_url" name="app_url" value="${v('app_url')}" placeholder="https://motoboys.grupofornopaulista.com"><p class="hint">Vai no e-mail como link para abrir o fechamento.</p></div></div></div>
 
 <div class="card"><div class="card-h"><span class="hico">${icone('enviar')}</span><div class="t"><h2>Conta que envia (servidor SMTP)</h2><p>O e-mail sai desta conta.</p></div></div><div class="card-b">
@@ -1362,7 +1358,7 @@ app.post('/config', so((r) => r.user.perfil === 'admin'), (req, res) => {
   const invalido = emails.find((e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
   if (invalido) throw falha(`E-mail inválido: ${invalido}`);
   if (b.smtp_port && !/^\d{2,5}$/.test(String(b.smtp_port).trim())) throw falha('Porta inválida.');
-  const valores = { email_para: emails.join(', '), email_copia: b.email_copia ? '1' : '0', app_url: String(b.app_url || '').trim(),
+  const valores = { email_para: emails.join(', '), app_url: String(b.app_url || '').trim(),
     smtp_host: String(b.smtp_host || '').trim(), smtp_port: String(b.smtp_port || '').trim(), smtp_user: String(b.smtp_user || '').trim(), smtp_from: String(b.smtp_from || '').trim() };
   if (b.smtp_pass) valores.smtp_pass = String(b.smtp_pass);
   const set = db.prepare('INSERT INTO config (chave, valor) VALUES (?, ?) ON CONFLICT (chave) DO UPDATE SET valor = excluded.valor');

@@ -152,7 +152,7 @@ function confereSenha(senha, salvo) {
 if (!db.prepare('SELECT 1 FROM usuarios').get()) {
   const senha = process.env.ADMIN_SENHA || crypto.randomBytes(9).toString('base64url');
   db.prepare("INSERT INTO usuarios (nome, login, senha, perfil) VALUES ('Administrador','admin',?,'admin')").run(hashSenha(senha));
-  console.log(`\n>>> Usuário inicial criado: login "admin", senha "${senha}" (troque em "Minha senha")\n`);
+  console.log(`\n>>> Usuário inicial criado: login "admin", senha "${senha}" (para trocar: Usuários, no menu)\n`);
 }
 
 const log = (usuarioId, ref, acao) => db.prepare('INSERT INTO log (usuario_id, ref, acao) VALUES (?,?,?)').run(usuarioId, ref, acao);

@@ -13,6 +13,17 @@ const USUARIOS = (nome) => `CREATE TABLE IF NOT EXISTS ${nome} (
   perfil TEXT NOT NULL CHECK (perfil IN ('admin','gestao','financeiro','despachante','motoboy')),
   loja_id INTEGER REFERENCES lojas, ativo INTEGER NOT NULL DEFAULT 1, email TEXT,
   motoboy_id INTEGER UNIQUE REFERENCES motoboys);`;
+// ativo = 0 quando o fechamento é arquivado: o índice pedidos_validos impede o mesmo pedido em dois fechamentos válidos.
+const PEDIDOS = (nome) => `CREATE TABLE IF NOT EXISTS ${nome} (
+  id INTEGER PRIMARY KEY, fechamento_id INTEGER NOT NULL REFERENCES fechamentos ON DELETE CASCADE,
+  loja_id INTEGER NOT NULL, chave TEXT NOT NULL, numero TEXT, dia TEXT NOT NULL, entregador TEXT,
+  motoboy_id INTEGER REFERENCES motoboys, taxa INTEGER NOT NULL, status TEXT, ativo INTEGER NOT NULL DEFAULT 1);`;
+// Editar ou remover um ajuste não apaga: marca substituido_em e a versão antiga fica no histórico.
+const AJUSTES = (nome) => `CREATE TABLE IF NOT EXISTS ${nome} (
+  id INTEGER PRIMARY KEY, fechamento_id INTEGER NOT NULL REFERENCES fechamentos ON DELETE CASCADE,
+  motoboy_id INTEGER NOT NULL REFERENCES motoboys, dia TEXT NOT NULL, valor_informado INTEGER,
+  valor_final INTEGER NOT NULL CHECK (valor_final >= 0), justificativa TEXT NOT NULL, criado_por INTEGER,
+  criado_em TEXT NOT NULL DEFAULT (datetime('now','localtime')), substituido_em TEXT, substituido_por INTEGER);`;
 
 // Migração da 1ª versão (usuarios sem perfil motoboy/email): recria a tabela mantendo os dados.
 // Segue o procedimento do SQLite (cria nova, copia, apaga antiga, renomeia) para não quebrar as FKs de sessoes.
@@ -44,22 +55,18 @@ CREATE TABLE IF NOT EXISTS fechamentos (
   id INTEGER PRIMARY KEY, loja_id INTEGER NOT NULL REFERENCES lojas, data_ini TEXT NOT NULL, data_fim TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'rascunho' CHECK (status IN ('rascunho','enviado','pago')),
   criado_por INTEGER REFERENCES usuarios, criado_em TEXT NOT NULL DEFAULT (datetime('now','localtime')), arquivo TEXT);
--- UNIQUE(loja_id, chave) impede pagar o mesmo pedido em dois fechamentos
-CREATE TABLE IF NOT EXISTS pedidos (
-  id INTEGER PRIMARY KEY, fechamento_id INTEGER NOT NULL REFERENCES fechamentos ON DELETE CASCADE,
-  loja_id INTEGER NOT NULL, chave TEXT NOT NULL, numero TEXT, dia TEXT NOT NULL, entregador TEXT,
-  motoboy_id INTEGER REFERENCES motoboys, taxa INTEGER NOT NULL, status TEXT, UNIQUE (loja_id, chave));
-CREATE TABLE IF NOT EXISTS ajustes (
-  id INTEGER PRIMARY KEY, fechamento_id INTEGER NOT NULL REFERENCES fechamentos ON DELETE CASCADE,
-  motoboy_id INTEGER NOT NULL REFERENCES motoboys, dia TEXT NOT NULL, valor_informado INTEGER,
-  valor_final INTEGER NOT NULL CHECK (valor_final >= 0), justificativa TEXT NOT NULL, criado_por INTEGER,
-  criado_em TEXT NOT NULL DEFAULT (datetime('now','localtime')), UNIQUE (fechamento_id, motoboy_id, dia));
+${PEDIDOS('pedidos')}
+${AJUSTES('ajustes')}
 CREATE TABLE IF NOT EXISTS evidencias (
   id INTEGER PRIMARY KEY, ajuste_id INTEGER NOT NULL REFERENCES ajustes ON DELETE CASCADE,
   arquivo TEXT NOT NULL, nome TEXT NOT NULL, tipo TEXT);
 -- PIX de cada motoboy congelado no envio ao financeiro (o PDF enviado e a tela mostram o mesmo)
 CREATE TABLE IF NOT EXISTS envio_pix (
   fechamento_id INTEGER NOT NULL REFERENCES fechamentos ON DELETE CASCADE, motoboy_id INTEGER NOT NULL, pix TEXT,
+  PRIMARY KEY (fechamento_id, motoboy_id));
+-- nome/PIX corrigidos pelo despachante, só neste fechamento (vencem o que veio do Agilizone)
+CREATE TABLE IF NOT EXISTS edicoes (
+  fechamento_id INTEGER NOT NULL REFERENCES fechamentos ON DELETE CASCADE, motoboy_id INTEGER NOT NULL, nome TEXT, pix TEXT,
   PRIMARY KEY (fechamento_id, motoboy_id));
 -- diferença com o Resumo aceita conscientemente pelo despachante (vale só para aquele valor de diferença)
 CREATE TABLE IF NOT EXISTS aceites (
@@ -87,6 +94,20 @@ CREATE TABLE IF NOT EXISTS log (
 const temColuna = (t, c) => !!db.prepare(`SELECT 1 FROM pragma_table_info('${t}') WHERE name = ?`).get(c);
 if (!temColuna('resumo', 'pago')) db.exec('ALTER TABLE resumo ADD COLUMN pago INTEGER NOT NULL DEFAULT 0');
 if (!temColuna('lojas', 'calendario')) db.exec('ALTER TABLE lojas ADD COLUMN calendario TEXT'); // dias de pagamento (agenda.js)
+if (!temColuna('fechamentos', 'arquivado_em')) db.exec('ALTER TABLE fechamentos ADD COLUMN arquivado_em TEXT'); // arquivado: fora da lista e não conta como válido
+// Tabelas com UNIQUE fixo da versão anterior: recria sem ele (procedimento do SQLite), copiando os dados.
+function recria(nome, criar) {
+  const cols = db.prepare(`SELECT name FROM pragma_table_info('${nome}')`).all().map((c) => c.name).join(', ');
+  db.exec('PRAGMA foreign_keys = OFF; BEGIN;');
+  try {
+    db.exec(`${criar(nome + '_novo')} INSERT INTO ${nome}_novo (${cols}) SELECT ${cols} FROM ${nome}; DROP TABLE ${nome}; ALTER TABLE ${nome}_novo RENAME TO ${nome}; COMMIT;`);
+  } catch (e) { db.exec('ROLLBACK'); throw e; } finally { db.exec('PRAGMA foreign_keys = ON'); }
+  console.log(`Banco atualizado para a nova versão (${nome}).`);
+}
+if (!temColuna('pedidos', 'ativo')) recria('pedidos', PEDIDOS);
+if (!temColuna('ajustes', 'substituido_em')) recria('ajustes', AJUSTES);
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS pedidos_validos ON pedidos (loja_id, chave) WHERE ativo = 1;
+CREATE UNIQUE INDEX IF NOT EXISTS ajustes_vigentes ON ajustes (fechamento_id, motoboy_id, dia) WHERE substituido_em IS NULL;`);
 if (!temColuna('fechamentos', 'pagamento')) db.exec('ALTER TABLE fechamentos ADD COLUMN pagamento TEXT'); // data do pagamento a que se refere
 
 for (const nome of ['FORNO PAULISTA DIRCEU', 'FORNO PAULISTA DOM SEVERINO ATIVA', 'FORNO PAULISTA SUL', 'Forno Paulista Centro de Distribuição Leste'])

@@ -86,4 +86,11 @@ function lerResumo(buf) {
   return rows;
 }
 
-module.exports = { lerRelatorio, lerResumo, diaOperacional, centavos, valorDigitado };
+// Formato de chave PIX: e-mail, chave aleatória (UUID) ou número (CPF, CNPJ, celular com ou sem +55).
+function pixValido(p) {
+  const s = String(p || '').trim(), d = s.replace(/\D/g, '');
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return true;
+  return /^[\d.\-/()+\s]+$/.test(s) && [10, 11, 12, 13, 14].includes(d.length);
+}
+
+module.exports = { lerRelatorio, lerResumo, diaOperacional, centavos, valorDigitado, pixValido };

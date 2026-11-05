@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const XLSX = require('xlsx');
-const { lerRelatorio, lerResumo, diaOperacional, centavos, valorDigitado } = require('./importar');
+const { lerRelatorio, lerResumo, diaOperacional, centavos, valorDigitado, pixValido } = require('./importar');
 
 test('valor digitado: só formato brasileiro', () => {
   for (const [v, c] of [['152', 15200], ['152,50', 15250], ['12,5', 1250], ['1.500', 150000], ['1.500,00', 150000], ['R$ 1.234,56', 123456], [' 10 ', 1000], ['0', 0]])
@@ -83,4 +83,9 @@ test('recusa arquivo com várias lojas ou sem colunas', () => {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Entregador', 'Pedidos'], ['X', 1]]), 'S');
   assert.throws(() => lerRelatorio(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })), /Relatório de Pedidos/);
+});
+
+test('pixValido reconhece e-mail, chave aleatória, CPF/CNPJ e celular', () => {
+  for (const ok of ['a@b.com', '123e4567-e89b-12d3-a456-426614174000', '021.090.583-23', '+5586994258810', '86999000001', '12.345.678/0001-90']) assert.ok(pixValido(ok), ok);
+  for (const ruim of ['', 'forno', '123', 'joao@', '86 9999']) assert.ok(!pixValido(ruim), ruim);
 });

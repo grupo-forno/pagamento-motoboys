@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { db, UPLOADS, hashSenha, confereSenha, log, tx } = require('./db');
-const { lerRelatorio, lerResumo, valorDigitado } = require('./importar');
+const { lerRelatorio, lerResumo, valorDigitado, pixValido } = require('./importar');
 const AG = require('./agenda');
 const { gerarPdf, enviarEmail, cfg, listaEmails, brl, diaFmt, dataFmt } = require('./relatorio');
 const { Raw, html, icone, iniciais, semAcento, CSS, JS } = require('./ui');
@@ -131,15 +131,20 @@ app.post('/senha', (req, res) => {
 
 // ---------- Permissões ----------
 const veTudo = (u) => ['admin', 'gestao', 'financeiro'].includes(u.perfil);
-const podeVer = (u, f) => veTudo(u) || (u.perfil === 'despachante' && u.loja_id === f.loja_id);
+// Financeiro: só fechamentos já enviados ao menos uma vez (versao > 0) e da loja dele (sem loja no cadastro = todas).
+const podeVer = (u, f) => (u.perfil === 'financeiro' ? f.versao > 0 && (!u.loja_id || u.loja_id === f.loja_id)
+  : veTudo(u) || (u.perfil === 'despachante' && u.loja_id === f.loja_id));
 const podeEditar = (u, f) => f.status === 'rascunho' && !f.arquivado_em && (u.perfil === 'admin' || (u.perfil === 'despachante' && u.loja_id === f.loja_id));
-const podeDevolver = (u, f) => f.status === 'enviado' && ['admin', 'financeiro'].includes(u.perfil);
+const decideFin = (u) => ['admin', 'financeiro'].includes(u.perfil); // aprova/devolve (o estado do fechamento é conferido na ação)
+const podeDevolver = (u, f) => f.status === 'enviado' && decideFin(u);
 const podeReenviar = (u, f) => f.status !== 'rascunho' && (['admin', 'financeiro'].includes(u.perfil) || (u.perfil === 'despachante' && u.loja_id === f.loja_id));
 const editaMotoboy = (u) => ['admin', 'despachante'].includes(u.perfil);
 const so = (cond) => (req, res, next) => (cond(req) ? next() : next(falha('Sem permissão para esta ação.', 403)));
 
+const carregaF = (id) => db.prepare(`SELECT f.*, l.nome loja, u.nome autor, ue.nome enviou FROM fechamentos f JOIN lojas l ON l.id = f.loja_id
+  LEFT JOIN usuarios u ON u.id = f.criado_por LEFT JOIN usuarios ue ON ue.id = f.enviado_por WHERE f.id = ?`).get(Number(id));
 app.param('fid', (req, res, next, id) => {
-  const f = db.prepare('SELECT f.*, l.nome loja, u.nome autor FROM fechamentos f JOIN lojas l ON l.id = f.loja_id LEFT JOIN usuarios u ON u.id = f.criado_por WHERE f.id = ?').get(Number(id));
+  const f = carregaF(id);
   if (!f || !podeVer(req.user, f)) return next(falha('Fechamento não encontrado.', 404));
   req.f = f;
   next();
@@ -161,7 +166,7 @@ function grade(f) {
   // Resumo do Agilizone (quando enviado): total confiável por motoboy. Quem só aparece no Resumo também entra na grade.
   const temResumo = !!db.prepare('SELECT 1 FROM resumo WHERE fechamento_id = ?').get(f.id);
   const resumo = new Map(db.prepare('SELECT motoboy_id m, SUM(total) t FROM resumo WHERE fechamento_id = ? AND motoboy_id IS NOT NULL GROUP BY 1').all(f.id).map((r) => [r.m, r.t]));
-  const aprov = new Set(db.prepare('SELECT motoboy_id FROM aprovacoes WHERE fechamento_id = ?').all(f.id).map((x) => x.motoboy_id));
+  const aprov = new Map(db.prepare('SELECT a.*, u.nome por FROM aprovacoes a LEFT JOIN usuarios u ON u.id = a.aprovado_por WHERE fechamento_id = ?').all(f.id).map((x) => [x.motoboy_id, x]));
   const aceites = new Map(db.prepare('SELECT * FROM aceites WHERE fechamento_id = ?').all(f.id).map((a) => [a.motoboy_id, a]));
   // Depois do envio, o PIX é o que foi enviado ao financeiro (não muda se o cadastro mudar).
   // PIX do fechamento: digitado pelo despachante (ou congelado no envio) > Resumo do Agilizone > cadastro antigo.
@@ -180,7 +185,10 @@ function grade(f) {
       // ok: bate com o Resumo · aceito: diferença aceita com justificativa (vale para aquele valor exato) · pendente: precisa resolver
       const aceite = aceites.get(m.id);
       const confere = res == null || total === res ? 'ok' : aceite && aceite.diferenca === total - res ? 'aceito' : Object.values(c).some((x) => x.ajuste) ? 'div' : 'pendente'; // div: a divergência registrada já explica a diferença
-      return { ...m, aprovado: f.status === 'pago' || aprov.has(m.id), pix: pixF.get(m.id) ?? pixR.get(m.id) ?? m.pix, pixDigitado: f.status === 'rascunho' && pixF.has(m.id) && !pixR.has(m.id), dias: c, total, resumo: res, confere, aceite };
+      const pix = pixF.get(m.id) ?? pixR.get(m.id) ?? m.pix, ap = aprov.get(m.id);
+      // A aprovação vale para o valor e o PIX aprovados; se mudarem (reenvio), o item volta para análise.
+      const aprovado = ap ? ap.valor == null || (ap.valor === total && ap.pix === pix) : f.status === 'pago';
+      return { ...m, aprovado, aprovacao: ap, alterado: !!ap && !aprovado, pix, pixDigitado: f.status === 'rascunho' && pixF.has(m.id) && !pixR.has(m.id), dias: c, total, resumo: res, noResumo: temResumo && !resumo.has(m.id), confere, aceite };
     }).sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
   const diasArr = [...dias].sort();
   const totDia = Object.fromEntries(diasArr.map((d) => [d, linhas.reduce((s, l) => s + (l.dias[d]?.final || 0), 0)]));
@@ -265,7 +273,9 @@ ${itens.map((p) => { const [cor, txt] = p.aprovado ? ['ok', 'Aprovado'] : SITUAC
 const fechamentosDe = (u) => db.prepare(`SELECT f.*, l.nome loja, u.nome autor,
     (SELECT MAX(id) FROM log WHERE ref = 'f:' || f.id AND acao LIKE 'Devolveu%') > COALESCE((SELECT MAX(id) FROM log WHERE ref = 'f:' || f.id AND acao LIKE 'Enviou%'), 0) devolvido FROM fechamentos f JOIN lojas l ON l.id = f.loja_id LEFT JOIN usuarios u ON u.id = f.criado_por
     WHERE ? OR f.loja_id = ? ORDER BY f.data_fim DESC, f.id DESC LIMIT 300`).all(veTudo(u) ? 1 : 0, u.loja_id ?? -1)
-  .map((f) => { const g = grade(f); return { ...f, total: g.total, n: g.linhas.filter((l) => l.total > 0).length }; });
+  .filter((f) => podeVer(u, f))
+  .map((f) => { const g = grade(f), ap = g.linhas.filter((l) => l.total > 0 && l.aprovado);
+    return { ...f, enviou: f.enviado_por && db.prepare('SELECT nome FROM usuarios WHERE id = ?').get(f.enviado_por)?.nome, total: g.total, n: g.linhas.filter((l) => l.total > 0).length, nAprov: ap.length, aprovado: ap.reduce((t, l) => t + l.total, 0) }; });
 const motivoDevolucao = (f) => db.prepare("SELECT l.acao, l.quando, u.nome FROM log l LEFT JOIN usuarios u ON u.id = l.usuario_id WHERE ref = ? AND acao LIKE 'Devolveu%' ORDER BY l.id DESC").get(`f:${f.id}`);
 
 // Despachante: a página inicial responde "o que preciso fazer agora?".
@@ -304,6 +314,187 @@ ${proximos.map((p) => html`<tr><td><b>${diaLongo(p.pagamento)}</b></td><td>${per
 <p class="outro"><a href="/historico">Ver todos os fechamentos no Histórico</a></p>`));
 }
 
+// ---------- Financeiro: fila e conferência ----------
+const FIN_ABAS = { aguardando: 'Aguardando análise', parcial: 'Parcialmente aprovados', devolvidos: 'Devolvidos', aprovados: 'Aprovados', todos: 'Todos' };
+const abaFin = (f) => (f.status === 'pago' ? 'aprovados' : f.status === 'rascunho' ? 'devolvidos' : f.nAprov ? 'parcial' : 'aguardando');
+const SELO_FIN = { aguardando: ['info', 'Aguardando análise'], parcial: ['warn', 'Parcialmente aprovado'], devolvidos: ['bad', 'Devolvido à loja'], aprovados: ['ok', 'Aprovado'] };
+const seloFin = (f) => { const [c, t] = f.arquivado_em ? ['nodot', 'Arquivado pela loja'] : SELO_FIN[abaFin(f)]; return html`<span class="badge ${c}">${t}</span>`; };
+// Volta à fila com os mesmos filtros e página (só aceita endereço da própria fila).
+const voltaFila = (v) => (typeof v === 'string' && /^\/(\?[\w=&%.+-]*)?$/.test(v) ? v : '/');
+const detalheFin = (f, v) => `/fechamentos/${f.id}${voltaFila(v) === '/' ? '' : `?volta=${encodeURIComponent(voltaFila(v))}`}`;
+const SIT_ITEM = { aprovado: ['ok', 'Aprovado'], aguardando: ['info', 'Aguardando análise'], alterado: ['warn', 'Mudou após aprovação'], bloqueado: ['bad', 'Bloqueado'], devolvido: ['bad', 'Devolvido'], semvalor: ['nodot', 'Sem valor'] };
+
+// Situação de cada entregador para o financeiro. Cada um cai em uma só situação (sem dupla contagem nos totais).
+function itensFin(f, g) {
+  const dev = new Map(db.prepare('SELECT d.*, u.nome por FROM devolucoes d LEFT JOIN usuarios u ON u.id = d.devolvido_por WHERE fechamento_id = ? ORDER BY d.id').all(f.id).map((d) => [d.motoboy_id, d]));
+  const usos = {};
+  for (const l of g.linhas) if (l.pix && l.total > 0) usos[l.pix.toLowerCase()] = (usos[l.pix.toLowerCase()] || 0) + 1;
+  return g.linhas.map((l) => {
+    const d = dev.get(l.id), devolvido = !!d && d.versao === f.versao && f.status === 'rascunho';
+    const bloq = l.total <= 0 ? 'sem valor a pagar' : !l.pix ? 'sem chave PIX' : l.confere === 'pendente' ? `diferença de ${brl(l.total - (l.resumo || 0))} com o Resumo, sem justificativa da loja` : '';
+    const sit = l.aprovado ? 'aprovado' : devolvido ? 'devolvido' : l.total <= 0 && !l.resumo ? 'semvalor' : bloq ? 'bloqueado' : l.alterado ? 'alterado' : 'aguardando';
+    const avisoPix = !l.pix ? '' : !pixValido(l.pix) ? 'Formato de chave PIX não reconhecido' : usos[l.pix.toLowerCase()] > 1 ? 'Mesma chave PIX de outro entregador' : '';
+    return { ...l, dev: d, sit, bloq, avisoPix };
+  });
+}
+
+function filaFinanceiro(req, res) {
+  const u = req.user, q = req.query, hoje = agora().data;
+  const todos = fechamentosDe(u);
+  const lojas = db.prepare('SELECT * FROM lojas ORDER BY nome').all().filter((l) => !u.loja_id || l.id === u.loja_id);
+  const loja = lojas.some((l) => l.id === Number(q.loja)) ? Number(q.loja) : 0;
+  const data = (x) => (/^\d{4}-\d{2}-\d{2}$/.test(x || '') ? x : '');
+  const de = data(q.de), ate = data(q.ate), busca = String(q.q || '').trim().slice(0, 60), termo = semAcento(busca.replace(/^#/, ''));
+  const env = (f) => (f.enviado_em || '').slice(0, 10);
+  const filtrados = todos.filter((f) => (!loja || f.loja_id === loja) && (!de || env(f) >= de) && (!ate || env(f) <= ate)
+    && (!termo || semAcento(`${f.id} ${f.loja} ${periodo(f)} ${f.enviou || ''} ${f.autor || ''}`).includes(termo)));
+  const daAba = (k) => filtrados.filter((f) => k === 'todos' || (!f.arquivado_em && abaFin(f) === k));
+  const aba = q.aba in FIN_ABAS ? q.aba : 'aguardando', pendente = ['aguardando', 'parcial'].includes(aba);
+  // Pendentes: os mais antigos primeiro, para nada ficar esquecido. Os demais: os mais recentes primeiro.
+  const lista = daAba(aba).sort((a, b) => (pendente ? (a.enviado_em || '').localeCompare(b.enviado_em || '') : (b.enviado_em || '').localeCompare(a.enviado_em || '')) || b.id - a.id);
+  const POR = 20, pags = Math.max(1, Math.ceil(lista.length / POR)), pag = Math.min(pags, Math.max(1, Math.trunc(Number(q.p)) || 1));
+  const qs = (mud = {}) => { const p = new URLSearchParams(), v = { aba, loja: loja || '', de, ate, q: busca, p: pag, ...mud };
+    for (const [k, x] of Object.entries(v)) if (x && !(k === 'aba' && x === 'aguardando') && !(k === 'p' && x === 1)) p.set(k, x);
+    return p.size ? `/?${p}` : '/'; };
+  const aqui = qs(), filtrando = !!(loja || de || ate || busca), limpar = aba === 'aguardando' ? '/' : `/?aba=${aba}`;
+  const link = (f) => detalheFin(f, aqui);
+  const ativos = filtrados.filter((f) => !f.arquivado_em), emAnalise = ativos.filter((f) => f.status === 'enviado');
+  const antigo = emAnalise.map((f) => f.enviado_em).filter(Boolean).sort()[0];
+  const dias = antigo ? Math.round((Date.parse(hoje) - Date.parse(antigo.slice(0, 10))) / 864e5) : 0;
+  const ag = agenda(lojas, AG.soma(hoje, -7), AG.soma(hoje, 7)).filter((p) => p.pagamento >= hoje || p.situacao !== 'enviado');
+  const VAZIO = { aguardando: 'Nada aguardando análise. Quando uma loja enviar, aparece aqui.', parcial: 'Nenhum fechamento parcialmente aprovado.', devolvidos: 'Nenhum fechamento devolvido aguardando correção da loja.', aprovados: 'Nenhum fechamento aprovado ainda.', todos: 'Nenhuma solicitação recebida ainda.' };
+  res.send(page(req, { titulo: 'Fila do financeiro', sub: 'Solicitações de pagamento enviadas pelas lojas. Confira, aprove por entregador ou devolva para correção.' }, html`
+<dl class="resumo" aria-label="Indicadores${filtrando ? ' (com os filtros atuais)' : ''}">
+<div class="destaque"><dt>Aguardando sua análise</dt><dd>${brl(emAnalise.reduce((t, f) => t + f.total - f.aprovado, 0))}</dd><dd>${emAnalise.length} fechamento(s)</dd></div>
+<div><dt>Envio pendente mais antigo</dt><dd>${antigo ? dataFmt(antigo.slice(0, 10)) : '—'}</dd><dd class="${dias > 2 ? 'bad-t' : ''}">${antigo ? (dias ? `há ${dias} dia(s)` : 'hoje') : 'nada pendente'}</dd></div>
+<div><dt>Devolvidos à loja</dt><dd>${daAba('devolvidos').length}</dd><dd>aguardando correção</dd></div>
+<div><dt>Já aprovado</dt><dd>${brl(ativos.reduce((t, f) => t + f.aprovado, 0))}</dd><dd>${filtrando ? 'nos filtros atuais' : 'em todos os fechamentos'}</dd></div></dl>
+<section class="card fila" aria-label="Fechamentos recebidos">
+<nav class="seg fila-abas" aria-label="Situação">${Object.entries(FIN_ABAS).map(([k, t]) => html`<a href="${qs({ aba: k, p: 1 })}" class="${aba === k ? 'on' : ''}" ${aba === k ? new Raw('aria-current="page"') : ''}>${t}<span class="c">${daAba(k).length}</span></a>`)}</nav>
+<form method="get" action="/" class="filtros" role="search" aria-label="Filtrar fechamentos">${aba !== 'aguardando' ? html`<input type="hidden" name="aba" value="${aba}">` : ''}
+${lojas.length > 1 ? html`<div class="field"><label for="f-loja">Loja</label><select id="f-loja" name="loja"><option value="">Todas as lojas</option>${lojas.map((l) => html`<option value="${l.id}" ${l.id === loja ? 'selected' : ''}>${l.nome}</option>`)}</select></div>` : ''}
+<div class="field"><label for="f-de">Enviado de</label><input id="f-de" type="date" name="de" value="${de}"></div>
+<div class="field"><label for="f-ate">Enviado até</label><input id="f-ate" type="date" name="ate" value="${ate}"></div>
+<div class="field grow"><label for="f-q">Buscar</label><input id="f-q" type="search" name="q" value="${busca}" placeholder="Código, loja, período ou quem enviou"></div>
+<div class="filtros-b"><button class="btn btn-sec">${icone('busca', 'sm')} Filtrar</button>${filtrando ? html`<a class="btn btn-ghost" href="${limpar}">Limpar filtros</a>` : ''}</div></form>
+${lista.length ? html`<div class="tw"><table class="tab-fila"><thead><tr><th scope="col">Código</th><th scope="col">Loja</th><th scope="col">Período</th><th scope="col" class="opc">Recebido</th><th scope="col">Situação</th><th scope="col" class="n opc">Entregadores</th><th scope="col" class="n">Total solicitado</th><th scope="col"><span class="sr">Ação</span></th></tr></thead><tbody>
+${lista.slice((pag - 1) * POR, pag * POR).map((f) => { const pend = !f.arquivado_em && f.status === 'enviado';
+    return html`<tr data-href="${link(f)}"><td><b>#${f.id}</b><div class="mut small">versão ${f.versao}</div></td><td>${lojaCurta(f.loja)}</td>
+<td>${periodo(f)}${f.pagamento ? html`<div class="mut small">pagamento ${diaLongo(f.pagamento)}</div>` : ''}</td>
+<td class="opc">${f.enviado_em ? quando(f.enviado_em) : '—'}${f.enviou ? html`<div class="mut small">por ${f.enviou}</div>` : ''}</td>
+<td>${seloFin(f)}${abaFin(f) === 'parcial' && !f.arquivado_em ? html`<div class="mut small">${f.nAprov} de ${f.n} aprovados · ${brl(f.aprovado)}</div>` : ''}</td>
+<td class="n opc">${f.n}</td><td class="n b">${brl(f.total)}</td>
+<td class="n">${pend ? html`<a class="btn btn-pri btn-sm" href="${link(f)}">Conferir</a>` : html`<a class="btn btn-sec btn-sm" href="${link(f)}">Ver detalhes</a>`}</td></tr>`; })}</tbody></table></div>
+${pags > 1 ? html`<nav class="pag" aria-label="Paginação"><span class="mut small">${(pag - 1) * POR + 1}–${Math.min(pag * POR, lista.length)} de ${lista.length}</span>
+${pag > 1 ? html`<a class="btn btn-sec btn-sm" href="${qs({ p: pag - 1 })}" rel="prev">${icone('voltar', 'sm')} Anterior</a>` : ''}<span class="small">Página ${pag} de ${pags}</span>${pag < pags ? html`<a class="btn btn-sec btn-sm" href="${qs({ p: pag + 1 })}" rel="next">Próxima ${icone('chevron', 'sm')}</a>` : ''}</nav>` : ''}`
+    : html`<p class="vazio-p">${filtrando ? html`Nenhum fechamento em "${FIN_ABAS[aba]}" com estes filtros. <a href="${limpar}">Limpar filtros</a>` : VAZIO[aba]}</p>`}
+</section>
+<details class="fold sec-agenda"><summary>${icone('chevron', 'chev')} Agenda de pagamentos das lojas</summary>${cardAgenda(u, ag)}</details>`));
+}
+
+function conferenciaFin(req, res) {
+  const f = req.f, u = req.user, g = grade(f), itens = itensFin(f, g), decide = podeDevolver(u, f);
+  const voltar = voltaFila(req.query.volta);
+  const ajustes = ajustesDetalhados(f, g), ajDe = (id) => ajustes.filter((a) => a.motoboy_id === id);
+  const evid = db.prepare('SELECT id, nome FROM evidencias WHERE ajuste_id = ?');
+  const hist = db.prepare('SELECT l.*, u.nome FROM log l LEFT JOIN usuarios u ON u.id = l.usuario_id WHERE ref = ? ORDER BY l.id DESC').all(`f:${f.id}`);
+  const nomeDe = (id, alt) => itens.find((i) => i.id === id)?.nome ?? alt;
+  const decisoes = [
+    ...db.prepare('SELECT a.*, m.nome entregador, u.nome por FROM aprovacoes a JOIN motoboys m ON m.id = a.motoboy_id LEFT JOIN usuarios u ON u.id = a.aprovado_por WHERE fechamento_id = ?').all(f.id).map((a) => ({ ...a, tipo: 'Aprovado', quando: a.aprovado_em })),
+    ...db.prepare('SELECT d.*, m.nome entregador, u.nome por FROM devolucoes d JOIN motoboys m ON m.id = d.motoboy_id LEFT JOIN usuarios u ON u.id = d.devolvido_por WHERE fechamento_id = ?').all(f.id).map((d) => ({ ...d, tipo: 'Devolvido', quando: d.devolvido_em })),
+  ].sort((a, b) => b.quando.localeCompare(a.quando));
+  const ehAp = (i) => i.sit === 'aprovado', ehDev = (i) => i.sit === 'devolvido', ehPend = (i) => !ehAp(i) && !ehDev(i);
+  const soma = (fn) => itens.filter(fn).reduce((t, i) => t + i.total, 0), conta = (fn) => itens.filter((i) => i.total > 0 && fn(i)).length;
+  const nAprov = conta(ehAp), nBloq = conta((i) => i.sit === 'bloqueado'), aceitos = itens.filter((i) => i.confere === 'aceito');
+  const devolucao = hist.find((h) => /^Devolveu para correção/.test(h.acao));
+  const alterados = itens.filter((i) => i.alterado && !ehAp(i));
+  const totResumo = g.linhas.reduce((s, l) => s + (l.resumo || 0), 0);
+  const cols = 5 + g.dias.length + (decide ? 1 : 0);
+  const filtro = [['todos', 'Todos', itens.length], ['pendente', 'Aguardando', itens.filter(ehPend).filter((i) => i.sit !== 'semvalor').length], ['bloqueado', 'Bloqueados', nBloq], ['aprovado', 'Aprovados', nAprov], ['devolvido', 'Devolvidos', conta(ehDev)]];
+  const detalheSit = (i) => (i.sit === 'aprovado' ? (i.aprovacao ? `Por ${i.aprovacao.por || '—'} em ${quando(i.aprovacao.aprovado_em)}${i.aprovacao.versao ? ` (versão ${i.aprovacao.versao})` : ''}` : '')
+    : i.sit === 'devolvido' ? `Motivo: ${i.dev.motivo}`
+    : i.sit === 'bloqueado' ? `Não pode ser aprovado: ${i.bloq}.${i.alterado ? ' Também mudou depois de aprovado.' : ''}`
+    : i.sit === 'alterado' ? `Aprovado antes com ${brl(i.aprovacao.valor)} (PIX ${i.aprovacao.pix}); a loja mudou. Confira de novo.`
+    : i.dev ? `Devolvido na versão ${i.dev.versao}; a loja corrigiu e reenviou.` : '');
+  const linha = (i) => {
+    const div = ajDe(i.id), [cor, txt] = SIT_ITEM[i.sit], podeSel = decide && !['aprovado', 'semvalor'].includes(i.sit), temDet = div.length || i.confere === 'aceito';
+    const dif = g.temResumo ? i.total - (i.resumo || 0) : null, grupo = ['aguardando', 'alterado'].includes(i.sit) ? 'pendente' : i.sit === 'bloqueado' ? 'pendente bloqueado' : i.sit;
+    return html`<tr data-id="${i.id}" data-q="${semAcento(i.nome)}" data-sit="${grupo}" data-valor="${i.total}" data-nome="${i.nome}" ${i.bloq ? new Raw('data-bloq="1"') : ''}>
+<th scope="row" class="nome-c"><div class="nome-l">${podeSel ? html`<input type="checkbox" name="m" value="${i.id}" aria-label="Selecionar ${i.nome}, ${brl(i.total)}">` : ''}<b>${i.nome}</b></div>
+<div class="pix-l">${i.pix ? html`<span class="rot-pix">PIX</span><span class="pix">${i.pix}<button type="button" class="icon-btn" data-copiar="${i.pix}" title="Copiar chave PIX" aria-label="Copiar chave PIX de ${i.nome}">${icone('copiar', 'sm')}</button></span>` : html`<span class="badge bad">Sem chave PIX</span>`}</div>
+${i.avisoPix ? html`<div class="small warn-t">${icone('alerta', 'sm')} ${i.avisoPix}</div>` : ''}
+${temDet ? html`<div class="chips"><button type="button" class="badge div nodot" data-abre="${i.id}" aria-expanded="false" aria-controls="det-${i.id}">${div.length ? `Ver ${div.length} divergência(s)` : 'Ver justificativa'} ${icone('chevron', 'sm')}</button></div>` : ''}</th>
+${g.dias.map((d) => { const c = i.dias[d];
+    return html`<td class="n dia-c">${c ? html`<span class="${c.ajuste ? 'cell div' : ''}" title="${`Relatório de Pedidos: ${brl(c.agil)} (${c.n} entrega(s))${c.ajuste ? `. Corrigido pela loja para ${brl(c.final)}` : ''}`}">${brl(c.final)}${c.ajuste ? html`<span aria-hidden="true">*</span><span class="sr"> (corrigido pela loja; no Relatório ${brl(c.agil)})</span>` : ''}</span>`
+      : html`<span class="mut" title="Sem entregas no dia">–<span class="sr">sem entregas</span></span>`}</td>`; })}
+<td class="n b">${brl(i.total)}</td>
+<td class="n">${!g.temResumo ? html`<span class="mut small">sem Resumo</span>` : i.noResumo ? html`<span class="mut small">não consta</span>` : brl(i.resumo)}</td>
+<td class="n">${dif == null ? html`<span class="mut">—</span>` : dif === 0 ? html`<span class="ok-t small b">bate</span>` : diferenca(dif)}</td>
+<td class="sit-c"><span class="badge ${cor}">${txt}</span><span class="sit-d" id="sit-${i.id}">${detalheSit(i)}</span></td>
+${decide ? html`<td class="n"><div class="acoes-c">${podeSel ? html`<button name="uma" value="${i.id}" formaction="/fechamentos/${f.id}/aprovar" class="btn btn-ok btn-xs" data-linha="aprovar" aria-label="Aprovar ${i.nome}" aria-describedby="sit-${i.id}" ${i.bloq ? new Raw('disabled') : ''}>Aprovar</button><button name="uma" value="${i.id}" formaction="/fechamentos/${f.id}/devolver" class="btn btn-sec btn-xs" data-linha="devolver" aria-label="Devolver ${i.nome}">Devolver</button>` : ''}</div></td>` : ''}</tr>
+${temDet ? html`<tr class="det" data-det="${i.id}" id="det-${i.id}" hidden><td colspan="${cols}"><div class="items">${div.map((a) => html`<div>
+<div class="flow"><b>${diaFmt(a.dia)}</b> · Relatório de Pedidos ${brl(a.agil)} → a pagar <b>${brl(a.valor_final)}</b> ${diferenca(a.valor_final - a.agil)}${a.valor_informado == null ? '' : html` · motoboy informou ${brl(a.valor_informado)}`}</div>
+<div class="quote">${a.justificativa}</div><div class="chips">${evid.all(a.id).map((e) => html`<a class="badge nodot" href="/evidencias/${e.id}" target="_blank">${icone('clipe', 'sm')} ${e.nome}</a>`)}<span class="mut small">${a.autor}, ${quando(a.criado_em)}</span></div></div>`)}
+${i.confere === 'aceito' ? html`<div><div class="flow">Diferença com o Resumo justificada pela loja ${diferenca(i.total - i.resumo)}</div><div class="quote">${i.aceite.justificativa}</div></div>` : ''}</div></td></tr>` : ''}`;
+  };
+  const avisados = avisadosDevolucao(f);
+  const aviso = f.arquivado_em ? html`<div class="alert">${icone('arquivo')}<div><b>Arquivado pela loja em ${dataFmt(f.arquivado_em.slice(0, 10))}</b>Não conta como solicitação válida.</div></div>`
+    : f.status === 'rascunho' ? html`<div class="alert warn" role="note">${icone('desfazer')}<div><b>Devolvido à loja${devolucao ? ` por ${devolucao.nome || '—'} em ${quando(devolucao.quando)}` : ''}</b>${devolucao ? devolucao.acao.replace(/^Devolveu para correção: /, '') : ''}<div class="small">A loja está corrigindo: os valores podem mudar até o reenvio. As aprovações já feitas continuam valendo.</div></div></div>`
+    : f.status === 'pago' ? html`<div class="alert ok">${icone('check')}<div><b>Todos os entregadores aprovados.</b>Aprovação não é pagamento: o pagamento é feito fora do sistema, com as chaves PIX abaixo.</div></div>`
+    : !decide ? html`<div class="alert info">${icone('info')}<div><b>Somente leitura.</b>Quem aprova ou devolve é o financeiro.</div></div>`
+    : alterados.length ? html`<div class="alert warn">${icone('alerta')}<div><b>${alterados.length} entregador(es) mudaram depois de aprovados</b>${nomes(alterados)} voltaram para análise. Confira os novos valores e PIX.</div></div>` : '';
+  res.send(page(req, {
+    titulo: `Fechamento #${f.id}`, selo: seloFin({ ...f, nAprov }),
+    sub: html`<b>${f.loja}</b> · período ${periodo(f)}${f.pagamento ? html` · pagamento previsto <b>${diaLongo(f.pagamento)}</b>` : ''}<br><span class="mut">Enviado por ${f.enviou || f.autor}${f.enviado_em ? ` em ${quando(f.enviado_em)}` : ''} · versão ${f.versao}${f.arquivo ? ` · arquivo ${f.arquivo}` : ''}</span>`,
+    trilha: [[u.perfil === 'financeiro' ? 'Fila do financeiro' : inicio(u), voltar], [`#${f.id} · ${lojaCurta(f.loja)}`]],
+    acoes: html`<a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/pdf" target="_blank">${icone('arquivo', 'sm')} Baixar PDF</a><a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/csv">${icone('baixar', 'sm')} Baixar planilha</a>`,
+  }, html`${aviso}
+<dl class="resumo" aria-label="Valores do fechamento">
+<div><dt>Total solicitado</dt><dd>${brl(g.total)}</dd><dd>${conta(() => true)} entregador(es)</dd></div>
+<div><dt>Aprovado</dt><dd class="${nAprov ? 'ok-t' : ''}">${brl(soma(ehAp))}</dd><dd>${nAprov} entregador(es)</dd></div>
+<div class="destaque"><dt>Aguardando análise</dt><dd>${brl(soma(ehPend))}</dd><dd>${conta(ehPend)} entregador(es)${nBloq ? ` · ${nBloq} bloqueado(s)` : ''}</dd></div>
+<div><dt>Devolvido</dt><dd class="${conta(ehDev) ? 'bad-t' : ''}">${brl(soma(ehDev))}</dd><dd>${conta(ehDev)} entregador(es)</dd></div></dl>
+<div class="abas" role="tablist" aria-label="Seções do fechamento">
+<button type="button" role="tab" id="t-conf" aria-controls="conf" aria-selected="true">Conferência</button>
+<button type="button" role="tab" id="t-divs" aria-controls="divs" aria-selected="false" tabindex="-1">Divergências <span class="c">${ajustes.length + aceitos.length}</span></button>
+<button type="button" role="tab" id="t-hist" aria-controls="hist" aria-selected="false" tabindex="-1">Histórico e decisões <span class="c">${decisoes.length}</span></button></div>
+<form id="dec" method="post" action="/fechamentos/${f.id}/aprovar" data-aprovar="/fechamentos/${f.id}/aprovar" data-devolver="/fechamentos/${f.id}/devolver">
+<input type="hidden" name="versao" value="${f.versao}"><input type="hidden" name="volta" value="${voltar}"><input type="hidden" name="uma" value="">
+<section class="card painel" id="conf" role="tabpanel" aria-labelledby="t-conf">
+<div class="ferramentas"><div class="search">${icone('busca', 'sm')}<input type="search" placeholder="Buscar entregador" data-filtro="#fin" aria-label="Buscar entregador"></div>
+<div class="seg" data-sit-filtro role="group" aria-label="Mostrar por situação">${filtro.filter(([k, , n]) => k === 'todos' || n).map(([k, t, n]) => html`<button type="button" data-f="${k}" class="${k === 'todos' ? 'on' : ''}" aria-pressed="${k === 'todos'}">${t}<span class="c">${n}</span></button>`)}</div>
+${decide ? html`<label class="sel-todos"><input type="checkbox" id="sel-todos"> Selecionar todos os visíveis</label>` : ''}</div>
+<div class="tw"><table class="grade fin" id="fin"><thead><tr><th scope="col" class="nome-c">Entregador e PIX</th>${g.dias.map((d) => html`<th scope="col" class="n dia-c">${diaFmt(d)}</th>`)}<th scope="col" class="n">Total</th><th scope="col" class="n" title="Resumo de entregas por entregador do Agilizone">Resumo</th><th scope="col" class="n">Diferença</th><th scope="col">Situação</th>${decide ? html`<th scope="col" class="n">Ações</th>` : ''}</tr></thead>
+<tbody>${itens.map(linha)}</tbody>
+<tfoot><tr class="tot"><th scope="row" class="nome-c">Total</th>${g.dias.map((d) => html`<td class="n dia-c">${brl(g.totDia[d])}</td>`)}<td class="n">${brl(g.total)}</td><td class="n">${g.temResumo ? brl(totResumo) : '—'}</td><td class="n">${g.temResumo ? diferenca(g.total - totResumo) : '—'}</td><td></td>${decide ? html`<td></td>` : ''}</tr></tfoot></table></div>
+<p class="fin-legenda">Valores por dia: Relatório de Pedidos do Agilizone (taxa do entregador). <b>*</b> valor corrigido pela loja (veja Divergências) · – sem entregas no dia · Resumo: Resumo de entregas por entregador do Agilizone ("não consta" = entregador ausente no Resumo).${decide ? ' "Selecionar todos os visíveis" marca só as linhas que a busca e o filtro mostram.' : ''}</p>
+${decide ? html`<div class="barra" role="region" aria-label="Decisão sobre os selecionados"><div class="barra-in">
+<div><span class="mut small" data-sel-n aria-live="polite">Nenhum entregador selecionado</span><b data-sel-v>${brl(0)}</b></div>
+<span class="small bad-t" data-sel-bloq hidden></span>
+<button type="button" class="btn btn-ghost" data-limpar>Limpar</button>
+<button formaction="/fechamentos/${f.id}/devolver" class="btn btn-sec" data-dec="devolver">${icone('desfazer', 'sm')} Devolver selecionados</button>
+<button formaction="/fechamentos/${f.id}/aprovar" class="btn btn-ok" data-dec="aprovar">${icone('check', 'sm')} Aprovar selecionados</button></div></div>
+<dialog id="dlg-dec" class="dlg" aria-labelledby="dlg-dec-t" aria-describedby="dlg-dec-r"><h2 id="dlg-dec-t">Confirmar decisão</h2><p id="dlg-dec-r"></p><ul class="dlg-l" data-dlg-lista></ul>
+<div class="field" data-dlg-motivo hidden style="margin-top:12px"><label for="motivo">Motivo da devolução <span class="req" aria-hidden="true">*</span></label><textarea id="motivo" name="motivo" minlength="5" maxlength="2000" aria-describedby="dica-motivo"></textarea>
+<p class="hint" id="dica-motivo">Vai para ${avisados.length ? avisados.map((a) => `${a.nome}${a.email ? ` (${a.email})` : ' (sem e-mail: vê no sistema)'}`).join(', ') : 'ninguém: a loja não tem despachante cadastrado'}. Entregadores já aprovados continuam aprovados.</p></div>
+<div class="acoes-f"><button class="btn btn-ok" data-dlg-ok>Confirmar</button><button type="button" class="btn btn-ghost" data-dlg-cancela>Cancelar</button></div></dialog>` : ''}
+</section></form>
+<section class="card painel" id="divs" role="tabpanel" aria-labelledby="t-divs" hidden>
+${ajustes.length || aceitos.length ? html`<div class="items">${ajustes.map((a) => html`<div><div class="item-h"><div><b>${nomeDe(a.motoboy_id, a.motoboy)}</b> <span class="mut">· ${diaFmt(a.dia)}</span></div></div>
+<div class="flow">Relatório de Pedidos ${brl(a.agil)} → a pagar <b>${brl(a.valor_final)}</b> ${diferenca(a.valor_final - a.agil)}${a.valor_informado == null ? '' : html` · motoboy informou ${brl(a.valor_informado)}`}</div>
+<div class="quote">${a.justificativa}</div>
+<div class="chips" style="margin-top:8px">${evid.all(a.id).map((e) => html`<a class="badge nodot" href="/evidencias/${e.id}" target="_blank">${icone('clipe', 'sm')} ${e.nome}</a>`)}<span class="mut small">${a.autor}, ${quando(a.criado_em)}</span></div></div>`)}
+${aceitos.map((l) => html`<div><div class="item-h"><div><b>${l.nome}</b> <span class="mut">· diferença com o Resumo justificada pela loja</span></div></div>
+<div class="flow">Resumo ${brl(l.resumo)} → a pagar <b>${brl(l.total)}</b> ${diferenca(l.total - l.resumo)}</div><div class="quote">${l.aceite.justificativa}</div></div>`)}</div>`
+    : html`<p class="vazio-p">Nenhuma divergência registrada pela loja. Os valores são os do Agilizone.</p>`}</section>
+<section class="card painel" id="hist" role="tabpanel" aria-labelledby="t-hist" hidden>
+${decisoes.length ? html`<div class="tw"><table><caption class="sr">Decisões do financeiro</caption><thead><tr><th scope="col">Quando</th><th scope="col">Decisão</th><th scope="col">Entregador</th><th scope="col" class="n">Valor</th><th scope="col">PIX considerado</th><th scope="col" class="n">Versão</th><th scope="col">Responsável</th></tr></thead><tbody>
+${decisoes.map((d) => html`<tr><td>${quando(d.quando)}</td><td><span class="badge ${d.tipo === 'Aprovado' ? 'ok' : 'bad'}">${d.tipo}</span>${d.motivo ? html`<div class="quote">${d.motivo}</div>` : ''}${d.para ? html`<div class="mut small">Avisados: ${d.para}</div>` : ''}</td>
+<td>${nomeDe(d.motoboy_id, d.entregador)}</td><td class="n">${d.valor == null ? '—' : brl(d.valor)}</td><td>${d.pix || '—'}</td><td class="n">${d.versao ?? '—'}</td><td>${d.por || '—'}</td></tr>`)}</tbody></table></div>`
+    : html`<p class="vazio-p">Nenhuma decisão registrada ainda.</p>`}
+<div class="card-b"><h3 class="sec-t">Linha do tempo</h3><ul class="timeline">${hist.map((h) => html`<li>${h.acao}<small>${quando(h.quando)} · ${h.nome || 'Sistema'}</small></li>`)}</ul></div></section>`));
+}
+
 // Histórico: consulta com um filtro de situação e um de mês.
 app.get('/historico', (req, res) => {
   const u = req.user, todos = fechamentosDe(u);
@@ -326,6 +517,7 @@ ${lista.length ? '' : html`<tr><td colspan="6" class="vazio-p">Nenhum fechamento
 
 app.get('/', (req, res) => {
   if (req.user.perfil === 'despachante') return pendenciasDespachante(req, res);
+  if (req.user.perfil === 'financeiro') return filaFinanceiro(req, res);
   const u = req.user, hoje = agora().data;
   const doUsuario = fechamentosDe(u);
   const todos = doUsuario.filter((f) => !f.arquivado_em), arquivados = doUsuario.filter((f) => f.arquivado_em);
@@ -351,13 +543,7 @@ app.get('/', (req, res) => {
   const seg = (st, txt, n) => html`<a href="${qs(st)}" class="${filtro === st ? 'on' : ''}">${txt}<span class="c">${n}</span></a>`;
   const contaL = (st) => daLoja.filter((f) => f.status === st).length;
 
-  const recebidas = todos.filter((f) => f.status === 'enviado').sort((x, y) => (y.pagamento || '').localeCompare(x.pagamento || '')).slice(0, 30);
-  const cardRecebidas = html`<div class="card" style="margin-bottom:20px"><div class="card-h"><span class="hico pri">${icone('email')}</span><div class="t"><h2>Solicitações aguardando aprovação (${recebidas.length})</h2><p>Enviadas pelas lojas. Abra, confira os valores e as chaves PIX, e aprove ou devolva.</p></div></div>
-${recebidas.length ? html`<div class="tw"><table><tr><th>Pagamento</th><th>Loja</th><th>Período</th><th class="n">Motoboys</th><th class="n">Total</th><th></th></tr>
-${recebidas.map((f) => html`<tr data-href="/fechamentos/${f.id}"><td><b>${f.pagamento ? diaLongo(f.pagamento) : '—'}</b></td><td>${f.loja}</td><td>${periodo(f)}</td><td class="n">${f.n}</td><td class="n b">${brl(f.total)}</td><td class="n"><a class="btn btn-pri btn-sm" href="/fechamentos/${f.id}">Abrir</a></td></tr>`)}</table></div>`
-      : html`<div class="card-b mut">Nenhuma solicitação recebida ainda.</div>`}</div>`;
   res.send(page(req, { titulo: 'Fechamentos', sub, acoes: editaMotoboy(u) ? html`<a class="btn btn-pri" href="/fechamentos/novo">${icone('mais')} Novo fechamento</a>` : '' }, html`
-${u.perfil === 'financeiro' ? cardRecebidas : ''}
 ${devolvidos.length ? html`<section class="aviso-dev" aria-label="Devolvidos para correção"><h2>${devolvidos.length === 1 ? 'O financeiro devolveu um fechamento' : `O financeiro devolveu ${devolvidos.length} fechamentos`}</h2>
 ${devolvidos.map((f) => html`<a class="aviso-item" href="/fechamentos/${f.id}"><span><b>${f.loja} · ${f.pagamento ? `pagamento de ${diaLongo(f.pagamento)}` : periodo(f)}</b>
 <span class="quote">${f.motivo ? f.motivo.acao.replace(/^Devolveu para correção: /, '') : ''}</span><small class="mut">${f.motivo ? `${f.motivo.nome || ''}, ${f.motivo.quando.slice(0, 16)}` : ''}</small></span><span class="btn btn-pri btn-sm">Corrigir</span></a>`)}</section>` : ''}
@@ -479,7 +665,10 @@ const ajustesDetalhados = (f, g) => db.prepare(`SELECT a.*, m.nome motoboy, u.no
 const diferenca = (v) => html`<span class="${v > 0 ? 'ok-t' : v < 0 ? 'bad-t' : 'mut'} b">(${v > 0 ? '+' : ''}${brl(v)})</span>`;
 
 app.get('/fechamentos/:fid', (req, res) => {
-  const f = req.f, u = req.user, g = grade(f), edita = podeEditar(u, f), devolve = podeDevolver(u, f);
+  const f = req.f, u = req.user;
+  // Financeiro (e admin/gestão depois do envio) conferem na tela própria; esta é a do despachante.
+  if (u.perfil === 'financeiro' || (['admin', 'gestao'].includes(u.perfil) && f.status !== 'rascunho')) return conferenciaFin(req, res);
+  const g = grade(f), edita = podeEditar(u, f);
   const enviado = f.status !== 'rascunho';
   const jaPago = db.prepare('SELECT r.entregador, r.pago, m.nome FROM resumo r LEFT JOIN motoboys m ON m.id = r.motoboy_id WHERE r.fechamento_id = ? AND r.pago > 0 ORDER BY 1').all(f.id);
   const ajustes = ajustesDetalhados(f, g);
@@ -495,7 +684,7 @@ app.get('/fechamentos/:fid', (req, res) => {
   const pend = g.linhas.filter((l) => l.confere === 'pendente'), aceitos = g.linhas.filter((l) => l.confere === 'aceito');
   const totResumo = g.linhas.reduce((s, l) => s + (l.resumo || 0), 0);
 
-  const colAprov = f.status !== 'rascunho', marcaAprov = devolve;
+  const colAprov = f.status === 'pago' || g.linhas.some((l) => l.aprovacao); // aprovar/devolver é na tela do financeiro
   const ajDe = (id) => ajustes.filter((a) => a.motoboy_id === id);
   const entregas = db.prepare('SELECT COUNT(*) n FROM pedidos WHERE fechamento_id = ? AND motoboy_id IS NOT NULL').get(f.id).n;
   const aprovou = ultimo(/^Aprovou a solicitação/);
@@ -515,8 +704,6 @@ ${podeRecuperar(u, f) ? html`<form method="post" action="/fechamentos/${f.id}/re
 ${passos.map(([t, [cor, txt], href]) => html`<li class="${cor}"><a href="${href}"><span class="marca" aria-hidden="true">${icone(cor === 'ok' ? 'check' : cor === 'nodot' || cor === 'info' ? 'info' : 'alerta', 'sm')}</span><span><b>${t}</b><span>${txt}</span></span></a></li>`)}</ol></section>`;
   } else if (!enviado) estado = html`<div class="estado"><div><b>Em revisão na loja</b><p>Quando o despachante enviar, o financeiro recebe o e-mail com o PDF.</p></div></div>`;
   else if (f.status === 'pago') estado = html`<div class="estado ok"><div><b>Aprovado pelo financeiro${aprovou ? ` em ${quando(aprovou.quando)}` : ''}${aprovou?.nome ? `, por ${aprovou.nome}` : ''}</b><p>O pagamento é feito fora do sistema, com o PDF e as chaves PIX deste fechamento.</p></div></div>`;
-  else if (devolve) estado = html`<div class="estado"><div><b>Solicitação aguardando sua aprovação</b><p>Aprove todos ou marque um por um na tabela. Para devolver, use o formulário no fim da página.</p></div>
-<form method="post" action="/fechamentos/${f.id}/aprovar" class="in"><button class="btn btn-ok">${icone('check')} Aprovar todos</button></form></div>`;
   else estado = html`<div class="estado"><div><b>Aguardando aprovação do financeiro${envio ? ` · enviado em ${quando(envio.quando)}` : ''}</b><p>O fechamento fica travado para edição; só o financeiro pode devolver para correção.</p></div></div>`;
 
   // Situação do e-mail: secundária, abaixo do estado.
@@ -532,7 +719,7 @@ ${podeReenviar(u, f) ? html` <a href="/fechamentos/${f.id}/enviar">Reenviar e-ma
     acoes: html`<a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/pdf" target="_blank">${icone('arquivo', 'sm')} Baixar PDF</a><a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/csv">${icone('baixar', 'sm')} Baixar planilha</a>`,
   }, html`
 ${devolvido ? html`<div class="motivo" role="note" id="devolvido"><b>Devolvido pelo financeiro${devolucao.nome ? ` (${devolucao.nome})` : ''} em ${quando(devolucao.quando)}</b>
-<p>${devolucao.acao.replace(/^Devolveu para correção: /, '')}</p>${edita ? html`<span class="small">Corrija abaixo e envie de novo.</span>` : ''}</div>` : ''}
+<p>${devolucao.acao.replace(/^Devolveu para correção: /, '')}</p>${(() => { const d = db.prepare('SELECT motoboy_id FROM devolucoes WHERE fechamento_id = ? AND versao = ?').all(f.id, f.versao).map((x) => g.linhas.find((l) => l.id === x.motoboy_id)?.nome).filter(Boolean); return d.length ? html`<p class="small"><b>Entregadores devolvidos:</b> ${d.join(', ')}</p>` : ''; })()}${edita ? html`<span class="small">Corrija abaixo e envie de novo.</span>` : ''}</div>` : ''}
 ${estado}${email}
 <dl class="resumo">
 <div class="destaque"><dt>Total a pagar</dt><dd>${brl(g.total)}</dd></div>
@@ -569,10 +756,9 @@ ${edita ? html`<details class="fold" style="margin-top:8px"><summary class="smal
 <button type="button" data-f="todos" class="on" aria-pressed="true">Todos<span class="c">${g.linhas.length}</span></button>
 ${comDiv ? html`<button type="button" data-f="com" aria-pressed="false">Com divergência<span class="c">${comDiv}</span></button>` : ''}
 ${pend.length ? html`<button type="button" data-f="res" aria-pressed="false">Diferença com o Resumo<span class="c">${pend.length}</span></button>` : ''}</div>
-${marcaAprov ? html`<form id="aprovar" method="post" action="/fechamentos/${f.id}/aprovar" class="in" style="margin-left:auto"><button class="btn btn-ok btn-sm">${icone('check', 'sm')} Aprovar selecionados</button></form>` : ''}</div>
-<div class="tw grade-w"><table class="grade" id="grade" data-f="todos"><thead><tr>${colAprov ? html`<th scope="col" title="Aprovado pelo financeiro">${marcaAprov ? html`<input type="checkbox" data-todos="aprovar" aria-label="Selecionar todos para aprovar">` : 'Aprov.'}</th>` : ''}<th scope="col" class="nome-c">Motoboy</th>${g.dias.map((d) => html`<th scope="col" class="n">${diaFmt(d)}</th>`)}<th scope="col" class="n">Total</th>${g.temResumo ? html`<th scope="col" class="n" title="Resumo de entregas do Agilizone">Resumo</th>` : ''}</tr></thead><tbody>
+<div class="tw grade-w"><table class="grade" id="grade" data-f="todos"><thead><tr>${colAprov ? html`<th scope="col" title="Aprovado pelo financeiro">Aprov.</th>` : ''}<th scope="col" class="nome-c">Motoboy</th>${g.dias.map((d) => html`<th scope="col" class="n">${diaFmt(d)}</th>`)}<th scope="col" class="n">Total</th>${g.temResumo ? html`<th scope="col" class="n" title="Resumo de entregas do Agilizone">Resumo</th>` : ''}</tr></thead><tbody>
 ${g.linhas.map((l) => { const n = nDiv(l); return html`<tr data-q="${semAcento(l.nome)}" data-div="${n ? 1 : 0}" data-res="${l.confere === 'pendente' ? 1 : 0}" class="${l.confere === 'pendente' ? 'nobate' : ''}">
-${colAprov ? html`<td>${l.aprovado ? html`<span class="ok-t" title="Aprovado">${icone('check')}<span class="sr">Aprovado</span></span>` : marcaAprov && l.total > 0 ? html`<input type="checkbox" name="m" value="${l.id}" form="aprovar" aria-label="Aprovar ${l.nome}">` : ''}</td>` : ''}
+${colAprov ? html`<td>${l.aprovado ? html`<span class="ok-t" title="Aprovado">${icone('check')}<span class="sr">Aprovado</span></span>` : l.alterado ? html`<span class="warn-t" title="Mudou depois de aprovado: o financeiro precisa aprovar de novo">${icone('alerta')}<span class="sr">Alterado após aprovação</span></span>` : ''}</td>` : ''}
 <th scope="row" class="nome-c"><div class="nome-l"><b>${l.nome}</b>${l.nomeAgil ? html`<span class="mut small" title="Nome no Agilizone: ${l.nomeAgil}"> (editado)</span>` : ''}</div>
 <div class="pix-l">${l.pix ? html`<span class="rot-pix">PIX</span><span class="pix">${l.pix}<button type="button" class="icon-btn" data-copiar="${l.pix}" title="Copiar chave PIX" aria-label="Copiar chave PIX de ${l.nome}">${icone('copiar', 'sm')}</button></span>` : html`<span class="badge bad">Sem PIX</span>`}</div>
 ${edita ? html`<div class="acoes-l"><a class="btn btn-sec btn-xs" href="/fechamentos/${f.id}/ajuste?m=${l.id}" aria-label="Registrar divergência de ${l.nome}">${icone('alerta', 'sm')} Registrar divergência</a><a class="btn btn-ghost btn-xs" href="/fechamentos/${f.id}/motoboy/${l.id}" aria-label="Editar nome e PIX de ${l.nome}">${icone('lapis', 'sm')} Editar</a></div>` : ''}
@@ -602,8 +788,6 @@ ${aceitos.map((l) => html`<div><div class="item-h"><div><b>${l.nome}</b> <span c
 
 <section class="card painel" id="historico" role="tabpanel" aria-labelledby="t-historico" hidden><div class="card-b"><ul class="timeline">${hist.map((h) => html`<li>${h.acao}<small>${h.quando.slice(0, 10).split('-').reverse().join('/')} ${h.quando.slice(11, 16)} · ${h.nome || 'Sistema'}</small></li>`)}</ul></div></section>
 
-${devolve ? html`<form method="post" action="/fechamentos/${f.id}/devolver" class="card bloco" style="margin-top:20px"><div class="card-h"><div class="t"><h2>Encontrou algum erro?</h2><p>Devolva ao despachante com o motivo. Ele recebe um aviso, corrige e envia de novo.</p></div></div>
-<div class="card-b"><textarea name="motivo" required minlength="5" placeholder="O que precisa ser corrigido?" aria-label="Motivo da devolução"></textarea></div><div class="card-f"><button class="btn btn-sec">${icone('desfazer')} Devolver ao despachante</button></div></form>` : ''}
 
 ${edita ? html`<details class="fold mais-acoes"><summary class="small">${icone('chevron', 'chev')} Importou o arquivo errado?</summary>
 <form method="post" action="/fechamentos/${f.id}/arquivar" onsubmit="return confirm('Arquivar este fechamento? Ele sai da lista, mas pode ser recuperado na aba Arquivados do Histórico.')"><p class="small mut">Arquivar tira o fechamento da lista e libera os pedidos para importar de novo. Nada é apagado.</p><button class="btn btn-sec btn-sm">${icone('arquivo', 'sm')} Arquivar fechamento</button></form></details>
@@ -795,7 +979,7 @@ app.post('/fechamentos/:fid/ajuste/:aid/excluir', so((r) => podeEditar(r.user, r
 });
 
 app.get('/evidencias/:id', (req, res) => {
-  const e = db.prepare('SELECT e.*, f.loja_id, f.status FROM evidencias e JOIN ajustes a ON a.id = e.ajuste_id JOIN fechamentos f ON f.id = a.fechamento_id WHERE e.id = ?').get(Number(req.params.id));
+  const e = db.prepare('SELECT e.*, f.loja_id, f.status, f.versao FROM evidencias e JOIN ajustes a ON a.id = e.ajuste_id JOIN fechamentos f ON f.id = a.fechamento_id WHERE e.id = ?').get(Number(req.params.id));
   if (!e || !podeVer(req.user, e)) throw falha('Arquivo não encontrado.', 404);
   const tipo = TIPOS_EVIDENCIA[e.tipo] ? e.tipo : 'application/octet-stream'; // arquivos antigos de outro tipo viram download
   res.setHeader('Content-Type', tipo);
@@ -832,7 +1016,7 @@ app.get('/fechamentos/:fid/enviar', so((r) => podeEditar(r.user, r.f) || podeRee
   const f = req.f, reenvio = f.status !== 'rascunho', g = grade(f);
   if (!reenvio) { const p = pendenciasEnvio(f); if (p) return volta(res, `/fechamentos/${f.id}`, 'erro', p); }
   const padrao = destinatariosPadrao(req.user), aPagar = g.linhas.filter((l) => l.total > 0), pend = g.linhas.filter((l) => l.confere === 'pendente');
-  const ajustes = ajustesDetalhados(f, g), aceitos = g.linhas.filter((l) => l.confere === 'aceito');
+  const ajustes = ajustesDetalhados(f, g), aceitos = g.linhas.filter((l) => l.confere === 'aceito'), alterados = g.linhas.filter((l) => l.alterado);
   const titulo = reenvio ? 'Reenviar e-mail ao financeiro' : 'Enviar ao financeiro';
   // Há algo para o despachante conferir antes de enviar? (não bloqueia o envio)
   const conferir = !reenvio && (pend.length || ajustes.length || aceitos.length);
@@ -849,7 +1033,10 @@ ${pend.length && !reenvio ? html`<p class="nota bad">${icone('alerta', 'sm')} ${
 <details class="fold destinos" ${new Raw(padrao.length ? '' : 'open')}><summary>${icone('chevron', 'chev')} E-mail para ${padrao.length ? padrao.join(', ') : 'ninguém configurado'}</summary>
 <div class="field" style="margin-top:10px"><label for="para">Destinatários <span class="req" aria-hidden="true">*</span></label><textarea id="para" name="para" required style="min-height:90px" aria-describedby="dica-para" placeholder="financeiro@grupofornopaulista.com">${padrao.join('\n')}</textarea>
 <p class="hint" id="dica-para">Um por linha. Vale só para este envio.</p></div></details>
-${reenvio ? '' : html`<p class="small mut">Depois de enviar, o fechamento fica travado para edição até o financeiro aprovar ou devolver.</p>`}
+${!reenvio && alterados.length ? html`<div class="alert warn">${icone('alerta')}<div><b>Entregadores já aprovados que mudaram</b>O financeiro vai precisar aprovar de novo:
+<ul>${alterados.map((l) => html`<li>${l.nome}: aprovado ${brl(l.aprovacao.valor)} (PIX ${l.aprovacao.pix}) → agora ${brl(l.total)} (PIX ${l.pix})</li>`)}</ul>
+<label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" name="revisei" value="1" required> Revisei essas mudanças</label></div></div>` : ''}
+${reenvio ? '' : html`<p class="small mut">Depois de enviar, o fechamento fica travado para edição até o financeiro aprovar ou devolver. Entregadores já aprovados continuam aprovados.</p>`}
 <div class="acoes-f"><button class="btn btn-pri btn-lg">${icone('enviar')} ${reenvio ? 'Reenviar e-mail' : 'Confirmar envio'}</button><a class="btn btn-ghost" href="/fechamentos/${f.id}">Voltar</a></div>
 ${conferir ? html`<dialog id="dlg-div" class="dlg" aria-labelledby="dlg-t"><h2 id="dlg-t">Confira as divergências antes de enviar</h2>
 <ul class="dlg-l">${pend.map((l) => html`<li class="bad"><b>${l.nome}</b>: diferença com o Resumo de ${brl(l.total - l.resumo)} <span class="badge bad">Sem justificativa</span></li>`)}
@@ -863,13 +1050,19 @@ app.post('/fechamentos/:fid/enviar', so((r) => podeEditar(r.user, r.f)), async (
   const f = req.f, para = destinatariosDigitados(req.body.para);
   const p = pendenciasEnvio(f);
   if (p) return volta(res, `/fechamentos/${f.id}`, 'erro', p);
+  // Reenvio: entregador já aprovado que mudou (valor ou PIX) exige revisão explícita do despachante.
+  const alterados = grade(f).linhas.filter((l) => l.alterado);
+  if (alterados.length && req.body.revisei !== '1') return volta(res, `/fechamentos/${f.id}/enviar`, 'erro', `Marque que revisou as mudanças em ${alterados.map((l) => l.nome).join(', ')} (já aprovados pelo financeiro).`);
   tx(() => {
-    db.prepare("UPDATE fechamentos SET status = 'enviado' WHERE id = ?").run(f.id);
+    db.prepare("UPDATE fechamentos SET status = 'enviado', versao = versao + 1, enviado_em = datetime('now','localtime'), enviado_por = ? WHERE id = ?").run(req.user.id, f.id);
     // Congela o PIX de cada motoboy como foi enviado ao financeiro.
     const ls = grade(f).linhas;
     db.prepare('DELETE FROM envio_pix WHERE fechamento_id = ?').run(f.id);
     for (const l of ls) db.prepare('INSERT INTO envio_pix (fechamento_id, motoboy_id, pix) VALUES (?,?,?)').run(f.id, l.id, l.pix);
-    log(req.user.id, `f:${f.id}`, `Enviou ao financeiro (total ${brl(grade(f).total)})`);
+    const g = grade({ ...f, status: 'enviado' });
+    log(req.user.id, `f:${f.id}`, `Enviou ao financeiro (versão ${f.versao + 1}, total ${brl(g.total)}${alterados.length ? `; revisou mudanças em itens já aprovados: ${alterados.map((l) => l.nome).join(', ')}` : ''})`);
+    // Reenvio em que tudo já estava aprovado (aprovações preservadas): conclui direto.
+    if (!g.linhas.some((l) => l.total > 0 && !l.aprovado)) { db.prepare("UPDATE fechamentos SET status = 'pago' WHERE id = ?").run(f.id); log(null, `f:${f.id}`, 'Aprovou a solicitação de pagamento (todos já estavam aprovados)'); }
   });
   const erro = await solicitarPagamento({ ...f, status: 'enviado' }, req.user, para);
   erro ? volta(res, `/fechamentos/${f.id}`, 'erro', `Enviado ao financeiro, mas o e-mail não saiu: ${erro}. Use "Reenviar e-mail" depois de corrigir.`)
@@ -916,35 +1109,69 @@ app.get('/fechamentos/:fid/pdf', async (req, res) => {
   res.send(await gerarPdf(req.f, g, ajustesDetalhados(req.f, g)));
 });
 
-app.post('/fechamentos/:fid/aprovar', so((r) => podeDevolver(r.user, r.f)), (req, res) => {
-  const f = req.f, g = grade(f), sel = [].concat(req.body.m ?? []).map(Number);
-  const alvo = g.linhas.filter((l) => l.total > 0 && !l.aprovado && (!sel.length || sel.includes(l.id)));
-  if (!alvo.length) throw falha('Selecione pelo menos um motoboy para aprovar.');
-  const faltam = tx(() => {
-    for (const l of alvo) db.prepare('INSERT OR IGNORE INTO aprovacoes (fechamento_id, motoboy_id, aprovado_por) VALUES (?,?,?)').run(f.id, l.id, req.user.id);
-    log(req.user.id, `f:${f.id}`, `Aprovou ${sel.length ? alvo.map((l) => l.nome).join(', ') : 'todos os motoboys'} (${brl(alvo.reduce((t, l) => t + l.total, 0))})`);
-    const n = grade(f).linhas.filter((l) => l.total > 0 && !l.aprovado).length;
-    if (!n) { db.prepare("UPDATE fechamentos SET status = 'pago' WHERE id = ?").run(f.id); log(req.user.id, `f:${f.id}`, 'Aprovou a solicitação de pagamento'); }
-    return n;
+// ---------- Decisões do financeiro ----------
+// Cada decisão confere, dentro da transação, se a tela ainda mostra a versão atual e se o fechamento aguarda análise.
+// Assim um clique repetido, duas pessoas decidindo juntas ou um reenvio da loja no meio não geram decisão errada.
+const recusa = (msg, url) => { throw Object.assign(falha(msg, 409), { volta: url }); };
+function decisao(req) {
+  const url = detalheFin(req.f, req.body.volta), f = carregaF(req.f.id);
+  if (f.status !== 'enviado' || String(f.versao) !== String(req.body.versao))
+    recusa(`Este fechamento mudou desde que você abriu a tela (${f.status === 'enviado' ? `a loja reenviou: agora é a versão ${f.versao}` : f.status === 'pago' ? 'já foi aprovado' : 'já foi devolvido à loja'}). Nada foi alterado. Confira e decida de novo.`, url);
+  const itens = itensFin(f, grade(f));
+  const uma = [].concat(req.body.uma ?? []).map(Number).find(Boolean);
+  const ids = uma ? [uma] : [...new Set([].concat(req.body.m ?? []).map(Number))];
+  const sel = itens.filter((i) => ids.includes(i.id));
+  if (!sel.length || sel.length !== ids.length) recusa('Selecione pelo menos um entregador deste fechamento.', url);
+  return { f, url, sel, itens, total: sel.reduce((t, i) => t + i.total, 0) };
+}
+const nomes = (xs) => xs.map((i) => i.nome).join(', ');
+
+app.post('/fechamentos/:fid/aprovar', so((r) => decideFin(r.user)), (req, res) => {
+  const r = tx(() => {
+    const { f, url, sel, total } = decisao(req);
+    const ja = sel.filter((i) => i.sit === 'aprovado');
+    if (ja.length) recusa(`${nomes(ja)} já ${ja.length > 1 ? 'estavam aprovados' : 'estava aprovado'}. Nada foi alterado.`, url);
+    const bloq = sel.filter((i) => i.bloq);
+    if (bloq.length) recusa(`Não dá para aprovar ${bloq.map((i) => `${i.nome} (${i.bloq})`).join('; ')}. Os demais podem ser aprovados.`, url);
+    const ins = db.prepare(`INSERT INTO aprovacoes (fechamento_id, motoboy_id, aprovado_por, valor, pix, versao) VALUES (?,?,?,?,?,?)
+      ON CONFLICT (fechamento_id, motoboy_id) DO UPDATE SET aprovado_por = excluded.aprovado_por, aprovado_em = datetime('now','localtime'), valor = excluded.valor, pix = excluded.pix, versao = excluded.versao`);
+    for (const i of sel) ins.run(f.id, i.id, req.user.id, i.total, i.pix, f.versao);
+    log(req.user.id, `f:${f.id}`, `Aprovou ${sel.length} entregador(es) da versão ${f.versao}, total ${brl(total)}: ${sel.map((i) => `${i.nome} ${brl(i.total)} (PIX ${i.pix})`).join('; ')}`);
+    const faltam = grade(f).linhas.filter((l) => l.total > 0 && !l.aprovado).length;
+    if (!faltam) { db.prepare("UPDATE fechamentos SET status = 'pago' WHERE id = ?").run(f.id); log(req.user.id, `f:${f.id}`, 'Aprovou a solicitação de pagamento (todos os entregadores)'); }
+    return { url, n: sel.length, total, faltam, loja: f.loja };
   });
-  faltam ? volta(res, `/fechamentos/${f.id}`, 'ok', `${alvo.length} aprovado(s). Faltam ${faltam}.`) : volta(res, '/', 'ok', `Solicitação de ${f.loja} aprovada.`);
+  volta(res, r.url, 'ok', r.faltam ? `${r.n} aprovado(s), ${brl(r.total)}. Faltam ${r.faltam} entregador(es).`
+    : `Solicitação de ${r.loja} aprovada por completo. Lembrete: aprovar não é pagar; o pagamento é feito fora do sistema.`);
 });
 
-app.post('/fechamentos/:fid/devolver', so((r) => podeDevolver(r.user, r.f)), async (req, res) => {
-  const f = req.f, motivo = String(req.body.motivo || '').trim().slice(0, 2000);
-  if (motivo.length < 5) throw falha('Informe o motivo da devolução.');
-  db.prepare("UPDATE fechamentos SET status = 'rascunho' WHERE id = ?").run(f.id);
-  db.prepare('DELETE FROM aprovacoes WHERE fechamento_id = ?').run(f.id);
-  // Descongela o PIX que veio do Agilizone (pode mudar se o Resumo for anexado de novo); o digitado continua.
-  db.prepare('DELETE FROM envio_pix WHERE fechamento_id = ?1 AND motoboy_id IN (SELECT motoboy_id FROM resumo WHERE fechamento_id = ?1 AND pix IS NOT NULL)').run(f.id);
-  log(req.user.id, `f:${f.id}`, `Devolveu para correção: ${motivo}`);
-  const para = db.prepare("SELECT email FROM usuarios WHERE ativo = 1 AND email IS NOT NULL AND (id = ? OR (perfil = 'despachante' AND loja_id = ?))").all(f.criado_por, f.loja_id).map((x) => x.email);
-  const url = cfg('app_url').replace(/\/$/, '');
-  await enviaELoga(f, 'devolução', [...new Set(para)], {
-    subject: `Fechamento devolvido para correção · ${f.loja} · ${periodo(f)}`,
-    text: `${req.user.nome} (financeiro) devolveu o fechamento de ${f.loja}, período ${periodo(f)}, para correção.\n\nMotivo:\n${motivo}` + (url ? `\n\nAbrir no sistema: ${url}/fechamentos/${f.id}` : ''),
+// Quem recebe o aviso de devolução: quem importou e os despachantes da loja.
+const avisadosDevolucao = (f) => db.prepare("SELECT nome, email FROM usuarios WHERE ativo = 1 AND (id = ? OR (perfil = 'despachante' AND loja_id = ?)) ORDER BY nome").all(f.criado_por, f.loja_id);
+
+app.post('/fechamentos/:fid/devolver', so((r) => decideFin(r.user)), async (req, res) => {
+  const motivo = String(req.body.motivo || '').trim().slice(0, 2000);
+  if (motivo.length < 5) recusa('Escreva o motivo da devolução (mínimo 5 caracteres). Nada foi alterado.', detalheFin(req.f, req.body.volta));
+  const avisados = avisadosDevolucao(req.f), para = [...new Set(avisados.map((a) => a.email).filter(Boolean))];
+  const r = tx(() => {
+    const { f, url, sel, total } = decisao(req);
+    const apr = sel.filter((i) => i.sit === 'aprovado');
+    if (apr.length) recusa(`${nomes(apr)} já foi aprovado e não pode ser devolvido. Nada foi alterado.`, url);
+    db.prepare("UPDATE fechamentos SET status = 'rascunho' WHERE id = ?").run(f.id);
+    const ins = db.prepare('INSERT INTO devolucoes (fechamento_id, motoboy_id, versao, valor, pix, motivo, devolvido_por, para) VALUES (?,?,?,?,?,?,?,?)');
+    for (const i of sel) ins.run(f.id, i.id, f.versao, i.total, i.pix, motivo, req.user.id, avisados.map((a) => a.nome).join(', '));
+    // Descongela o PIX que veio do Agilizone (pode mudar se o Resumo for anexado de novo); o digitado continua. Aprovações ficam.
+    db.prepare('DELETE FROM envio_pix WHERE fechamento_id = ?1 AND motoboy_id IN (SELECT motoboy_id FROM resumo WHERE fechamento_id = ?1 AND pix IS NOT NULL)').run(f.id);
+    log(req.user.id, `f:${f.id}`, `Devolveu para correção: ${motivo}`);
+    log(req.user.id, `f:${f.id}`, `Entregadores devolvidos (versão ${f.versao}, ${brl(total)}): ${sel.map((i) => `${i.nome} ${brl(i.total)}`).join('; ')}. Avisados: ${avisados.map((a) => a.nome).join(', ') || 'ninguém cadastrado'}`);
+    return { f, url, sel, total };
   });
-  volta(res, `/fechamentos/${f.id}`, 'ok', 'Devolvido ao despachante.');
+  const app_url = cfg('app_url').replace(/\/$/, '');
+  const erro = await enviaELoga(r.f, 'devolução', para, {
+    subject: `Fechamento devolvido para correção · ${r.f.loja} · ${periodo(r.f)}`,
+    text: `${req.user.nome} (financeiro) devolveu o fechamento de ${r.f.loja}, período ${periodo(r.f)}, para correção.\n\nMotivo:\n${motivo}\n\nEntregadores devolvidos:\n${r.sel.map((i) => `• ${i.nome}: ${brl(i.total)}`).join('\n')}\n\nOs entregadores já aprovados continuam aprovados.` + (app_url ? `\n\nAbrir no sistema: ${app_url}/fechamentos/${r.f.id}` : ''),
+  });
+  volta(res, r.url, erro ? 'erro' : 'ok', erro ? `Devolvido à loja (${r.sel.length} entregador(es)), mas o e-mail não saiu: ${erro}. A loja vê a devolução ao entrar no sistema.`
+    : `Devolvido à loja (${r.sel.length} entregador(es), ${brl(r.total)}). Aviso enviado para ${para.join(', ')}.`);
 });
 
 // Arquivar (no lugar de excluir): sai da lista, deixa de ser válido e libera os pedidos para outro fechamento. Nada é apagado.
@@ -1013,7 +1240,7 @@ function dadosUsuario(b) {
   if (v.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.email)) throw falha('E-mail inválido.');
   if (v.perfil === 'despachante' && !v.loja_id) throw falha('Despachante precisa ter loja.');
   if (v.loja_id && !db.prepare('SELECT 1 FROM lojas WHERE id = ?').get(v.loja_id)) throw falha('Loja inválida.');
-  if (v.perfil !== 'despachante') v.loja_id = null;
+  if (!['despachante', 'financeiro'].includes(v.perfil)) v.loja_id = null; // financeiro com loja só vê essa loja
   if (b.senha && String(b.senha).length < 8) throw falha('Senha precisa ter 8 caracteres ou mais.');
   return v;
 }
@@ -1187,6 +1414,7 @@ const telaErro = (req, titulo, msg) => page(req, titulo, html`<div class="card e
 <p>Se precisar de ajuda, fale com a TI.</p><div class="row" style="display:flex;gap:8px;justify-content:center"><a class="btn btn-sec" href="javascript:history.back()">${icone('voltar')} Voltar</a><a class="btn btn-pri" href="/">Ir para o início</a></div></div>`);
 app.use((req, res) => res.status(404).send(telaErro(req, 'Página não encontrada', 'Página não encontrada.')));
 app.use((err, req, res, next) => {
+  if (err.volta) return volta(res, err.volta, 'erro', err.message); // recusa de decisão: volta para a tela com o motivo
   const grande = err instanceof multer.MulterError || err.type === 'entity.too.large';
   const msg = err.publico ? err.message : grande ? 'Arquivo ou texto grande demais, ou arquivos demais (máximo 6 evidências de 10 MB).' : 'Erro inesperado. Avise a TI.';
   if (!err.publico && !grande) console.error(err);

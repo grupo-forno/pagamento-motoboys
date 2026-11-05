@@ -76,6 +76,10 @@ CREATE TABLE IF NOT EXISTS aceites (
 -- aprovação do financeiro por motoboy (todos com valor aprovados → fechamento 'pago' = Aprovado)
 CREATE TABLE IF NOT EXISTS aprovacoes (fechamento_id INTEGER NOT NULL REFERENCES fechamentos ON DELETE CASCADE, motoboy_id INTEGER NOT NULL,
   aprovado_por INTEGER, aprovado_em TEXT NOT NULL DEFAULT (datetime('now','localtime')), PRIMARY KEY (fechamento_id, motoboy_id));
+-- entregadores devolvidos pelo financeiro, por versão enviada (valor e PIX considerados, motivo e quem foi avisado)
+CREATE TABLE IF NOT EXISTS devolucoes (id INTEGER PRIMARY KEY, fechamento_id INTEGER NOT NULL REFERENCES fechamentos ON DELETE CASCADE,
+  motoboy_id INTEGER NOT NULL, versao INTEGER NOT NULL, valor INTEGER, pix TEXT, motivo TEXT NOT NULL, devolvido_por INTEGER,
+  devolvido_em TEXT NOT NULL DEFAULT (datetime('now','localtime')), para TEXT);
 -- alertas por e-mail já disparados (um por chave), para não repetir
 CREATE TABLE IF NOT EXISTS alertas (chave TEXT PRIMARY KEY, enviado_em TEXT NOT NULL DEFAULT (datetime('now','localtime')), resultado TEXT);
 -- "Resumo de entregas por entregador" do Agilizone: total confiável por entregador no período
@@ -109,6 +113,15 @@ if (!temColuna('ajustes', 'substituido_em')) recria('ajustes', AJUSTES);
 db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS pedidos_validos ON pedidos (loja_id, chave) WHERE ativo = 1;
 CREATE UNIQUE INDEX IF NOT EXISTS ajustes_vigentes ON ajustes (fechamento_id, motoboy_id, dia) WHERE substituido_em IS NULL;`);
 if (!temColuna('fechamentos', 'pagamento')) db.exec('ALTER TABLE fechamentos ADD COLUMN pagamento TEXT'); // data do pagamento a que se refere
+// versao: quantas vezes foi enviado ao financeiro (0 = nunca enviado; o financeiro só vê versao > 0).
+if (!temColuna('fechamentos', 'versao')) {
+  db.exec('ALTER TABLE fechamentos ADD COLUMN versao INTEGER NOT NULL DEFAULT 0; ALTER TABLE fechamentos ADD COLUMN enviado_em TEXT; ALTER TABLE fechamentos ADD COLUMN enviado_por INTEGER;');
+  const env = "FROM log WHERE ref = 'f:' || fechamentos.id AND acao LIKE 'Enviou ao financeiro%'";
+  db.exec(`UPDATE fechamentos SET versao = (SELECT COUNT(*) ${env}), enviado_em = (SELECT MAX(quando) ${env}), enviado_por = (SELECT usuario_id ${env} ORDER BY id DESC LIMIT 1);
+    UPDATE fechamentos SET versao = 1 WHERE versao = 0 AND status <> 'rascunho';`);
+}
+// Aprovação guarda o valor, o PIX e a versão aprovados: se mudarem num reenvio, o item volta para análise.
+if (!temColuna('aprovacoes', 'valor')) db.exec('ALTER TABLE aprovacoes ADD COLUMN valor INTEGER; ALTER TABLE aprovacoes ADD COLUMN pix TEXT; ALTER TABLE aprovacoes ADD COLUMN versao INTEGER;');
 
 for (const nome of ['FORNO PAULISTA DIRCEU', 'FORNO PAULISTA DOM SEVERINO ATIVA', 'FORNO PAULISTA SUL', 'Forno Paulista Centro de Distribuição Leste'])
   db.prepare('INSERT OR IGNORE INTO lojas (nome) VALUES (?)').run(nome);

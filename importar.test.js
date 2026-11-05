@@ -32,8 +32,8 @@ test('lê resumo de entregadores (CSV do Agilizone)', () => {
     'Mike Rodrigues;53;02675373362;02675373362;26/05/1988;R$ 1.462,00;R$ 0,00;R$ 1.462,00\n' +
     'Vinícius Amaral ;35;-;-;-;R$ 326,50;R$ 100,00;R$ 226,50\n';
   assert.deepEqual(lerResumo(Buffer.from(csv)), [
-    { entregador: 'Mike Rodrigues', pedidos: 53, cpf: '02675373362', pix: '02675373362', total: 146200, pago: 0 },
-    { entregador: 'Vinícius Amaral', pedidos: 35, cpf: null, pix: null, total: 32650, pago: 10000 },
+    { entregador: 'Mike Rodrigues', pedidos: 53, cpf: '02675373362', pix: '02675373362', total: 146200, pago: 0, ocorrencias: 0, qtdOc: 0 },
+    { entregador: 'Vinícius Amaral', pedidos: 35, cpf: null, pix: null, total: 32650, pago: 10000, ocorrencias: 0, qtdOc: 0 },
   ]);
   assert.equal(lerResumo(Buffer.from(csv, 'latin1'))[1].entregador, 'Vinícius Amaral'); // salvo pelo Excel
   assert.throws(() => lerResumo(Buffer.from('Número;Loja\n1;A')), /Resumo de entregas/);
@@ -88,4 +88,13 @@ test('recusa arquivo com várias lojas ou sem colunas', () => {
 test('pixValido reconhece e-mail, chave aleatória, CPF/CNPJ e celular', () => {
   for (const ok of ['a@b.com', '123e4567-e89b-12d3-a456-426614174000', '021.090.583-23', '+5586994258810', '86999000001', '12.345.678/0001-90']) assert.ok(pixValido(ok), ok);
   for (const ruim of ['', 'forno', '123', 'joao@', '86 9999']) assert.ok(!pixValido(ruim), ruim);
+});
+
+test('resumo com ocorrências: acréscimo, desconto e quantidade', () => {
+  const csv = 'Entregador;Pedidos;CPF;Chave Pix;Data de Nascimento;Soma das taxas de entrega;Ocorrências;Ocorrências + Taxas;Pago;Saldo a pagar\n' +
+    'Lucas Queiroz ;425;-;abc752bd-7365-4cd1-b971-434e5bab4e1e;-;R$ 3.865,00;2;R$ 3.892,00;R$ 0,00;R$ 3.892,00\n' +
+    'Kaio;95;06503312300;06503312300;07/07/2000;R$ 820,00;2;R$ 819,00;R$ 0,00;R$ 819,00\n' +
+    'Jefferson;322;04536520341;+5586994647248;11/05/1993;R$ 2.787,00;0;R$ 2.787,00;R$ 0,00;R$ 2.787,00\n';
+  const r = lerResumo(Buffer.from(csv));
+  assert.deepEqual(r.map((x) => [x.total, x.ocorrencias, x.qtdOc]), [[386500, 2700, 2], [82000, -100, 2], [278700, 0, 0]]);
 });

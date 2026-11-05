@@ -120,6 +120,12 @@ if (!temColuna('fechamentos', 'versao')) {
   db.exec(`UPDATE fechamentos SET versao = (SELECT COUNT(*) ${env}), enviado_em = (SELECT MAX(quando) ${env}), enviado_por = (SELECT usuario_id ${env} ORDER BY id DESC LIMIT 1);
     UPDATE fechamentos SET versao = 1 WHERE versao = 0 AND status <> 'rascunho';`);
 }
+// Ocorrências do Agilizone (acréscimo ou desconto, sem data): valor e quantidade por entregador.
+if (!temColuna('resumo', 'ocorrencias')) db.exec('ALTER TABLE resumo ADD COLUMN ocorrencias INTEGER NOT NULL DEFAULT 0; ALTER TABLE resumo ADD COLUMN qtd_oc INTEGER NOT NULL DEFAULT 0');
+// so_resumo: fechamento de 1 dia importado só com o Resumo de entregas (sem Relatório de Pedidos).
+if (!temColuna('fechamentos', 'so_resumo')) db.exec('ALTER TABLE fechamentos ADD COLUMN so_resumo INTEGER NOT NULL DEFAULT 0');
+// origem_id: fechamento criado com os entregadores não aprovados quando o financeiro devolve um fechamento aprovado em parte.
+if (!temColuna('fechamentos', 'origem_id')) db.exec('ALTER TABLE fechamentos ADD COLUMN origem_id INTEGER');
 // Aprovação guarda o valor, o PIX e a versão aprovados: se mudarem num reenvio, o item volta para análise.
 if (!temColuna('aprovacoes', 'valor')) db.exec('ALTER TABLE aprovacoes ADD COLUMN valor INTEGER; ALTER TABLE aprovacoes ADD COLUMN pix TEXT; ALTER TABLE aprovacoes ADD COLUMN versao INTEGER;');
 

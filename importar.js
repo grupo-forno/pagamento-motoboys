@@ -70,8 +70,9 @@ function lerResumo(buf) {
   let txt = buf.toString('utf8');
   if (txt.includes('�')) txt = buf.toString('latin1'); // CSV salvo de novo pelo Excel
   const linhas = txt.replace(/^﻿/, '').split(/\r?\n/).filter((l) => l.trim());
-  const cab = (linhas[0] || '').split(';').map((s) => s.trim());
-  const col = (n) => cab.indexOf(n);
+  const sa = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const cab = (linhas[0] || '').split(';').map((s) => sa(s.trim()));
+  const col = (n) => cab.indexOf(sa(n));
   if (col('Entregador') < 0 || col('Soma das taxas de entrega') < 0)
     throw erro('O segundo arquivo não parece o "Resumo de entregas por entregador" do Agilizone (o .csv de "Exportar Resumo").');
   const limpa = (v) => { const s = String(v ?? '').trim(); return s && s !== '-' && s !== '—' ? s : null; };
@@ -80,7 +81,10 @@ function lerResumo(buf) {
     const total = centavos(c[col('Soma das taxas de entrega')]);
     if (Number.isNaN(total)) throw erro(`Resumo: valor inválido para ${c[col('Entregador')]}.`);
     const pago = col('Pago') < 0 ? 0 : centavos(c[col('Pago')]) || 0; // acerto já feito no Agilizone
-    return { entregador: String(c[col('Entregador')] ?? '').trim(), pedidos: Number(c[col('Pedidos')]) || 0, cpf: limpa(c[col('CPF')]), pix: limpa(c[col('Chave Pix')]), total, pago };
+    // Ocorrências (acréscimos ou descontos do Agilizone): "Ocorrências + Taxas" menos "Soma das taxas". Arquivo antigo não tem: 0.
+    const comOc = col('Ocorrências + Taxas') < 0 ? total : centavos(c[col('Ocorrências + Taxas')]);
+    if (Number.isNaN(comOc)) throw erro(`Resumo: valor de ocorrências inválido para ${c[col('Entregador')]}.`);
+    return { entregador: String(c[col('Entregador')] ?? '').trim(), pedidos: Number(c[col('Pedidos')]) || 0, cpf: limpa(c[col('CPF')]), pix: limpa(c[col('Chave Pix')]), total, pago, ocorrencias: comOc - total, qtdOc: col('Ocorrências') < 0 ? 0 : Number(c[col('Ocorrências')]) || 0 };
   }).filter((r) => r.entregador);
   if (!rows.length) throw erro('O Resumo de entregas está vazio.');
   return rows;

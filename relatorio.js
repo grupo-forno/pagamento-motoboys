@@ -19,10 +19,9 @@ const diaLongoPdf = (d) => `${NOMES_DIA[new Date(d + 'T12:00:00Z').getUTCDay()]}
 // A fonte do PDF (Helvetica) só tem Latin-1: emoji e símbolos raros viram lixo. Remove.
 const limpa = (v) => String(v ?? '').replace(/\s+/g, ' ').replace(/[^\x20-\x7E\xA0-\xFF\u2013\u2014\u2018\u2019\u201C\u201D\u2022]/g, '').replace(/ {2,}/g, ' ').trim();
 
-function gerarPdf(f0, g0, ajustes0) {
+function gerarPdf(f0, g0) {
   const f = { ...f0, loja: limpa(f0.loja) };
-  const g = { ...g0, linhas: g0.linhas.map((l) => ({ ...l, nome: limpa(l.nome), pix: l.pix && limpa(l.pix), aceite: l.aceite && { ...l.aceite, justificativa: limpa(l.aceite.justificativa) } })) };
-  const ajustes = ajustes0.map((a) => ({ ...a, motoboy: limpa(a.motoboy), justificativa: limpa(a.justificativa), autor: limpa(a.autor) }));
+  const g = { ...g0, linhas: g0.linhas.map((l) => ({ ...l, nome: limpa(l.nome), pix: l.pix && limpa(l.pix) })) };
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margins: { top: 30, bottom: 40, left: 30, right: 30 }, bufferPages: true,
       info: { Title: `Solicitação de pagamento · Motoboys · ${f.loja}`, Author: 'Grupo Forno' } });
@@ -34,8 +33,8 @@ function gerarPdf(f0, g0, ajustes0) {
     const envio = ultimo('Enviou ao financeiro%'), aprov = ultimo('Aprovou a solicitação%');
     const quando = (x) => (x ? `${x.nome || 'Sistema'} · ${dataFmt(x.quando.slice(0, 10))} ${x.quando.slice(11, 16)}` : '—');
     const gerado = new Date().toLocaleString('pt-BR', { timeZone: 'America/Fortaleza', dateStyle: 'short', timeStyle: 'short' });
-    const pend = g.linhas.filter((l) => l.confere === 'pendente'), aceitos = g.linhas.filter((l) => l.confere === 'aceito');
-    const conferencia = !g.temResumo ? 'Sem Resumo do Agilizone' : pend.length ? `${pend.length} motoboy(s) diferente(s) do Resumo` : g.linhas.some((l) => l.confere !== 'ok') ? 'Diferenças explicadas por divergência ou justificativa' : 'Bate com o Resumo do Agilizone';
+    const pend = g.linhas.filter((l) => l.confere === 'pendente');
+    const conferencia = !g.temResumo ? 'Sem Resumo do Agilizone' : pend.length ? `${pend.length} motoboy(s) diferente(s) do Resumo` : 'Bate com o Resumo do Agilizone';
     const aPagar = g.linhas.filter((l) => l.total > 0);
 
     // ---- cabeçalho (repete em toda página)
@@ -70,8 +69,8 @@ function gerarPdf(f0, g0, ajustes0) {
     y += 40;
 
     // ---- tabela por motoboy e dia
-    const cols = [{ t: '#', w: 22, n: true }, { t: 'Motoboy', w: 170 }, { t: 'Chave PIX', w: 130 },
-      ...g.dias.map((d) => ({ t: diaFmt(d), w: 0, n: true, dia: d })), { t: 'Total', w: 78, n: true }, ...(g.temResumo ? [{ t: 'Resumo', w: 78, n: true }] : [])];
+    const cols = [{ t: '#', w: 22, n: true }, { t: 'Motoboy', w: 150 }, { t: 'Chave PIX', w: 125 },
+      ...g.dias.map((d) => ({ t: diaFmt(d), w: 0, n: true, dia: d })), ...(g.temOc ? [{ t: 'Ocorrências', w: 80, n: true }] : []), ...(g.temPago ? [{ t: 'Já pago', w: 60, n: true }] : []), { t: 'Total a pagar', w: 78, n: true }, ...(g.temResumo ? [{ t: 'Resumo', w: 68, n: true }] : [])];
     const livre = (W - cols.reduce((s, c) => s + c.w, 0)) / Math.max(g.dias.length, 1);
     cols.forEach((c) => { if (!c.w) c.w = Math.min(livre, 95); });
     const TW = cols.reduce((s, c) => s + c.w, 0), H = 18;
@@ -96,11 +95,14 @@ function gerarPdf(f0, g0, ajustes0) {
         else if (c.t === 'Chave PIX') { v = l.pix || 'SEM PIX'; if (!l.pix) cor = COR.vermelho; }
         else if (c.dia) {
           const cel = l.dias[c.dia]; v = cel ? brl(cel.final) : '–';
-          if (cel?.ajuste) { doc.rect(x + 1, y + 1, c.w - 2, H - 2).fill(COR.laranjaSoft); cor = COR.laranjaEsc; bold = true; v += ' *'; }
           if (!cel) cor = '#B5ADA9';
-        } else if (c.t === 'Total') { v = brl(l.total); bold = true; }
+        } else if (c.t === 'Ocorrências') { v = l.oc || l.qtdOc ? `${l.oc > 0 ? '+' : ''}${brl(l.oc)} (${l.qtdOc})` : '–'; if (l.oc < 0) cor = COR.vermelho; }
+        else if (c.t === 'Já pago') { v = l.pago ? `-${brl(l.pago)}` : '–'; if (l.pago) cor = COR.vermelho; }
+        else if (c.t === 'Total a pagar') { v = brl(l.total); bold = true; }
         else { v = l.resumo == null ? '–' : brl(l.resumo); cor = l.confere === 'ok' ? COR.verde : l.confere === 'pendente' ? COR.vermelho : COR.laranjaEsc; }
-        doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(8.5).fillColor(cor).text(v, x + 5, y + 5, { width: c.w - 10, align: c.n ? 'right' : 'left', lineBreak: false, ellipsis: true });
+        doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(8.5);
+        if (doc.widthOfString(v) > c.w - 10) { let t = v; while (t.length > 1 && doc.widthOfString(t + '…') > c.w - 10) t = t.slice(0, -1); v = t.trimEnd() + '…'; }
+        doc.fillColor(cor).text(v, x + 5, y + 5, { width: c.w - 10, align: c.n ? 'right' : 'left', lineBreak: false, ellipsis: true });
         x += c.w;
       }
       doc.moveTo(L, y + H).lineTo(L + TW, y + H).strokeColor(COR.linha).lineWidth(0.5).stroke();
@@ -110,50 +112,17 @@ function gerarPdf(f0, g0, ajustes0) {
     doc.rect(L, y, TW, H + 2).fill(COR.laranjaSoft);
     let x = L;
     for (const c of cols) {
-      const v = c.t === 'Motoboy' ? 'TOTAL' : c.dia ? brl(g.totDia[c.dia]) : c.t === 'Total' ? brl(g.total) : c.t === 'Resumo' ? brl(g.linhas.reduce((s, l) => s + (l.resumo || 0), 0)) : '';
-      doc.font('Helvetica-Bold').fontSize(9).fillColor(c.t === 'Total' ? COR.laranjaEsc : COR.preto).text(v, x + 5, y + 6, { width: c.w - 10, align: c.n ? 'right' : 'left', lineBreak: false });
+      const v = c.t === 'Motoboy' ? 'TOTAL' : c.dia ? brl(g.totDia[c.dia]) : c.t === 'Total a pagar' ? brl(g.total) : c.t === 'Ocorrências' ? brl(g.totOc) : c.t === 'Já pago' ? `-${brl(g.totPago)}` : c.t === 'Resumo' ? brl(g.linhas.reduce((s, l) => s + (l.resumo || 0), 0)) : '';
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor(c.t === 'Total a pagar' ? COR.laranjaEsc : COR.preto).text(v, x + 5, y + 6, { width: c.w - 10, align: c.n ? 'right' : 'left', lineBreak: false });
       x += c.w;
     }
     y += H + 8;
-    doc.font('Helvetica').fontSize(7.5).fillColor(COR.cinza).text(`* Valor corrigido pelo despachante (ver Divergências).${g.temResumo ? '  Coluna Resumo: verde = bate com o Agilizone; laranja = diferença explicada (divergência ou justificativa); vermelho = diferente.' : ''}`, L, y);
+    doc.font('Helvetica').fontSize(7.5).fillColor(COR.cinza).text(`Valores conforme o Agilizone.${g.temOc ? '  Ocorrências (qtd.): acréscimo ou desconto do Agilizone, sem data, já no total.' : ''}${g.temPago ? '  Já pago: acerto do Agilizone, descontado.' : ''}${g.temResumo ? '  Resumo (soma das taxas): verde = bate com os dias.' : ''}`, L, y);
     y += 18;
 
-    // ---- divergências
-    if (y + 60 > FIM) novaPagina();
-    titulo(`Divergências registradas (${ajustes.length})`);
-    if (!ajustes.length) { doc.font('Helvetica').fontSize(9).fillColor(COR.cinza).text('Nenhuma. Todos os valores conforme o Relatório de Pedidos do Agilizone.', L, y); y += 18; }
-    for (const a of ajustes) {
-      const just = `"${a.justificativa}"`;
-      const hj = doc.font('Helvetica').fontSize(8.5).heightOfString(just, { width: W - 24 });
-      const h = 34 + hj;
-      if (y + h > FIM) novaPagina();
-      doc.roundedRect(L, y, W, h, 4).fillAndStroke('#FFFFFF', COR.linha);
-      doc.rect(L, y, 3, h).fill(COR.laranja);
-      const dif = a.valor_final - a.agil;
-      doc.font('Helvetica-Bold').fontSize(9.5).fillColor(COR.preto).text(`${a.motoboy} · ${diaLongoPdf(a.dia)}`, L + 12, y + 7, { continued: true })
-        .font('Helvetica').fontSize(8.5).fillColor(COR.cinza).text(`     Agilizone ${brl(a.agil)}${a.valor_informado == null ? '' : `  ·  motoboy informou ${brl(a.valor_informado)}`}  ·  a pagar `, { continued: true })
-        .font('Helvetica-Bold').fillColor(COR.preto).text(brl(a.valor_final), { continued: true })
-        .font('Helvetica-Bold').fillColor(dif > 0 ? COR.verde : dif < 0 ? COR.vermelho : COR.cinza).text(`  (${dif > 0 ? '+' : ''}${brl(dif)})`);
-      doc.font('Helvetica-Oblique').fontSize(8.5).fillColor(COR.preto).text(just, L + 12, y + 21, { width: W - 24 });
-      doc.font('Helvetica').fontSize(7.5).fillColor(COR.cinza).text(`Registrado por ${a.autor || '—'} em ${dataFmt(a.criado_em.slice(0, 10))} ${a.criado_em.slice(11, 16)}${a.evidencias ? ` · ${a.evidencias} evidência(s) anexada(s) no sistema` : ''}`, L + 12, y + h - 12, { width: W - 24 });
-      y += h + 6;
-    }
-
-    // ---- diferenças com o Resumo aceitas
-    if (aceitos.length) {
-      if (y + 50 > FIM) novaPagina();
-      y += 6; titulo(`Diferenças com o Resumo aceitas pelo despachante (${aceitos.length})`);
-      for (const l of aceitos) {
-        if (y + 26 > FIM) novaPagina();
-        doc.font('Helvetica-Bold').fontSize(8.5).fillColor(COR.preto).text(`${l.nome}: paga ${brl(l.total)} (Resumo ${brl(l.resumo)})`, L + 9, y, { continued: true })
-          .font('Helvetica').fillColor(COR.cinza).text(`  —  ${l.aceite.justificativa}`, { width: W - 18 });
-        y = doc.y + 6;
-      }
-    }
-
     // ---- assinaturas
-    if (y + 70 > FIM) novaPagina();
-    y = Math.max(y + 24, FIM - 50);
+    if (y + 32 > FIM) novaPagina();
+    y = Math.max(y + 4, Math.min(FIM - 50, y + 24));
     const sw = (W - 40) / 2;
     [['Despachante responsável', envio?.nome], ['Financeiro (aprovação)', aprov?.nome]].forEach(([t, n], i) => {
       const sx = L + i * (sw + 40);

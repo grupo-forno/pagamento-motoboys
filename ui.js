@@ -319,7 +319,7 @@ body.auth{background:#fff}.auth-box{text-align:center}.logo-v{width:180px;height
 ".tab-fila td{vertical-align:top}.pag{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;justify-content:flex-end;padding:12px 16px;border-top:1px solid var(--bd)}.pag>span:first-child{margin-right:auto}.sec-agenda{margin-top:24px}.sec-agenda>summary{padding:8px 0;color:var(--tx-2)}.sec-agenda .card{margin-top:12px}"+
 ".fin td,.fin th{vertical-align:top}.fin .nome-l{justify-content:flex-start;align-items:center;gap:8px}.fin .nome-l input{width:18px;height:18px;flex:none}tr.fora{display:none}.sit-c{min-width:170px}.sit-d{display:block;font-size:12px;color:var(--tx-2);margin-top:4px;max-width:260px;white-space:normal;line-height:1.4}"+
 ".acoes-c{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}.fin-legenda{font-size:12.5px;color:var(--mut);padding:12px 16px;margin:0;border-top:1px solid var(--bd)}.sel-todos{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;margin-left:auto;cursor:pointer}.sel-todos input{width:18px;height:18px}"+
-"#fin tbody tr:has(input[name=m]:checked)>*{background:var(--pri-soft)}.btn:disabled{opacity:.5;cursor:not-allowed}"+
+"#fin tbody tr:has(input[name=m]:checked)>*{background:var(--pri-soft)}.btn:disabled{opacity:.5;cursor:not-allowed}.modo{border:0;padding:0;margin:0 0 16px;min-width:0}.modo-op{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px}.modo legend{font-weight:600;margin-bottom:8px;padding:0}.modo label{display:flex;margin:0;gap:10px;align-items:flex-start;border:1px solid var(--bd);border-radius:var(--r-sm);padding:12px 14px;cursor:pointer}.modo label:has(input:checked){border-color:var(--brand);background:var(--pri-soft)}.modo input[type=radio]{width:18px!important;height:18px!important;min-height:0;margin:2px 0 0;flex:none;padding:0}[hidden]{display:none!important}.modo small{display:block;color:var(--tx-2);font-size:12.5px;margin-top:2px}.dia-campo{margin-bottom:16px}.dia-campo select,.dia-campo input{max-width:260px;margin-bottom:8px}"+
 "@media(max-width:900px){.fin .dia-c{display:none}}@media(max-width:700px){.tab-fila .opc{display:none}.filtros .field,.filtros-b{flex:1 1 100%}.filtros-b .btn{flex:1}.sel-todos{margin-left:0}}";
 
 const JS = `
@@ -371,6 +371,10 @@ document.querySelectorAll('form[data-confirma]').forEach(function(f){var d=docum
 f.addEventListener('submit',function(e){if(f.dataset.ok)return;e.preventDefault();quem=document.activeElement;d.showModal()});
 d.querySelector('[data-confirmado]').addEventListener('click',function(e){e.preventDefault();f.dataset.ok='1';d.close();f.requestSubmit()});
 d.querySelector('[data-fecha-dlg]').addEventListener('click',function(){d.close()});d.addEventListener('close',function(){if(!f.dataset.ok&&quem)quem.focus()})});
+// Importação: "Só 1 dia" esconde o Relatório de Pedidos e pede o dia.
+document.querySelectorAll('form[data-modo]').forEach(function(f){var a=f.querySelector('#f-arquivo').closest('li'),d=f.querySelector('[data-so-dia]');
+function m(){var dia=f.querySelector('input[name=modo]:checked').value==='dia';a.hidden=dia;d.hidden=!dia;f.querySelector('#f-arquivo').required=!dia;d.querySelectorAll('input,select').forEach(function(x){x.required=dia})}
+f.querySelectorAll('input[name=modo]').forEach(function(x){x.addEventListener('change',m)});m()});
 // Financeiro: seleção (quantidade e soma), filtro por situação e confirmação de aprovar/devolver.
 (function(){var fm=document.getElementById('dec'),dlg=document.getElementById('dlg-dec');if(!fm||!dlg)return;var t=document.getElementById('fin'),quem,
 brl=function(c){return 'R$ '+(c/100).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})},

@@ -23,8 +23,8 @@ before(async () => {
     let k = 0;
     for (const [n, v] of [['Ana', 1000], ['Bia', 2000], ['Caio', 3000]]) {
       db.prepare("INSERT INTO pedidos (fechamento_id, loja_id, chave, dia, entregador, motoboy_id, taxa) VALUES (?,?,?,'2026-10-20',?,?,?)").run(f, loja, `${f}-${k++}`, n, ids[n], v);
-      // Caio: Resumo diferente da soma dos dias, sem justificativa → bloqueado para aprovação.
-      db.prepare('INSERT INTO resumo (fechamento_id, entregador, motoboy_id, total, pix) VALUES (?,?,?,?,?)').run(f, n, ids[n], n === 'Caio' ? 2500 : v, `${n.toLowerCase()}@pix.com`);
+      // Bia: Resumo diferente da soma dos dias (só aviso, não trava). Caio: sem chave PIX (trava a aprovação).
+      db.prepare('INSERT INTO resumo (fechamento_id, entregador, motoboy_id, total, pix) VALUES (?,?,?,?,?)').run(f, n, ids[n], n === 'Bia' ? 1900 : v, n === 'Caio' ? null : `${n.toLowerCase()}@pix.com`);
     }
   }
   srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '0' } });
@@ -47,7 +47,7 @@ test('financeiro não acessa fechamento não enviado nem de outra loja', async (
   assert.strictEqual((await get(fin, `/fechamentos/${F1}`)).status, 200);
 });
 
-test('aprovação parcial: bloqueia divergência, grava valor/PIX/versão e recusa duplicada ou desatualizada', async () => {
+test('aprovação parcial: bloqueia item sem PIX, grava valor/PIX/versão e recusa duplicada ou desatualizada', async () => {
   const fin = await entra('fin');
   assert.match(await post(fin, `/fechamentos/${F1}/aprovar`, { versao: 0, m: ids.Ana }), /erro=/);
   assert.match(await post(fin, `/fechamentos/${F1}/aprovar`, { versao: 1, m: ids.Caio }), /erro=/);
@@ -66,17 +66,51 @@ test('decisões concorrentes sobre o mesmo entregador geram uma só aprovação'
   assert.strictEqual(aprovacoes().length, 2);
 });
 
-test('devolução exige motivo, preserva aprovações e o reenvio mantém as decisões', async () => {
+test('devolução de fechamento aprovado em parte: aprovados ficam no original, o resto vira novo fechamento', async () => {
   const fin = await entra('fin'), desp = await entra('desp');
   assert.match(await post(fin, `/fechamentos/${F1}/devolver`, { versao: 1, m: ids.Caio, motivo: '' }), /erro=/);
   assert.match(await post(fin, `/fechamentos/${F1}/devolver`, { versao: 1, m: ids.Ana, motivo: 'Valor errado' }), /erro=/); // já aprovado
   assert.match(await post(fin, `/fechamentos/${F1}/devolver`, { versao: 1, m: ids.Caio, motivo: 'Confira o Resumo do Caio' }), /ok=|erro=/);
-  assert.strictEqual(status().status, 'rascunho');
-  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM devolucoes WHERE fechamento_id = ? AND motoboy_id = ? AND versao = 1').get(F1, ids.Caio).n, 1);
+  // Original: só Ana e Bia (aprovados), fechado como aprovado.
+  assert.deepStrictEqual(status(), { status: 'pago', versao: 1 });
   assert.strictEqual(aprovacoes().length, 2);
-  assert.match(await post(fin, `/fechamentos/${F1}/aprovar`, { versao: 1, m: ids.Caio }), /erro=/); // devolvido: nada a decidir
-  assert.match(await post(desp, `/fechamentos/${F1}/enviar`, { para: 'financeiro@teste.com' }), /fechamentos/);
-  assert.deepStrictEqual(status(), { status: 'enviado', versao: 2 });
-  assert.strictEqual(aprovacoes().length, 2);
-  assert.match(await post(fin, `/fechamentos/${F1}/aprovar`, { versao: 1, m: ids.Caio }), /erro=/); // tela da versão antiga
+  assert.deepStrictEqual(db.prepare('SELECT DISTINCT motoboy_id m FROM pedidos WHERE fechamento_id = ? ORDER BY 1').all(F1).map((x) => x.m), [ids.Ana, ids.Bia]);
+  // Restante: só Caio, devolvido à loja, com pedidos, Resumo e o registro da devolução.
+  const F3 = db.prepare('SELECT id FROM fechamentos WHERE origem_id = ?').get(F1).id;
+  const st3 = () => ({ ...db.prepare('SELECT status, versao FROM fechamentos WHERE id = ?').get(F3) });
+  assert.deepStrictEqual(st3(), { status: 'rascunho', versao: 1 });
+  assert.deepStrictEqual(db.prepare('SELECT DISTINCT motoboy_id m FROM pedidos WHERE fechamento_id = ?').all(F3).map((x) => x.m), [ids.Caio]);
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM resumo WHERE fechamento_id = ?').get(F3).n, 1);
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM devolucoes WHERE fechamento_id = ? AND motoboy_id = ?').get(F3, ids.Caio).n, 1);
+  assert.strictEqual((await get(fin, `/fechamentos/${F3}`)).status, 200); // já foi enviado: o financeiro vê
+  assert.match(await post(fin, `/fechamentos/${F1}/aprovar`, { versao: 1, m: ids.Caio }), /erro=/); // original fechado
+  // A loja reenvia só o restante (depois de informar o PIX do Caio).
+  db.prepare("INSERT INTO edicoes (fechamento_id, motoboy_id, pix) VALUES (?, ?, 'caio@pix.com')").run(F3, ids.Caio);
+  assert.match(await post(desp, `/fechamentos/${F3}/enviar`, { para: 'financeiro@teste.com' }), /fechamentos/);
+  assert.deepStrictEqual(st3(), { status: 'enviado', versao: 2 });
+  assert.match(await post(fin, `/fechamentos/${F3}/aprovar`, { versao: 1, m: ids.Caio }), /erro=/); // tela da versão antiga
+  assert.match(await post(fin, `/fechamentos/${F3}/aprovar`, { versao: 2, m: ids.Caio }), /ok=/);
+  assert.strictEqual(st3().status, 'pago');
 });
+
+test('fechamento de 1 dia: só o Resumo, valor do dia = total do Resumo, sem sobreposição', async () => {
+  const desp = await entra('desp');
+  const envia = async (dia) => {
+    const fd = new FormData();
+    fd.set('modo', 'dia'); fd.set('dia', dia);
+    fd.set('resumo', new Blob(['Entregador;Pedidos;CPF;Chave Pix;Soma das taxas de entrega\r\nDora;3;;dora@pix.com;25,00\r\nEli;2;;eli@pix.com;18,50\r\n']), 'resumo.csv');
+    const r = await fetch(B + '/fechamentos/novo', { method: 'POST', headers: { cookie: desp }, body: fd, redirect: 'manual' });
+    return r.headers.get('location') || '';
+  };
+  const loc = await envia('2026-10-18');
+  assert.match(loc, /^\/fechamentos\/\d+\?ok=/);
+  const id = Number(loc.match(/\/fechamentos\/(\d+)/)[1]);
+  const f = db.prepare('SELECT so_resumo, data_ini, data_fim, status FROM fechamentos WHERE id = ?').get(id);
+  assert.deepStrictEqual({ ...f }, { so_resumo: 1, data_ini: '2026-10-18', data_fim: '2026-10-18', status: 'rascunho' });
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM pedidos WHERE fechamento_id = ?').get(id).n, 0);
+  const pag = (await (await get(desp, '/fechamentos/' + id)).text()).replace(/ /g, ' ');
+  assert.ok(pag.includes('R$ 43,50') && !pag.includes('Registrar divergência'), 'total do dia e sem divergências');
+  assert.match(await envia('2026-10-18'), /erro=/); // mesmo dia de novo
+  assert.match(await envia('2999-01-01'), /erro=/); // futuro
+});
+

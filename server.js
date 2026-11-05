@@ -17,7 +17,9 @@ app.use('/marca', express.static(path.join(__dirname, 'public'), { maxAge: '7d' 
 const PERFIS = { admin: 'TI / Admin', gestao: 'Gestão', financeiro: 'Financeiro', despachante: 'Despachante' };
 const STATUS = { rascunho: 'Em revisão', enviado: 'Aguardando aprovação', pago: 'Aprovado' }; // 'pago' no banco = aprovado pelo financeiro (não quer dizer pago)
 // Situação mostrada ao usuário (texto sempre presente; a cor só reforça).
-const situacaoF = (f, devolvido) => f.arquivado_em ? ['nodot', 'Arquivado'] : devolvido && f.status === 'rascunho' ? ['bad', 'Devolvido para correção']
+const filhoDe = (id) => db.prepare('SELECT id FROM fechamentos WHERE origem_id = ? ORDER BY id DESC').get(id)?.id;
+const situacaoF = (f, devolvido) => f.arquivado_em ? ['nodot', 'Arquivado'] : devolvido && f.status === 'rascunho' ? ['bad', f.origem_id ? 'Devolvido · parte já aprovada' : 'Devolvido para correção']
+  : f.status === 'pago' && filhoDe(f.id) ? ['ok', 'Aprovado em parte']
   : [{ rascunho: 'warn', enviado: 'info', pago: 'ok' }[f.status], STATUS[f.status]];
 const selo = (f, devolvido) => { const [c, t] = situacaoF(f, devolvido); return html`<span class="badge ${c}">${t}</span>`; };
 const quando = (q) => `${q.slice(8, 10)}/${q.slice(5, 7)}/${q.slice(0, 4)} às ${q.slice(11, 16)}`; // "AAAA-MM-DD HH:MM" → "DD/MM/AAAA às HH:MM"
@@ -151,7 +153,7 @@ app.param('fid', (req, res, next, id) => {
 });
 
 // ---------- Cálculo ----------
-// Valor por motoboy/dia = soma da "Taxa do Entregador" dos pedidos; um ajuste (divergência) substitui o valor do dia.
+// Valor por motoboy/dia = soma da "Taxa do Entregador" dos pedidos. Fechamento de 1 dia (so_resumo): o total do Resumo é o valor do dia.
 function grade(f) {
   const cels = new Map(), dias = new Set();
   const cel = (m, d) => {
@@ -161,13 +163,13 @@ function grade(f) {
   };
   for (const p of db.prepare('SELECT motoboy_id m, dia, SUM(taxa) v, COUNT(*) n FROM pedidos WHERE fechamento_id = ? AND motoboy_id IS NOT NULL GROUP BY 1, 2').all(f.id))
     Object.assign(cel(p.m, p.dia), { agil: p.v, final: p.v, n: p.n });
-  for (const a of db.prepare('SELECT * FROM ajustes WHERE fechamento_id = ? AND substituido_em IS NULL').all(f.id))
-    Object.assign(cel(a.motoboy_id, a.dia), { final: a.valor_final, ajuste: a });
+  if (f.so_resumo) for (const r of db.prepare('SELECT motoboy_id m, SUM(total) v, SUM(pedidos) n FROM resumo WHERE fechamento_id = ? AND motoboy_id IS NOT NULL GROUP BY 1').all(f.id))
+    Object.assign(cel(r.m, f.data_ini), { agil: r.v, final: r.v, n: r.n });
   // Resumo do Agilizone (quando enviado): total confiável por motoboy. Quem só aparece no Resumo também entra na grade.
   const temResumo = !!db.prepare('SELECT 1 FROM resumo WHERE fechamento_id = ?').get(f.id);
-  const resumo = new Map(db.prepare('SELECT motoboy_id m, SUM(total) t FROM resumo WHERE fechamento_id = ? AND motoboy_id IS NOT NULL GROUP BY 1').all(f.id).map((r) => [r.m, r.t]));
+  const resumoL = db.prepare('SELECT motoboy_id m, SUM(total) t, SUM(ocorrencias) oc, SUM(qtd_oc) q, SUM(pago) p FROM resumo WHERE fechamento_id = ? AND motoboy_id IS NOT NULL GROUP BY 1').all(f.id);
+  const resumo = new Map(resumoL.map((r) => [r.m, r.t])), extra = new Map(resumoL.map((r) => [r.m, r]));
   const aprov = new Map(db.prepare('SELECT a.*, u.nome por FROM aprovacoes a LEFT JOIN usuarios u ON u.id = a.aprovado_por WHERE fechamento_id = ?').all(f.id).map((x) => [x.motoboy_id, x]));
-  const aceites = new Map(db.prepare('SELECT * FROM aceites WHERE fechamento_id = ?').all(f.id).map((a) => [a.motoboy_id, a]));
   // Depois do envio, o PIX é o que foi enviado ao financeiro (não muda se o cadastro mudar).
   // PIX do fechamento: digitado pelo despachante (ou congelado no envio) > Resumo do Agilizone > cadastro antigo.
   const pixF = new Map(db.prepare('SELECT motoboy_id, pix FROM envio_pix WHERE fechamento_id = ? AND pix IS NOT NULL').all(f.id).map((x) => [x.motoboy_id, x.pix]));
@@ -181,18 +183,20 @@ function grade(f) {
       if (e?.nome) m = { ...m, nome: e.nome, nomeAgil: m.nome };
       if (e?.pix) pixF.set(m.id, e.pix), pixR.delete(m.id);
       const c = cels.get(m.id);
-      const total = Object.values(c).reduce((s, x) => s + x.final, 0), res = temResumo ? (resumo.get(m.id) ?? 0) : null;
-      // ok: bate com o Resumo · aceito: diferença aceita com justificativa (vale para aquele valor exato) · pendente: precisa resolver
-      const aceite = aceites.get(m.id);
-      const confere = res == null || total === res ? 'ok' : aceite && aceite.diferenca === total - res ? 'aceito' : Object.values(c).some((x) => x.ajuste) ? 'div' : 'pendente'; // div: a divergência registrada já explica a diferença
+      // bruto = soma dos dias (taxas); total a pagar = bruto + ocorrências do Agilizone - o que já foi pago lá.
+      const bruto = Object.values(c).reduce((s, x) => s + x.final, 0), res = temResumo ? (resumo.get(m.id) ?? 0) : null;
+      const ex = extra.get(m.id), oc = ex?.oc ?? 0, qtdOc = ex?.q ?? 0, pago = ex?.p ?? 0, total = bruto + oc - pago;
+      // ok: bate com o Resumo · pendente: a soma dos dias difere do Resumo (aviso; o Agilizone é a referência)
+      const confere = res == null || bruto === res ? 'ok' : 'pendente';
       const pix = pixF.get(m.id) ?? pixR.get(m.id) ?? m.pix, ap = aprov.get(m.id);
       // A aprovação vale para o valor e o PIX aprovados; se mudarem (reenvio), o item volta para análise.
       const aprovado = ap ? ap.valor == null || (ap.valor === total && ap.pix === pix) : f.status === 'pago';
-      return { ...m, aprovado, aprovacao: ap, alterado: !!ap && !aprovado, pix, pixDigitado: f.status === 'rascunho' && pixF.has(m.id) && !pixR.has(m.id), dias: c, total, resumo: res, noResumo: temResumo && !resumo.has(m.id), confere, aceite };
+      return { ...m, aprovado, aprovacao: ap, alterado: !!ap && !aprovado, pix, pixDigitado: f.status === 'rascunho' && pixF.has(m.id) && !pixR.has(m.id), dias: c, bruto, oc, qtdOc, pago, total, resumo: res, noResumo: temResumo && !resumo.has(m.id), confere };
     }).sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
   const diasArr = [...dias].sort();
   const totDia = Object.fromEntries(diasArr.map((d) => [d, linhas.reduce((s, l) => s + (l.dias[d]?.final || 0), 0)]));
-  return { dias: diasArr, linhas, totDia, total: linhas.reduce((s, l) => s + l.total, 0), temResumo };
+  const soma = (k) => linhas.reduce((s, l) => s + l[k], 0);
+  return { dias: diasArr, linhas, totDia, total: soma('total'), totOc: soma('oc'), totPago: soma('pago'), temOc: linhas.some((l) => l.oc || l.qtdOc), temPago: linhas.some((l) => l.pago), temResumo };
 }
 
 // Motoboy = nome do Agilizone (vem certo de lá): liga automaticamente, criando o registro interno na primeira vez.
@@ -209,8 +213,8 @@ for (const { id } of db.prepare("SELECT id FROM fechamentos WHERE status = 'rasc
 
 function gravaResumo(f, rows, uid, arquivo) {
   db.prepare('DELETE FROM resumo WHERE fechamento_id = ?').run(f.id);
-  const ins = db.prepare('INSERT INTO resumo (fechamento_id, entregador, pedidos, total, cpf, pix, pago) VALUES (?,?,?,?,?,?,?) ON CONFLICT DO UPDATE SET pedidos = pedidos + excluded.pedidos, total = total + excluded.total, pago = pago + excluded.pago');
-  for (const r of rows) ins.run(f.id, r.entregador, r.pedidos, r.total, r.cpf, r.pix, r.pago);
+  const ins = db.prepare('INSERT INTO resumo (fechamento_id, entregador, pedidos, total, cpf, pix, pago, ocorrencias, qtd_oc) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT DO UPDATE SET pedidos = pedidos + excluded.pedidos, total = total + excluded.total, pago = pago + excluded.pago, ocorrencias = ocorrencias + excluded.ocorrencias, qtd_oc = qtd_oc + excluded.qtd_oc');
+  for (const r of rows) ins.run(f.id, r.entregador, r.pedidos, r.total, r.cpf, r.pix, r.pago, r.ocorrencias, r.qtdOc);
   aplicaResumo(f, uid);
   log(uid, `f:${f.id}`, `Anexou o Resumo de entregas ${arquivo}: ${rows.length} entregadores, ${brl(rows.reduce((s, r) => s + r.total, 0))}`);
 }
@@ -318,7 +322,9 @@ ${proximos.map((p) => html`<tr><td><b>${diaLongo(p.pagamento)}</b></td><td>${per
 const FIN_ABAS = { aguardando: 'Aguardando análise', parcial: 'Parcialmente aprovados', devolvidos: 'Devolvidos', aprovados: 'Aprovados', todos: 'Todos' };
 const abaFin = (f) => (f.status === 'pago' ? 'aprovados' : f.status === 'rascunho' ? 'devolvidos' : f.nAprov ? 'parcial' : 'aguardando');
 const SELO_FIN = { aguardando: ['info', 'Aguardando análise'], parcial: ['warn', 'Parcialmente aprovado'], devolvidos: ['bad', 'Devolvido à loja'], aprovados: ['ok', 'Aprovado'] };
-const seloFin = (f) => { const [c, t] = f.arquivado_em ? ['nodot', 'Arquivado pela loja'] : SELO_FIN[abaFin(f)]; return html`<span class="badge ${c}">${t}</span>`; };
+const vinculo = (f) => { const filho = filhoDe(f.id);
+  return html`${f.origem_id ? html`<div class="alert info">${icone('link')}<div><b>Restante do fechamento #${f.origem_id}</b>Os entregadores aprovados ficaram fechados no <a href="/fechamentos/${f.origem_id}">fechamento #${f.origem_id}</a>. Aqui estão só os que não foram aprovados.</div></div>` : ''}${filho ? html`<div class="alert info">${icone('link')}<div><b>Aprovado em parte</b>Aqui ficaram só os entregadores aprovados. Os demais foram devolvidos à loja no <a href="/fechamentos/${filho}">fechamento #${filho}</a>.</div></div>` : ''}`; };
+const seloFin = (f) => { const [c, t] = f.arquivado_em ? ['nodot', 'Arquivado pela loja'] : f.status === 'pago' && filhoDe(f.id) ? ['ok', 'Aprovado em parte'] : f.status === 'rascunho' && f.origem_id ? ['bad', 'Devolvido · parte já aprovada'] : SELO_FIN[abaFin(f)]; return html`<span class="badge ${c}">${t}</span>`; };
 // Volta à fila com os mesmos filtros e página (só aceita endereço da própria fila).
 const voltaFila = (v) => (typeof v === 'string' && /^\/(\?[\w=&%.+-]*)?$/.test(v) ? v : '/');
 const detalheFin = (f, v) => `/fechamentos/${f.id}${voltaFila(v) === '/' ? '' : `?volta=${encodeURIComponent(voltaFila(v))}`}`;
@@ -331,7 +337,7 @@ function itensFin(f, g) {
   for (const l of g.linhas) if (l.pix && l.total > 0) usos[l.pix.toLowerCase()] = (usos[l.pix.toLowerCase()] || 0) + 1;
   return g.linhas.map((l) => {
     const d = dev.get(l.id), devolvido = !!d && d.versao === f.versao && f.status === 'rascunho';
-    const bloq = l.total <= 0 ? 'sem valor a pagar' : !l.pix ? 'sem chave PIX' : l.confere === 'pendente' ? `diferença de ${brl(l.total - (l.resumo || 0))} com o Resumo, sem justificativa da loja` : '';
+    const bloq = l.total <= 0 ? 'sem valor a pagar' : !l.pix ? 'sem chave PIX' : '';
     const sit = l.aprovado ? 'aprovado' : devolvido ? 'devolvido' : l.total <= 0 && !l.resumo ? 'semvalor' : bloq ? 'bloqueado' : l.alterado ? 'alterado' : 'aguardando';
     const avisoPix = !l.pix ? '' : !pixValido(l.pix) ? 'Formato de chave PIX não reconhecido' : usos[l.pix.toLowerCase()] > 1 ? 'Mesma chave PIX de outro entregador' : '';
     return { ...l, dev: d, sit, bloq, avisoPix };
@@ -395,8 +401,6 @@ ${pag > 1 ? html`<a class="btn btn-sec btn-sm" href="${qs({ p: pag - 1 })}" rel=
 function conferenciaFin(req, res) {
   const f = req.f, u = req.user, g = grade(f), itens = itensFin(f, g), decide = podeDevolver(u, f);
   const voltar = voltaFila(req.query.volta);
-  const ajustes = ajustesDetalhados(f, g), ajDe = (id) => ajustes.filter((a) => a.motoboy_id === id);
-  const evid = db.prepare('SELECT id, nome FROM evidencias WHERE ajuste_id = ?');
   const hist = db.prepare('SELECT l.*, u.nome FROM log l LEFT JOIN usuarios u ON u.id = l.usuario_id WHERE ref = ? ORDER BY l.id DESC').all(`f:${f.id}`);
   const nomeDe = (id, alt) => itens.find((i) => i.id === id)?.nome ?? alt;
   const decisoes = [
@@ -405,7 +409,7 @@ function conferenciaFin(req, res) {
   ].sort((a, b) => b.quando.localeCompare(a.quando));
   const ehAp = (i) => i.sit === 'aprovado', ehDev = (i) => i.sit === 'devolvido', ehPend = (i) => !ehAp(i) && !ehDev(i);
   const soma = (fn) => itens.filter(fn).reduce((t, i) => t + i.total, 0), conta = (fn) => itens.filter((i) => i.total > 0 && fn(i)).length;
-  const nAprov = conta(ehAp), nBloq = conta((i) => i.sit === 'bloqueado'), aceitos = itens.filter((i) => i.confere === 'aceito');
+  const nAprov = conta(ehAp), nBloq = conta((i) => i.sit === 'bloqueado');
   const devolucao = hist.find((h) => /^Devolveu para correção/.test(h.acao));
   const alterados = itens.filter((i) => i.alterado && !ehAp(i));
   const totResumo = g.linhas.reduce((s, l) => s + (l.resumo || 0), 0);
@@ -417,30 +421,25 @@ function conferenciaFin(req, res) {
     : i.sit === 'alterado' ? `Aprovado antes com ${brl(i.aprovacao.valor)} (PIX ${i.aprovacao.pix}); a loja mudou. Confira de novo.`
     : i.dev ? `Devolvido na versão ${i.dev.versao}; a loja corrigiu e reenviou.` : '');
   const linha = (i) => {
-    const div = ajDe(i.id), [cor, txt] = SIT_ITEM[i.sit], podeSel = decide && !['aprovado', 'semvalor'].includes(i.sit), temDet = div.length || i.confere === 'aceito';
-    const dif = g.temResumo ? i.total - (i.resumo || 0) : null, grupo = ['aguardando', 'alterado'].includes(i.sit) ? 'pendente' : i.sit === 'bloqueado' ? 'pendente bloqueado' : i.sit;
+    const [cor, txt] = SIT_ITEM[i.sit], podeSel = decide && !['aprovado', 'semvalor'].includes(i.sit);
+    const dif = g.temResumo ? i.bruto - (i.resumo || 0) : null, grupo = ['aguardando', 'alterado'].includes(i.sit) ? 'pendente' : i.sit === 'bloqueado' ? 'pendente bloqueado' : i.sit;
     return html`<tr data-id="${i.id}" data-q="${semAcento(i.nome)}" data-sit="${grupo}" data-valor="${i.total}" data-nome="${i.nome}" ${i.bloq ? new Raw('data-bloq="1"') : ''}>
 <th scope="row" class="nome-c"><div class="nome-l">${podeSel ? html`<input type="checkbox" name="m" value="${i.id}" aria-label="Selecionar ${i.nome}, ${brl(i.total)}">` : ''}<b>${i.nome}</b></div>
 <div class="pix-l">${i.pix ? html`<span class="rot-pix">PIX</span><span class="pix">${i.pix}<button type="button" class="icon-btn" data-copiar="${i.pix}" title="Copiar chave PIX" aria-label="Copiar chave PIX de ${i.nome}">${icone('copiar', 'sm')}</button></span>` : html`<span class="badge bad">Sem chave PIX</span>`}</div>
 ${i.avisoPix ? html`<div class="small warn-t">${icone('alerta', 'sm')} ${i.avisoPix}</div>` : ''}
-${temDet ? html`<div class="chips"><button type="button" class="badge div nodot" data-abre="${i.id}" aria-expanded="false" aria-controls="det-${i.id}">${div.length ? `Ver ${div.length} divergência(s)` : 'Ver justificativa'} ${icone('chevron', 'sm')}</button></div>` : ''}</th>
+</th>
 ${g.dias.map((d) => { const c = i.dias[d];
-    return html`<td class="n dia-c">${c ? html`<span class="${c.ajuste ? 'cell div' : ''}" title="${`Relatório de Pedidos: ${brl(c.agil)} (${c.n} entrega(s))${c.ajuste ? `. Corrigido pela loja para ${brl(c.final)}` : ''}`}">${brl(c.final)}${c.ajuste ? html`<span aria-hidden="true">*</span><span class="sr"> (corrigido pela loja; no Relatório ${brl(c.agil)})</span>` : ''}</span>`
-      : html`<span class="mut" title="Sem entregas no dia">–<span class="sr">sem entregas</span></span>`}</td>`; })}
-<td class="n b">${brl(i.total)}</td>
+    return html`<td class="n dia-c">${c ? html`<span title="${c.n} entrega(s)">${brl(c.final)}</span>` : html`<span class="mut" title="Sem entregas no dia">–<span class="sr">sem entregas</span></span>`}</td>`; })}
+${g.temOc ? celOc(i) : ''}${g.temPago ? celPago(i) : ''}<td class="n b">${brl(i.total)}</td>
 <td class="n">${!g.temResumo ? html`<span class="mut small">sem Resumo</span>` : i.noResumo ? html`<span class="mut small">não consta</span>` : brl(i.resumo)}</td>
 <td class="n">${dif == null ? html`<span class="mut">—</span>` : dif === 0 ? html`<span class="ok-t small b">bate</span>` : diferenca(dif)}</td>
 <td class="sit-c"><span class="badge ${cor}">${txt}</span><span class="sit-d" id="sit-${i.id}">${detalheSit(i)}</span></td>
-${decide ? html`<td class="n"><div class="acoes-c">${podeSel ? html`<button name="uma" value="${i.id}" formaction="/fechamentos/${f.id}/aprovar" class="btn btn-ok btn-xs" data-linha="aprovar" aria-label="Aprovar ${i.nome}" aria-describedby="sit-${i.id}" ${i.bloq ? new Raw('disabled') : ''}>Aprovar</button><button name="uma" value="${i.id}" formaction="/fechamentos/${f.id}/devolver" class="btn btn-sec btn-xs" data-linha="devolver" aria-label="Devolver ${i.nome}">Devolver</button>` : ''}</div></td>` : ''}</tr>
-${temDet ? html`<tr class="det" data-det="${i.id}" id="det-${i.id}" hidden><td colspan="${cols}"><div class="items">${div.map((a) => html`<div>
-<div class="flow"><b>${diaFmt(a.dia)}</b> · Relatório de Pedidos ${brl(a.agil)} → a pagar <b>${brl(a.valor_final)}</b> ${diferenca(a.valor_final - a.agil)}${a.valor_informado == null ? '' : html` · motoboy informou ${brl(a.valor_informado)}`}</div>
-<div class="quote">${a.justificativa}</div><div class="chips">${evid.all(a.id).map((e) => html`<a class="badge nodot" href="/evidencias/${e.id}" target="_blank">${icone('clipe', 'sm')} ${e.nome}</a>`)}<span class="mut small">${a.autor}, ${quando(a.criado_em)}</span></div></div>`)}
-${i.confere === 'aceito' ? html`<div><div class="flow">Diferença com o Resumo justificada pela loja ${diferenca(i.total - i.resumo)}</div><div class="quote">${i.aceite.justificativa}</div></div>` : ''}</div></td></tr>` : ''}`;
+${decide ? html`<td class="n"><div class="acoes-c">${podeSel ? html`<button name="uma" value="${i.id}" formaction="/fechamentos/${f.id}/aprovar" class="btn btn-ok btn-xs" data-linha="aprovar" aria-label="Aprovar ${i.nome}" aria-describedby="sit-${i.id}" ${i.bloq ? new Raw('disabled') : ''}>Aprovar</button><button name="uma" value="${i.id}" formaction="/fechamentos/${f.id}/devolver" class="btn btn-sec btn-xs" data-linha="devolver" aria-label="Devolver ${i.nome}">Devolver</button>` : ''}</div></td>` : ''}</tr>`;
   };
   const avisados = avisadosDevolucao(f);
   const aviso = f.arquivado_em ? html`<div class="alert">${icone('arquivo')}<div><b>Arquivado pela loja em ${dataFmt(f.arquivado_em.slice(0, 10))}</b>Não conta como solicitação válida.</div></div>`
     : f.status === 'rascunho' ? html`<div class="alert warn" role="note">${icone('desfazer')}<div><b>Devolvido à loja${devolucao ? ` por ${devolucao.nome || '—'} em ${quando(devolucao.quando)}` : ''}</b>${devolucao ? devolucao.acao.replace(/^Devolveu para correção: /, '') : ''}<div class="small">A loja está corrigindo: os valores podem mudar até o reenvio. As aprovações já feitas continuam valendo.</div></div></div>`
-    : f.status === 'pago' ? html`<div class="alert ok">${icone('check')}<div><b>Todos os entregadores aprovados.</b>Aprovação não é pagamento: o pagamento é feito fora do sistema, com as chaves PIX abaixo.</div></div>`
+    : f.status === 'pago' ? html`<div class="alert ok">${icone('check')}<div><b>${filhoDe(f.id) ? 'Os entregadores deste fechamento foram aprovados.' : 'Todos os entregadores aprovados.'}</b>Aprovação não é pagamento: o pagamento é feito fora do sistema, com as chaves PIX abaixo.</div></div>`
     : !decide ? html`<div class="alert info">${icone('info')}<div><b>Somente leitura.</b>Quem aprova ou devolve é o financeiro.</div></div>`
     : alterados.length ? html`<div class="alert warn">${icone('alerta')}<div><b>${alterados.length} entregador(es) mudaram depois de aprovados</b>${nomes(alterados)} voltaram para análise. Confira os novos valores e PIX.</div></div>` : '';
   res.send(page(req, {
@@ -448,15 +447,14 @@ ${i.confere === 'aceito' ? html`<div><div class="flow">Diferença com o Resumo j
     sub: html`<b>${f.loja}</b> · período ${periodo(f)}${f.pagamento ? html` · pagamento previsto <b>${diaLongo(f.pagamento)}</b>` : ''}<br><span class="mut">Enviado por ${f.enviou || f.autor}${f.enviado_em ? ` em ${quando(f.enviado_em)}` : ''} · versão ${f.versao}${f.arquivo ? ` · arquivo ${f.arquivo}` : ''}</span>`,
     trilha: [[u.perfil === 'financeiro' ? 'Fila do financeiro' : inicio(u), voltar], [`#${f.id} · ${lojaCurta(f.loja)}`]],
     acoes: html`<a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/pdf" target="_blank">${icone('arquivo', 'sm')} Baixar PDF</a><a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/csv">${icone('baixar', 'sm')} Baixar planilha</a>`,
-  }, html`${aviso}
+  }, html`${aviso}${vinculo(f)}
 <dl class="resumo" aria-label="Valores do fechamento">
-<div><dt>Total solicitado</dt><dd>${brl(g.total)}</dd><dd>${conta(() => true)} entregador(es)</dd></div>
+<div><dt>Total solicitado</dt><dd>${brl(g.total)}</dd><dd>${conta(() => true)} entregador(es)${g.temOc ? html` · inclui ${g.totOc > 0 ? '+' : ''}${brl(g.totOc)} de ocorrências` : ''}</dd></div>
 <div><dt>Aprovado</dt><dd class="${nAprov ? 'ok-t' : ''}">${brl(soma(ehAp))}</dd><dd>${nAprov} entregador(es)</dd></div>
 <div class="destaque"><dt>Aguardando análise</dt><dd>${brl(soma(ehPend))}</dd><dd>${conta(ehPend)} entregador(es)${nBloq ? ` · ${nBloq} bloqueado(s)` : ''}</dd></div>
 <div><dt>Devolvido</dt><dd class="${conta(ehDev) ? 'bad-t' : ''}">${brl(soma(ehDev))}</dd><dd>${conta(ehDev)} entregador(es)</dd></div></dl>
 <div class="abas" role="tablist" aria-label="Seções do fechamento">
 <button type="button" role="tab" id="t-conf" aria-controls="conf" aria-selected="true">Conferência</button>
-<button type="button" role="tab" id="t-divs" aria-controls="divs" aria-selected="false" tabindex="-1">Divergências <span class="c">${ajustes.length + aceitos.length}</span></button>
 <button type="button" role="tab" id="t-hist" aria-controls="hist" aria-selected="false" tabindex="-1">Histórico e decisões <span class="c">${decisoes.length}</span></button></div>
 <form id="dec" method="post" action="/fechamentos/${f.id}/aprovar" data-aprovar="/fechamentos/${f.id}/aprovar" data-devolver="/fechamentos/${f.id}/devolver">
 <input type="hidden" name="versao" value="${f.versao}"><input type="hidden" name="volta" value="${voltar}"><input type="hidden" name="uma" value="">
@@ -464,10 +462,10 @@ ${i.confere === 'aceito' ? html`<div><div class="flow">Diferença com o Resumo j
 <div class="ferramentas"><div class="search">${icone('busca', 'sm')}<input type="search" placeholder="Buscar entregador" data-filtro="#fin" aria-label="Buscar entregador"></div>
 <div class="seg" data-sit-filtro role="group" aria-label="Mostrar por situação">${filtro.filter(([k, , n]) => k === 'todos' || n).map(([k, t, n]) => html`<button type="button" data-f="${k}" class="${k === 'todos' ? 'on' : ''}" aria-pressed="${k === 'todos'}">${t}<span class="c">${n}</span></button>`)}</div>
 ${decide ? html`<label class="sel-todos"><input type="checkbox" id="sel-todos"> Selecionar todos os visíveis</label>` : ''}</div>
-<div class="tw"><table class="grade fin" id="fin"><thead><tr><th scope="col" class="nome-c">Entregador e PIX</th>${g.dias.map((d) => html`<th scope="col" class="n dia-c">${diaFmt(d)}</th>`)}<th scope="col" class="n">Total</th><th scope="col" class="n" title="Resumo de entregas por entregador do Agilizone">Resumo</th><th scope="col" class="n">Diferença</th><th scope="col">Situação</th>${decide ? html`<th scope="col" class="n">Ações</th>` : ''}</tr></thead>
+<div class="tw"><table class="grade fin" id="fin"><thead><tr><th scope="col" class="nome-c">Entregador e PIX</th>${g.dias.map((d) => html`<th scope="col" class="n dia-c">${diaFmt(d)}</th>`)}${thOc(g)}<th scope="col" class="n">Total a pagar</th><th scope="col" class="n" title="Soma das taxas no Resumo de entregas por entregador do Agilizone (sem ocorrências)">Resumo</th><th scope="col" class="n">Diferença</th><th scope="col">Situação</th>${decide ? html`<th scope="col" class="n">Ações</th>` : ''}</tr></thead>
 <tbody>${itens.map(linha)}</tbody>
-<tfoot><tr class="tot"><th scope="row" class="nome-c">Total</th>${g.dias.map((d) => html`<td class="n dia-c">${brl(g.totDia[d])}</td>`)}<td class="n">${brl(g.total)}</td><td class="n">${g.temResumo ? brl(totResumo) : '—'}</td><td class="n">${g.temResumo ? diferenca(g.total - totResumo) : '—'}</td><td></td>${decide ? html`<td></td>` : ''}</tr></tfoot></table></div>
-<p class="fin-legenda">Valores por dia: Relatório de Pedidos do Agilizone (taxa do entregador). <b>*</b> valor corrigido pela loja (veja Divergências) · – sem entregas no dia · Resumo: Resumo de entregas por entregador do Agilizone ("não consta" = entregador ausente no Resumo).${decide ? ' "Selecionar todos os visíveis" marca só as linhas que a busca e o filtro mostram.' : ''}</p>
+<tfoot><tr class="tot"><th scope="row" class="nome-c">Total</th>${g.dias.map((d) => html`<td class="n dia-c">${brl(g.totDia[d])}</td>`)}${g.temOc ? html`<td class="n">${brl(g.totOc)}</td>` : ''}${g.temPago ? html`<td class="n">−${brl(g.totPago)}</td>` : ''}<td class="n">${brl(g.total)}</td><td class="n">${g.temResumo ? brl(totResumo) : '—'}</td><td class="n">${g.temResumo ? diferenca(g.linhas.reduce((t, l) => t + l.bruto, 0) - totResumo) : '—'}</td><td></td>${decide ? html`<td></td>` : ''}</tr></tfoot></table></div>
+<p class="fin-legenda">Valores por dia: Relatório de Pedidos do Agilizone (taxa do entregador). Ocorrências: acréscimos ou descontos do Agilizone, sem data, já somados ao total.${g.temPago ? ' Já pago: acerto feito no Agilizone, descontado do total.' : ''} – sem entregas no dia · Resumo: Resumo de entregas por entregador do Agilizone ("não consta" = entregador ausente no Resumo).${decide ? ' "Selecionar todos os visíveis" marca só as linhas que a busca e o filtro mostram.' : ''}</p>
 ${decide ? html`<div class="barra" role="region" aria-label="Decisão sobre os selecionados"><div class="barra-in">
 <div><span class="mut small" data-sel-n aria-live="polite">Nenhum entregador selecionado</span><b data-sel-v>${brl(0)}</b></div>
 <span class="small bad-t" data-sel-bloq hidden></span>
@@ -479,14 +477,6 @@ ${decide ? html`<div class="barra" role="region" aria-label="Decisão sobre os s
 <p class="hint" id="dica-motivo">Vai para ${avisados.length ? avisados.map((a) => `${a.nome}${a.email ? ` (${a.email})` : ' (sem e-mail: vê no sistema)'}`).join(', ') : 'ninguém: a loja não tem despachante cadastrado'}. Entregadores já aprovados continuam aprovados.</p></div>
 <div class="acoes-f"><button class="btn btn-ok" data-dlg-ok>Confirmar</button><button type="button" class="btn btn-ghost" data-dlg-cancela>Cancelar</button></div></dialog>` : ''}
 </section></form>
-<section class="card painel" id="divs" role="tabpanel" aria-labelledby="t-divs" hidden>
-${ajustes.length || aceitos.length ? html`<div class="items">${ajustes.map((a) => html`<div><div class="item-h"><div><b>${nomeDe(a.motoboy_id, a.motoboy)}</b> <span class="mut">· ${diaFmt(a.dia)}</span></div></div>
-<div class="flow">Relatório de Pedidos ${brl(a.agil)} → a pagar <b>${brl(a.valor_final)}</b> ${diferenca(a.valor_final - a.agil)}${a.valor_informado == null ? '' : html` · motoboy informou ${brl(a.valor_informado)}`}</div>
-<div class="quote">${a.justificativa}</div>
-<div class="chips" style="margin-top:8px">${evid.all(a.id).map((e) => html`<a class="badge nodot" href="/evidencias/${e.id}" target="_blank">${icone('clipe', 'sm')} ${e.nome}</a>`)}<span class="mut small">${a.autor}, ${quando(a.criado_em)}</span></div></div>`)}
-${aceitos.map((l) => html`<div><div class="item-h"><div><b>${l.nome}</b> <span class="mut">· diferença com o Resumo justificada pela loja</span></div></div>
-<div class="flow">Resumo ${brl(l.resumo)} → a pagar <b>${brl(l.total)}</b> ${diferenca(l.total - l.resumo)}</div><div class="quote">${l.aceite.justificativa}</div></div>`)}</div>`
-    : html`<p class="vazio-p">Nenhuma divergência registrada pela loja. Os valores são os do Agilizone.</p>`}</section>
 <section class="card painel" id="hist" role="tabpanel" aria-labelledby="t-hist" hidden>
 ${decisoes.length ? html`<div class="tw"><table><caption class="sr">Decisões do financeiro</caption><thead><tr><th scope="col">Quando</th><th scope="col">Decisão</th><th scope="col">Entregador</th><th scope="col" class="n">Valor</th><th scope="col">PIX considerado</th><th scope="col" class="n">Versão</th><th scope="col">Responsável</th></tr></thead><tbody>
 ${decisoes.map((d) => html`<tr><td>${quando(d.quando)}</td><td><span class="badge ${d.tipo === 'Aprovado' ? 'ok' : 'bad'}">${d.tipo}</span>${d.motivo ? html`<div class="quote">${d.motivo}</div>` : ''}${d.para ? html`<div class="mut small">Avisados: ${d.para}</div>` : ''}</td>
@@ -578,24 +568,29 @@ app.get('/fechamentos/novo', so((r) => editaMotoboy(r.user)), (req, res) => {
   const aImportar = agenda(lojas, AG.soma(hoje, -14), hoje).filter((p) => !p.f);
   const opcoes = aImportar.length ? aImportar : agenda(lojas, AG.soma(hoje, 1), AG.soma(hoje, 7)).slice(0, 1);
   const p = opcoes.find((x) => x.pagamento === req.query.p && (!req.query.l || x.loja.id === Number(req.query.l))) || opcoes[0];
-  const erro = req.query.erro && req.query.k === assina('erro', req.query.erro) ? req.query.erro : '', campo = req.query.campo === 'resumo' ? 'resumo' : 'arquivo';
+  const erro = req.query.erro && req.query.k === assina('erro', req.query.erro) ? req.query.erro : '', campo = req.query.campo === 'resumo' ? 'resumo' : 'arquivo', modoDia = req.query.modo === 'dia';
   const erroDe = (c) => (erro && campo === c ? html`<p class="erro-campo" id="erro-${c}" role="alert">${icone('erro', 'sm')} ${erro}</p>` : '');
   const upload = (n, name, accept, titulo, ext) => html`<li class="upload"><span class="num" aria-hidden="true">${n}</span><div class="field">
 <label for="f-${name}">${titulo} <span class="mut">(${ext})</span></label>
 <label class="drop ${erro && campo === name ? 'erro' : ''}">${icone('subir')}<b class="drop-t">Escolher arquivo</b><span class="fname" aria-live="polite"></span>
 <input id="f-${name}" type="file" name="${name}" accept="${accept}" required ${new Raw(erro && campo === name ? `aria-invalid="true" aria-describedby="erro-${name}"` : '')}></label>${erroDe(name)}</div></li>`;
-  res.send(page(req, { titulo: 'Importar arquivos', trilha: [[inicio(u), '/'], ['Importar arquivos']], erroNoCampo: true, sub: 'Envie os dois arquivos exportados do Agilizone. O sistema confere tudo e mostra o fechamento para você revisar antes de enviar ao financeiro.' }, html`<div class="split imp"><div class="stack">
+  res.send(page(req, { titulo: 'Importar arquivos', trilha: [[inicio(u), '/'], ['Importar arquivos']], erroNoCampo: true, sub: 'Envie os arquivos exportados do Agilizone: os dois, ou só o Resumo se for pagar 1 dia. O sistema confere tudo e mostra o fechamento para você revisar antes de enviar ao financeiro.' }, html`<div class="split imp"><div class="stack">
 ${p ? html`<section class="contexto" aria-label="Período a importar">
 <div><span class="mut small">${p.situacao === 'atrasado' ? 'Envio atrasado · pagamento previsto' : p.situacao === 'futuro' ? 'Próximo pagamento previsto' : 'Pagamento previsto'}</span><b>${diaLongo(p.pagamento)}</b>${lojas.length > 1 ? html`<span class="small">${p.loja.nome}</span>` : ''}</div>
 <div class="filtro"><span class="mut small">Filtro no Agilizone</span><dl><div><dt>Data inicial</dt><dd>${dataFmt(p.ini)} 06:00</dd></div><div><dt>Data final</dt><dd>${dataFmt(AG.soma(p.fim, 1))} 06:00</dd></div></dl></div>
 ${opcoes.length > 1 ? html`<nav class="outros" aria-label="Outros períodos pendentes"><span class="mut small">Outro período pendente:</span>${opcoes.filter((x) => x !== p).map((x) => html`<a href="/fechamentos/novo?p=${x.pagamento}&l=${x.loja.id}">${diaLongo(x.pagamento)}${lojas.length > 1 ? ` · ${lojaCurta(x.loja.nome)}` : ''}</a>`)}</nav>` : ''}
 </section>` : ''}
-<form method="post" enctype="multipart/form-data" class="card importar"><div class="card-b">
+<form method="post" enctype="multipart/form-data" class="card importar" data-modo><div class="card-b">
+<fieldset class="modo"><legend>O que você vai pagar?</legend><div class="modo-op">
+<label><input type="radio" name="modo" value="periodo" ${modoDia ? '' : new Raw('checked')}><span><b>Vários dias</b><small>Relatório de Pedidos + Resumo: mostra o valor de cada dia</small></span></label>
+<label><input type="radio" name="modo" value="dia" ${modoDia ? new Raw('checked') : ''}><span><b>Só 1 dia</b><small>Só o Resumo de entregas</small></span></label></div></fieldset>
+<div class="field dia-campo" data-so-dia ${modoDia ? '' : new Raw('hidden')}>${u.perfil === 'admin' ? html`<label for="f-loja">Loja</label><select id="f-loja" name="loja"><option value="">Escolha a loja</option>${lojas.map((x) => html`<option value="${x.id}">${x.nome}</option>`)}</select>` : ''}
+<label for="f-dia">Dia das entregas</label><input id="f-dia" type="date" name="dia" max="${hoje}"><p class="hint">No Agilizone, filtre do dia escolhido às 06:00 até o dia seguinte às 06:00 e exporte só o Resumo.</p></div>
 <ol class="uploads">${upload(1, 'arquivo', '.xlsx,.xls', 'Relatório de Pedidos', '.xlsx')}${upload(2, 'resumo', '.csv,text/csv', 'Resumo de entregas por entregador', '.csv')}</ol>
 </div>
 <div class="card-f"><button class="btn btn-pri btn-lg">Importar e revisar</button><a class="btn btn-ghost" href="/">Cancelar</a></div></form></div>
 <aside class="card guia" aria-label="Como exportar no Agilizone"><div class="card-h"><span class="hico pri">${icone('info')}</span><div class="t"><h2>Como exportar no Agilizone</h2><p>Leva 1 minuto. Use o filtro de datas mostrado ao lado.</p></div></div><div class="card-b">${COMO_EXPORTAR}
-<ul class="regras"><li>${icone('check', 'sm')} <span>Exporte os dois arquivos da <b>mesma tela</b>, com o <b>mesmo filtro</b>.</span></li><li>${icone('check', 'sm')} <span>Pedidos sem motoboy são descartados automaticamente.</span></li><li>${icone('alerta', 'sm')} <span>Se algum pedido já estiver em outro fechamento, a importação é recusada (ninguém recebe duas vezes).</span></li></ul></div></aside></div>`));
+<ul class="regras"><li>${icone('check', 'sm')} <span>Exporte os dois arquivos da <b>mesma tela</b>, com o <b>mesmo filtro</b>. Para <b>1 dia</b>, só o Resumo.</span></li><li>${icone('check', 'sm')} <span>Pedidos sem motoboy são descartados automaticamente.</span></li><li>${icone('alerta', 'sm')} <span>Se algum pedido já estiver em outro fechamento, a importação é recusada (ninguém recebe duas vezes).</span></li></ul></div></aside></div>`));
 });
 
 const doisArquivos = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20e6, files: 2 } }).fields([{ name: 'arquivo', maxCount: 1 }, { name: 'resumo', maxCount: 1 }]);
@@ -603,13 +598,34 @@ const doisArquivos = multer({ storage: multer.memoryStorage(), limits: { fileSiz
 app.post('/fechamentos/novo', so((r) => editaMotoboy(r.user)), doisArquivos, (req, res, next) => {
   try { importar(req, res); } catch (e) {
     if (!e.publico) return next(e);
-    const campo = /resumo|\.csv/i.test(e.message) ? 'resumo' : 'arquivo';
-    volta(res, `/fechamentos/novo?campo=${campo}`, 'erro', e.message);
+    const dia = req.body?.modo === 'dia', campo = dia || /resumo|\.csv/i.test(e.message) ? 'resumo' : 'arquivo';
+    volta(res, `/fechamentos/novo?campo=${campo}${dia ? '&modo=dia' : ''}`, 'erro', e.message);
   }
 });
+// Fechamento de 1 dia: só o Resumo (o total do dia de cada motoboy), sem o Relatório de Pedidos.
+function importarDia(req, res, arq) {
+  if (!arq) throw falha('Escolha o Resumo de entregas por entregador (.csv) do dia.');
+  const dia = String(req.body.dia || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dia) || dia > agora().data) throw falha('Escolha o dia das entregas (não pode ser no futuro).');
+  const l = db.prepare('SELECT * FROM lojas WHERE id = ?').get(req.user.perfil === 'admin' ? Number(req.body.loja) : req.user.loja_id);
+  if (!l) throw falha('Escolha a loja.');
+  const resumo = lerResumo(arq.buffer);
+  const x = db.prepare('SELECT data_ini, data_fim FROM fechamentos WHERE loja_id = ? AND arquivado_em IS NULL AND data_ini <= ? AND data_fim >= ?').get(l.id, dia, dia);
+  if (x) throw falha(`Já existe um fechamento desta loja (${periodo(x)}) que inclui ${dataFmt(dia)}. Se ele estava errado, arquive-o antes.`);
+  const pagamento = AG.pagamentoDoDia(calendarioDa(l), dia);
+  const fid = tx(() => {
+    const fid = Number(db.prepare('INSERT INTO fechamentos (loja_id, data_ini, data_fim, criado_por, arquivo, pagamento, so_resumo) VALUES (?,?,?,?,?,?,1)')
+      .run(l.id, dia, dia, req.user.id, arq.originalname, pagamento).lastInsertRowid);
+    log(req.user.id, `f:${fid}`, `Importou o Resumo de ${dataFmt(dia)} (fechamento de 1 dia): ${resumo.length} entregadores`);
+    gravaResumo({ id: fid }, resumo, req.user.id, arq.originalname);
+    return fid;
+  });
+  volta(res, `/fechamentos/${fid}`, 'ok', `Importado: ${diaLongo(dia)}. Agora revise e envie ao financeiro.`);
+}
 function importar(req, res) {
   req.file = req.files?.arquivo?.[0];
   const arqResumo = req.files?.resumo?.[0];
+  if (req.body.modo === 'dia') return importarDia(req, res, arqResumo);
   if (!req.file) throw falha('Escolha o Relatório de Pedidos (.xlsx).');
   if (!arqResumo) throw falha('Escolha também o Resumo de entregas por entregador (.csv). Ele traz o total certo de cada motoboy.');
   const { loja, pedidos } = lerRelatorio(req.file.buffer);
@@ -632,6 +648,8 @@ function importar(req, res) {
 
   const cal = calendarioDa(l);
   const dias = [...new Set(comMotoboy.map((p) => p.dia))].sort();
+  const umDia = db.prepare('SELECT data_ini FROM fechamentos WHERE loja_id = ? AND so_resumo = 1 AND arquivado_em IS NULL AND data_ini BETWEEN ? AND ?').all(l.id, dias[0], dias[dias.length - 1]);
+  if (umDia.length) throw falha(`O período exportado inclui ${umDia.map((x) => dataFmt(x.data_ini)).join(', ')}, que já foi importado como fechamento de 1 dia. Exporte só os dias que ainda não foram importados.`);
   const pagamento = AG.pagamentoDoDia(cal, dias[dias.length - 1]);
   const ref = pagamento ? AG.diasReferencia(cal, pagamento) : [];
   const fora = pagamento ? dias.filter((d) => !ref.includes(d)) : [];
@@ -659,9 +677,9 @@ function importar(req, res) {
     : volta(res, `/fechamentos/${fid}`, 'ok', pagamento ? `Importado: pagamento de ${diaLongo(pagamento)}. Agora revise os valores.` : 'Importado. Agora revise os valores.');
 }
 
-const ajustesDetalhados = (f, g) => db.prepare(`SELECT a.*, m.nome motoboy, u.nome autor, (SELECT COUNT(*) FROM evidencias WHERE ajuste_id = a.id) evidencias
-  FROM ajustes a JOIN motoboys m ON m.id = a.motoboy_id LEFT JOIN usuarios u ON u.id = a.criado_por WHERE a.fechamento_id = ? AND a.substituido_em IS NULL ORDER BY m.nome, a.dia`).all(f.id)
-  .map((a) => ({ ...a, agil: g.linhas.find((l) => l.id === a.motoboy_id)?.dias[a.dia]?.agil ?? 0 }));
+const celOc = (l) => html`<td class="n oc-c">${l.oc || l.qtdOc ? html`<span class="${l.oc < 0 ? 'bad-t' : ''}">${l.oc > 0 ? '+' : ''}${brl(l.oc)}</span><small class="mut"> ${l.qtdOc} ocorr.</small>` : html`<span class="mut">–</span>`}</td>`;
+const celPago = (l) => html`<td class="n">${l.pago ? html`<span class="bad-t">−${brl(l.pago)}</span>` : html`<span class="mut">–</span>`}</td>`;
+const thOc = (g) => html`${g.temOc ? html`<th scope="col" class="n" title="Ocorrências do Agilizone: acréscimo ou desconto, sem data. Entram no total.">Ocorrências</th>` : ''}${g.temPago ? html`<th scope="col" class="n" title="Acerto já feito no Agilizone: descontado do total">Já pago</th>` : ''}`;
 const diferenca = (v) => html`<span class="${v > 0 ? 'ok-t' : v < 0 ? 'bad-t' : 'mut'} b">(${v > 0 ? '+' : ''}${brl(v)})</span>`;
 
 app.get('/fechamentos/:fid', (req, res) => {
@@ -671,22 +689,17 @@ app.get('/fechamentos/:fid', (req, res) => {
   const g = grade(f), edita = podeEditar(u, f);
   const enviado = f.status !== 'rascunho';
   const jaPago = db.prepare('SELECT r.entregador, r.pago, m.nome FROM resumo r LEFT JOIN motoboys m ON m.id = r.motoboy_id WHERE r.fechamento_id = ? AND r.pago > 0 ORDER BY 1').all(f.id);
-  const ajustes = ajustesDetalhados(f, g);
-  const evid = db.prepare('SELECT id, nome FROM evidencias WHERE ajuste_id = ?');
   const hist = db.prepare('SELECT l.*, u.nome FROM log l LEFT JOIN usuarios u ON u.id = l.usuario_id WHERE ref = ? ORDER BY l.id DESC').all(`f:${f.id}`);
   const ultimo = (re) => hist.find((h) => re.test(h.acao));
   const envio = ultimo(/^Enviou ao financeiro/), devolucao = ultimo(/^Devolveu para correção/);
   const devolvido = !enviado && devolucao && (!envio || devolucao.id > envio.id);
   const fora = ultimo(/^Atenção: dias fora/);
   const semPix = g.linhas.filter((l) => l.total > 0 && !l.pix);
-  const nDiv = (l) => Object.values(l.dias).filter((c) => c.ajuste).length;
-  const comDiv = g.linhas.filter((l) => nDiv(l)).length;
-  const pend = g.linhas.filter((l) => l.confere === 'pendente'), aceitos = g.linhas.filter((l) => l.confere === 'aceito');
+  const pend = g.linhas.filter((l) => l.confere === 'pendente');
   const totResumo = g.linhas.reduce((s, l) => s + (l.resumo || 0), 0);
 
   const colAprov = f.status === 'pago' || g.linhas.some((l) => l.aprovacao); // aprovar/devolver é na tela do financeiro
-  const ajDe = (id) => ajustes.filter((a) => a.motoboy_id === id);
-  const entregas = db.prepare('SELECT COUNT(*) n FROM pedidos WHERE fechamento_id = ? AND motoboy_id IS NOT NULL').get(f.id).n;
+  const entregas = db.prepare(f.so_resumo ? 'SELECT COALESCE(SUM(pedidos), 0) n FROM resumo WHERE fechamento_id = ?' : 'SELECT COUNT(*) n FROM pedidos WHERE fechamento_id = ? AND motoboy_id IS NOT NULL').get(f.id).n;
   const aprovou = ultimo(/^Aprovou a solicitação/);
 
   // Estado atual: um bloco só, com a ação permitida.
@@ -695,10 +708,9 @@ app.get('/fechamentos/:fid', (req, res) => {
 ${podeRecuperar(u, f) ? html`<form method="post" action="/fechamentos/${f.id}/recuperar" class="in"><button class="btn btn-sec">${icone('desfazer', 'sm')} Recuperar</button></form>` : ''}</div>`;
   else if (!enviado && edita) {
     const passos = [
-      ['Arquivos do Agilizone', g.temResumo ? ['ok', 'Relatório de Pedidos e Resumo importados'] : ['warn', 'Falta o Resumo de entregas'], '#conferencia'],
+      ['Arquivos do Agilizone', g.temResumo ? ['ok', f.so_resumo ? 'Resumo do dia importado' : 'Relatório de Pedidos e Resumo importados'] : ['warn', 'Falta o Resumo de entregas'], '#conferencia'],
       ['Chaves PIX', semPix.length ? ['bad', `Falta a chave de ${semPix.length} motoboy(s)`] : ['ok', g.linhas.some((l) => l.pixDigitado) ? 'Completas, algumas digitadas por você' : 'Completas'], semPix.length ? '#pix' : '#valores'],
-      ['Conferência com o Resumo', !g.temResumo ? ['nodot', 'Sem Resumo para comparar'] : pend.length ? ['warn', `${pend.length} motoboy(s) com diferença`] : ['ok', g.linhas.some((l) => l.confere !== 'ok') ? 'Diferenças explicadas por divergência ou justificativa' : 'Bate com o Resumo'], pend.length ? '#conferencia' : '#valores'],
-      ['Divergências', ajustes.length ? ['info', `${ajustes.length} registrada(s)`] : ['nodot', 'Nenhuma'], '#ajustes'],
+      ['Conferência com o Resumo', !g.temResumo ? ['nodot', 'Sem Resumo para comparar'] : pend.length ? ['warn', `${pend.length} motoboy(s) com diferença`] : ['ok', 'Bate com o Resumo'], pend.length ? '#conferencia' : '#valores'],
     ];
     estado = html`<section class="conferencia" aria-labelledby="conf-t"><h2 id="conf-t">${semPix.length ? 'Antes de enviar, preencha o que falta' : 'Revise e envie ao financeiro'}</h2><ol>
 ${passos.map(([t, [cor, txt], href]) => html`<li class="${cor}"><a href="${href}"><span class="marca" aria-hidden="true">${icone(cor === 'ok' ? 'check' : cor === 'nodot' || cor === 'info' ? 'info' : 'alerta', 'sm')}</span><span><b>${t}</b><span>${txt}</span></span></a></li>`)}</ol></section>`;
@@ -720,14 +732,13 @@ ${podeReenviar(u, f) ? html` <a href="/fechamentos/${f.id}/enviar">Reenviar e-ma
   }, html`
 ${devolvido ? html`<div class="motivo" role="note" id="devolvido"><b>Devolvido pelo financeiro${devolucao.nome ? ` (${devolucao.nome})` : ''} em ${quando(devolucao.quando)}</b>
 <p>${devolucao.acao.replace(/^Devolveu para correção: /, '')}</p>${(() => { const d = db.prepare('SELECT motoboy_id FROM devolucoes WHERE fechamento_id = ? AND versao = ?').all(f.id, f.versao).map((x) => g.linhas.find((l) => l.id === x.motoboy_id)?.nome).filter(Boolean); return d.length ? html`<p class="small"><b>Entregadores devolvidos:</b> ${d.join(', ')}</p>` : ''; })()}${edita ? html`<span class="small">Corrija abaixo e envie de novo.</span>` : ''}</div>` : ''}
-${estado}${email}
+${estado}${vinculo(f)}${email}
 <dl class="resumo">
 <div class="destaque"><dt>Total a pagar</dt><dd>${brl(g.total)}</dd></div>
 <div><dt>Motoboys</dt><dd>${g.linhas.filter((l) => l.total > 0).length}</dd></div>
-<div><dt>Entregas</dt><dd>${entregas}</dd></div>
-<div><dt>Divergências</dt><dd>${ajustes.length}</dd></div></dl>
+<div><dt>Entregas</dt><dd>${entregas}</dd></div>${g.temOc ? html`<div><dt>Ocorrências</dt><dd class="${g.totOc < 0 ? 'bad-t' : ''}">${g.totOc > 0 ? '+' : ''}${brl(g.totOc)}</dd><dd>${g.linhas.reduce((t, l) => t + l.qtdOc, 0)} no período, já no total</dd></div>` : ''}</dl>
 ${fora ? html`<div class="alert warn">${icone('calendario')}<div><b>Dias fora do período do pagamento</b>${fora.acao.replace(/^Atenção: dias fora do período desse pagamento: /, '')}. Confira o filtro de datas no Agilizone.</div></div>` : ''}
-${jaPago.length ? html`<div class="alert bad">${icone('alerta')}<div><b>Acerto já feito no Agilizone para ${jaPago.length} motoboy(s)</b>Confira para não pagar duas vezes: ${jaPago.map((r, i) => html`${i ? ', ' : ''}<b>${r.nome || r.entregador}</b> (${brl(r.pago)})`)}. Se for o caso, registre uma divergência descontando o valor.</div></div>` : ''}
+${jaPago.length ? html`<div class="alert bad">${icone('alerta')}<div><b>Acerto já feito no Agilizone para ${jaPago.length} motoboy(s)</b>O valor já foi descontado do total a pagar: ${jaPago.map((r, i) => html`${i ? ', ' : ''}<b>${r.nome || r.entregador}</b> (${brl(r.pago)})`)}.</div></div>` : ''}
 
 ${semPix.length ? html`<form method="post" action="/fechamentos/${f.id}/pix" class="card bloco ${semPix.length ? 'pede' : ''}" id="pix"><div class="card-h"><div class="t">
 <h2>${semPix.length ? `Falta a chave PIX de ${semPix.length} motoboy(s)` : 'Chaves PIX digitadas por você'}</h2><p>${edita ? 'Não vieram no Resumo do Agilizone. Valem só para este fechamento.' : 'Não vieram no Resumo do Agilizone. O despachante precisa informar.'}</p></div></div>
@@ -735,56 +746,31 @@ ${semPix.length ? html`<form method="post" action="/fechamentos/${f.id}/pix" cla
 ${edita ? html`<input id="pix_${l.id}" name="pix_${l.id}" value="${l.pix}" placeholder="CPF, telefone, e-mail ou chave aleatória" autocomplete="off" maxlength="120" class="campo-pix">` : html`<span class="badge bad">Sem PIX</span>`}</div>`)}</div>
 ${edita ? html`<div class="card-f"><button class="btn btn-pri">Salvar chaves PIX</button></div>` : ''}</form>` : ''}
 
-${g.temResumo ? (pend.length ? html`<div class="card bloco pede" id="conferencia"><div class="card-h"><div class="t">
-<h2>Diferença com o Resumo do Agilizone (${pend.length})</h2><p>O Resumo é o total certo. Registre a diferença no dia em que aconteceu ou justifique por que está certa.</p></div></div>
-<div class="items">${pend.map((l) => html`<div><div class="item-h"><div><b>${l.nome}</b><div class="flow" style="margin:2px 0 0">Soma dos dias <b>${brl(l.total)}</b> · Resumo <b>${brl(l.resumo)}</b> ${diferenca(l.resumo - l.total)}</div></div>
-${edita ? html`<a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/ajuste?m=${l.id}">Registrar divergência</a>` : ''}</div>
-${edita ? html`<details class="fold" style="margin-top:8px"><summary class="small">${icone('chevron', 'chev')} A diferença está certa? Justificar e pagar ${brl(l.total)}</summary>
-<form method="post" action="/fechamentos/${f.id}/aceite" style="margin-top:8px"><input type="hidden" name="m" value="${l.id}"><label class="sr" for="just_${l.id}">Justificativa para ${l.nome}</label><textarea id="just_${l.id}" name="justificativa" required minlength="10" placeholder="Por que pagar diferente do Resumo?" style="min-height:70px"></textarea>
-<button class="btn btn-sec btn-sm" style="margin-top:8px">Justificar diferença de ${brl(l.total - l.resumo)}</button></form></details>` : ''}</div>`)}</div></div>` : '')
+${g.temResumo ? (pend.length ? html`<div class="alert warn" id="conferencia">${icone('alerta')}<div><b>Diferença com o Resumo do Agilizone (${pend.length})</b>${pend.map((l, i) => html`${i ? '; ' : ' '}${l.nome}: soma ${brl(l.bruto)}, Resumo ${brl(l.resumo)}`)}. O Agilizone é a referência: confira se os dois arquivos saíram da mesma tela, com o mesmo filtro. Se não, arquive este fechamento e importe de novo.</div></div>` : '')
   : html`<div class="alert warn" id="conferencia">${icone('alerta')}<div><b>Sem o Resumo de entregas</b>Os totais não foram conferidos com o Agilizone.${edita ? html`
 <form method="post" action="/fechamentos/${f.id}/resumo" enctype="multipart/form-data" class="linha-form"><input type="file" name="resumo" accept=".csv,text/csv" required aria-label="Resumo de entregas (.csv)"><button class="btn btn-sec btn-sm">Anexar Resumo</button></form>` : ' O despachante precisa anexar.'}</div></div>`}
 
 <div class="abas" role="tablist" aria-label="Seções do fechamento">
 <button type="button" role="tab" id="t-valores" aria-controls="valores" aria-selected="true">Valores por dia</button>
-<button type="button" role="tab" id="t-ajustes" aria-controls="ajustes" aria-selected="false" tabindex="-1">Divergências <span class="c">${ajustes.length + aceitos.length}</span></button>
 <button type="button" role="tab" id="t-historico" aria-controls="historico" aria-selected="false" tabindex="-1">Histórico</button></div>
 
 <section class="card painel" id="valores" role="tabpanel" aria-labelledby="t-valores">
 <div class="ferramentas"><div class="search">${icone('busca', 'sm')}<input type="search" placeholder="Buscar motoboy" data-filtro="#grade" aria-label="Buscar motoboy"></div>
 <div class="seg" data-div-filtro="#grade" role="group" aria-label="Mostrar">
 <button type="button" data-f="todos" class="on" aria-pressed="true">Todos<span class="c">${g.linhas.length}</span></button>
-${comDiv ? html`<button type="button" data-f="com" aria-pressed="false">Com divergência<span class="c">${comDiv}</span></button>` : ''}
 ${pend.length ? html`<button type="button" data-f="res" aria-pressed="false">Diferença com o Resumo<span class="c">${pend.length}</span></button>` : ''}</div>
-<div class="tw grade-w"><table class="grade" id="grade" data-f="todos"><thead><tr>${colAprov ? html`<th scope="col" title="Aprovado pelo financeiro">Aprov.</th>` : ''}<th scope="col" class="nome-c">Motoboy</th>${g.dias.map((d) => html`<th scope="col" class="n">${diaFmt(d)}</th>`)}<th scope="col" class="n">Total</th>${g.temResumo ? html`<th scope="col" class="n" title="Resumo de entregas do Agilizone">Resumo</th>` : ''}</tr></thead><tbody>
-${g.linhas.map((l) => { const n = nDiv(l); return html`<tr data-q="${semAcento(l.nome)}" data-div="${n ? 1 : 0}" data-res="${l.confere === 'pendente' ? 1 : 0}" class="${l.confere === 'pendente' ? 'nobate' : ''}">
+<div class="tw grade-w"><table class="grade" id="grade" data-f="todos"><thead><tr>${colAprov ? html`<th scope="col" title="Aprovado pelo financeiro">Aprov.</th>` : ''}<th scope="col" class="nome-c">Motoboy</th>${g.dias.map((d) => html`<th scope="col" class="n">${diaFmt(d)}</th>`)}${thOc(g)}<th scope="col" class="n">Total</th>${g.temResumo ? html`<th scope="col" class="n" title="Soma das taxas no Resumo de entregas do Agilizone (sem ocorrências)">Resumo</th>` : ''}</tr></thead><tbody>
+${g.linhas.map((l) => html`<tr data-q="${semAcento(l.nome)}" data-res="${l.confere === 'pendente' ? 1 : 0}" class="${l.confere === 'pendente' ? 'nobate' : ''}">
 ${colAprov ? html`<td>${l.aprovado ? html`<span class="ok-t" title="Aprovado">${icone('check')}<span class="sr">Aprovado</span></span>` : l.alterado ? html`<span class="warn-t" title="Mudou depois de aprovado: o financeiro precisa aprovar de novo">${icone('alerta')}<span class="sr">Alterado após aprovação</span></span>` : ''}</td>` : ''}
 <th scope="row" class="nome-c"><div class="nome-l"><b>${l.nome}</b>${l.nomeAgil ? html`<span class="mut small" title="Nome no Agilizone: ${l.nomeAgil}"> (editado)</span>` : ''}</div>
 <div class="pix-l">${l.pix ? html`<span class="rot-pix">PIX</span><span class="pix">${l.pix}<button type="button" class="icon-btn" data-copiar="${l.pix}" title="Copiar chave PIX" aria-label="Copiar chave PIX de ${l.nome}">${icone('copiar', 'sm')}</button></span>` : html`<span class="badge bad">Sem PIX</span>`}</div>
-${edita ? html`<div class="acoes-l"><a class="btn btn-sec btn-xs" href="/fechamentos/${f.id}/ajuste?m=${l.id}" aria-label="Registrar divergência de ${l.nome}">${icone('alerta', 'sm')} Registrar divergência</a><a class="btn btn-ghost btn-xs" href="/fechamentos/${f.id}/motoboy/${l.id}" aria-label="Editar nome e PIX de ${l.nome}">${icone('lapis', 'sm')} Editar</a></div>` : ''}
-${n || l.confere !== 'ok' ? html`<div class="chips">${n ? html`<button type="button" class="badge div nodot" data-abre="${l.id}" aria-expanded="false">Divergência${n > 1 ? ` em ${n} dias` : ''} ${icone('chevron', 'sm')}</button>` : ''}
-${l.confere === 'pendente' ? html`<span class="badge bad">Diferença com o Resumo</span>` : ''}${l.confere === 'aceito' ? html`<span class="badge nodot" title="${l.aceite.justificativa}">Diferença justificada</span>` : ''}</div>` : ''}</th>
-${g.dias.map((d) => { const c = l.dias[d];
-    const cls = `cell${c?.ajuste ? ' div' : ''}${c ? '' : ' vazio'}`, v = c ? brl(c.final) : '–';
-    const tit = c ? `Agilizone: ${brl(c.agil)} (${c.n} entregas)${c.ajuste ? `. Corrigido para ${brl(c.final)}` : ''}` : 'Sem entregas';
-    const sr = c?.ajuste ? html`<span class="sr"> (corrigido; Agilizone ${brl(c.agil)})</span>` : '';
-    return html`<td class="n">${edita ? html`<a class="${cls}" href="/fechamentos/${f.id}/ajuste?m=${l.id}&d=${d}" title="${tit}">${v}${sr}</a>` : html`<span class="${cls}" title="${tit}">${v}${sr}</span>`}</td>`; })}
-<td class="n tot-c">${brl(l.total)}</td>
-${g.temResumo ? html`<td class="n">${l.confere === 'pendente' ? html`<span class="bad-t b" title="Diferente da soma dos dias">${brl(l.resumo)}</span>` : html`<span class="mut" title="${l.confere === 'ok' ? 'Bate com a soma dos dias' : l.confere === 'div' ? 'Diferença explicada pela divergência registrada' : 'Diferença justificada'}">${brl(l.resumo)}</span>`}</td>` : ''}</tr>
-${n ? html`<tr class="det" data-det="${l.id}" hidden><td colspan="${(colAprov ? 1 : 0) + 2 + g.dias.length + (g.temResumo ? 1 : 0)}"><div class="items">${ajDe(l.id).map((a) => html`<div>
-<div class="flow"><b>${diaFmt(a.dia)}</b> · Agilizone ${brl(a.agil)} → a pagar <b>${brl(a.valor_final)}</b> ${diferenca(a.valor_final - a.agil)}${a.valor_informado == null ? '' : html` · motoboy informou ${brl(a.valor_informado)}`}${edita ? html` · <a href="/fechamentos/${f.id}/ajuste?m=${a.motoboy_id}&d=${a.dia}">editar</a>` : ''}</div>
-<div class="quote">${a.justificativa}</div></div>`)}</div></td></tr>` : ''}`; })}</tbody>
-<tfoot><tr class="tot"><th scope="row" class="nome-c" colspan="${(colAprov ? 1 : 0) + 1}">Total</th>${g.dias.map((d) => html`<td class="n">${brl(g.totDia[d])}</td>`)}<td class="n">${brl(g.total)}</td>${g.temResumo ? html`<td class="n mut">${brl(totResumo)}</td>` : ''}</tr></tfoot></table></div>
-${edita ? html`<div class="card-f"><a class="btn btn-ghost btn-sm" href="/fechamentos/${f.id}/ajuste">${icone('mais', 'sm')} Adicionar motoboy que não está na lista</a></div>` : ''}</section>
-
-<section class="card painel" id="ajustes" role="tabpanel" aria-labelledby="t-ajustes" hidden>
-${ajustes.length || aceitos.length ? html`<div class="items">${ajustes.map((a) => html`<div><div class="item-h"><div><b>${a.motoboy}</b> <span class="mut">· ${diaFmt(a.dia)}</span></div>${edita ? html`<a class="btn btn-ghost btn-sm" href="/fechamentos/${f.id}/ajuste?m=${a.motoboy_id}&d=${a.dia}">Editar</a>` : ''}</div>
-<div class="flow">Agilizone ${brl(a.agil)} → a pagar <b>${brl(a.valor_final)}</b> ${diferenca(a.valor_final - a.agil)}${a.valor_informado == null ? '' : html` · motoboy informou ${brl(a.valor_informado)}`}</div>
-<div class="quote">${a.justificativa}</div>
-<div class="chips" style="margin-top:8px">${evid.all(a.id).map((e) => html`<a class="badge nodot" href="/evidencias/${e.id}" target="_blank">${icone('clipe', 'sm')} ${e.nome}</a>`)}<span class="mut small">${a.autor}, ${quando(a.criado_em)}</span></div></div>`)}
-${aceitos.map((l) => html`<div><div class="item-h"><div><b>${l.nome}</b> <span class="mut">· diferença com o Resumo justificada</span></div></div>
-<div class="flow">Resumo ${brl(l.resumo)} → a pagar <b>${brl(l.total)}</b> ${diferenca(l.total - l.resumo)}</div><div class="quote">${l.aceite.justificativa}</div></div>`)}</div>`
-    : html`<p class="vazio-p">Nenhuma divergência registrada. Os valores são os do Agilizone.</p>`}</section>
+${edita ? html`<div class="acoes-l"><a class="btn btn-ghost btn-xs" href="/fechamentos/${f.id}/motoboy/${l.id}" aria-label="Editar nome e PIX de ${l.nome}">${icone('lapis', 'sm')} Editar</a></div>` : ''}
+${l.confere === 'pendente' ? html`<div class="chips"><span class="badge bad" title="Soma dos dias diferente da soma das taxas do Resumo">Diferença com o Resumo</span></div>` : ''}</th>
+${g.dias.map((d) => { const c = l.dias[d]; return html`<td class="n"><span class="cell${c ? '' : ' vazio'}" title="${c ? `${c.n} entrega(s)` : 'Sem entregas'}">${c ? brl(c.final) : '–'}</span></td>`; })}
+${g.temOc ? celOc(l) : ''}${g.temPago ? celPago(l) : ''}<td class="n tot-c">${brl(l.total)}</td>
+${g.temResumo ? html`<td class="n">${l.confere === 'pendente' ? html`<span class="bad-t b" title="Diferente da soma dos dias">${brl(l.resumo)}</span>` : html`<span class="mut" title="${'Bate com a soma dos dias'}">${brl(l.resumo)}</span>`}</td>` : ''}</tr>`)}</tbody>
+<tfoot><tr class="tot"><th scope="row" class="nome-c" colspan="${(colAprov ? 1 : 0) + 1}">Total</th>${g.dias.map((d) => html`<td class="n">${brl(g.totDia[d])}</td>`)}${g.temOc ? html`<td class="n">${brl(g.totOc)}</td>` : ''}${g.temPago ? html`<td class="n">−${brl(g.totPago)}</td>` : ''}<td class="n">${brl(g.total)}</td>${g.temResumo ? html`<td class="n mut">${brl(totResumo)}</td>` : ''}</tr></tfoot></table></div>
+</section>
 
 <section class="card painel" id="historico" role="tabpanel" aria-labelledby="t-historico" hidden><div class="card-b"><ul class="timeline">${hist.map((h) => html`<li>${h.acao}<small>${h.quando.slice(0, 10).split('-').reverse().join('/')} ${h.quando.slice(11, 16)} · ${h.nome || 'Sistema'}</small></li>`)}</ul></div></section>
 
@@ -794,18 +780,6 @@ ${edita ? html`<details class="fold mais-acoes"><summary class="small">${icone('
 <div class="barra" role="region" aria-label="Enviar ao financeiro"><div class="barra-in"><div><span class="mut small">Total a pagar</span><b>${brl(g.total)}</b></div>
 ${semPix.length ? html`<span class="small bad-t" id="barra-motivo">Preencha ${semPix.length} chave(s) PIX para enviar</span><button class="btn btn-pri btn-lg" disabled aria-describedby="barra-motivo">${icone('enviar')} Enviar ao financeiro</button>`
       : html`<a class="btn btn-pri btn-lg" href="/fechamentos/${f.id}/enviar">${icone('enviar')} Enviar ao financeiro</a>`}</div></div>` : ''}`));
-});
-
-// Diferença com o Resumo aceita conscientemente (vale só para o valor de diferença atual).
-app.post('/fechamentos/:fid/aceite', so((r) => podeEditar(r.user, r.f)), (req, res) => {
-  const f = req.f, l = grade(f).linhas.find((x) => x.id === Number(req.body.m)), just = String(req.body.justificativa || '').trim();
-  if (!l || l.resumo == null || l.total === l.resumo) throw falha('Não há diferença com o Resumo para este motoboy.');
-  if (just.length < 10) throw falha('Explique por que a diferença está certa (mínimo 10 caracteres).');
-  db.prepare(`INSERT INTO aceites (fechamento_id, motoboy_id, diferenca, justificativa, criado_por) VALUES (?,?,?,?,?)
-    ON CONFLICT (fechamento_id, motoboy_id) DO UPDATE SET diferenca = excluded.diferenca, justificativa = excluded.justificativa, criado_por = excluded.criado_por, criado_em = datetime('now','localtime')`)
-    .run(f.id, l.id, l.total - l.resumo, just, req.user.id);
-  log(req.user.id, `f:${f.id}`, `Aceitou diferença com o Resumo para ${l.nome}: pagar ${brl(l.total)} (Resumo ${brl(l.resumo)}). Motivo: ${just}`);
-  volta(res, `/fechamentos/${f.id}`, 'ok', `Diferença aceita para ${l.nome}.`);
 });
 
 const editaPix = db.prepare('INSERT INTO edicoes (fechamento_id, motoboy_id, pix) VALUES (?,?,?) ON CONFLICT (fechamento_id, motoboy_id) DO UPDATE SET pix = excluded.pix');
@@ -860,135 +834,6 @@ app.post('/fechamentos/:fid/resumo', so((r) => podeEditar(r.user, r.f)), umResum
   volta(res, `/fechamentos/${req.f.id}`, 'ok', 'Resumo anexado. Os totais agora são conferidos com ele.');
 });
 
-// ---------- Divergências ----------
-// Evidências: só imagens comuns e PDF (SVG/HTML poderiam executar código ao abrir).
-const TIPOS_EVIDENCIA = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'application/pdf': 'pdf' };
-const evidUpload = multer({
-  storage: multer.diskStorage({ destination: UPLOADS, filename: (req, file, cb) => cb(null, crypto.randomBytes(16).toString('hex')) }),
-  limits: { fileSize: 10e6, files: 6 },
-  fileFilter: (req, file, cb) => {
-    const ok = !!TIPOS_EVIDENCIA[file.mimetype];
-    if (!ok) (req.recusados ??= []).push(file.originalname);
-    cb(null, ok);
-  },
-}).array('evidencias', 6);
-const apagaArquivos = (rows) => rows.forEach((e) => fs.rm(path.join(UPLOADS, e.arquivo), { force: true }, () => {}));
-
-app.get('/fechamentos/:fid/ajuste', so((r) => podeEditar(r.user, r.f)), (req, res) => {
-  const f = req.f, m = Number(req.query.m) || null, d = /^\d{4}-\d{2}-\d{2}$/.test(req.query.d || '') ? req.query.d : null;
-  const mb = m && db.prepare('SELECT * FROM motoboys WHERE id = ?').get(m);
-  if (m && !mb) throw falha('Motoboy não encontrado.', 404);
-  if (d && (d < f.data_ini || d > f.data_fim)) return res.redirect(`/fechamentos/${f.id}/ajuste${mb ? `?m=${m}` : ''}`);
-  const a = mb && d && db.prepare('SELECT * FROM ajustes WHERE fechamento_id = ? AND motoboy_id = ? AND dia = ? AND substituido_em IS NULL').get(f.id, m, d);
-  const peds = mb && d ? db.prepare('SELECT * FROM pedidos WHERE fechamento_id = ? AND motoboy_id = ? AND dia = ? ORDER BY chave').all(f.id, m, d) : [];
-  const agil = peds.reduce((s, p) => s + p.taxa, 0);
-  const evs = a ? db.prepare('SELECT * FROM evidencias WHERE ajuste_id = ?').all(a.id) : [];
-  const reais = (c) => (c == null ? '' : (c / 100).toFixed(2).replace('.', ','));
-  const voltar = `/fechamentos/${f.id}#valores`;
-  const trilha = [[inicio(req.user), '/'], [periodo(f), voltar], ['Registrar divergência']];
-  // Conferência com o Resumo: quanto falta para a soma dos dias bater com o total certo do Agilizone.
-  const linha = mb && grade(f).linhas.find((l) => l.id === m);
-  const falta = linha && linha.resumo != null ? linha.resumo - linha.total : 0;
-  const c = linha?.dias || {};
-  const sugerido = a ? a.valor_final : mb && d ? Math.max(0, agil + (linha?.confere === 'pendente' ? falta : 0)) : null;
-
-  // Dias do período: trocar de dia é um clique, sem sair da tela.
-  const dias = mb ? html`<nav class="dias" aria-label="Dia da divergência">${diasDoPeriodo(f).map((x) => html`<a href="/fechamentos/${f.id}/ajuste?m=${m}&d=${x}" class="${x === d ? 'on' : ''} ${c[x]?.ajuste ? 'aj' : ''}" ${x === d ? new Raw('aria-current="true"') : ''}>
-<span>${diaFmt(x)}</span><b>${brl(c[x]?.final || 0)}</b>${c[x]?.ajuste ? html`<small>corrigido</small>` : ''}</a>`)}</nav>` : '';
-  const avisoResumo = falta ? html`<p class="nota ${linha.confere === 'pendente' ? 'bad' : ''}">${icone('alerta', 'sm')} ${linha.confere === 'pendente' ? 'Diferença com o Resumo' : 'Diferença justificada'}: ${falta > 0 ? 'faltam' : 'sobram'} <b>${brl(Math.abs(falta))}</b> (Resumo ${brl(linha.resumo)}, soma dos dias ${brl(linha.total)}).</p>` : '';
-
-  res.send(page(req, { titulo: mb ? mb.nome : 'Motoboy fora da lista', sub: mb ? (d ? html`<b>${diaLongo(d)}</b> · ${a ? 'editando divergência' : 'nova divergência'}` : 'Escolha o dia da divergência') : 'Para quem rodou mas não aparece no Agilizone', trilha, largura: 'estreita' }, html`
-${avisoResumo}${dias}
-${mb && !d ? html`<p class="vazio-p">Escolha acima o dia em que o valor está diferente do que o motoboy deve receber.</p><div class="acoes-f"><a class="btn btn-ghost" href="${voltar}">Voltar à revisão</a></div>` : html`
-<form method="post" enctype="multipart/form-data" class="card ajuste-f" id="form-ajuste">
-${mb ? html`<input type="hidden" name="m" value="${m}"><input type="hidden" name="d" value="${d}">` : html`<div class="card-b fgrid">
-<div class="field"><label for="nome">Nome do motoboy <span class="req" aria-hidden="true">*</span></label><input id="nome" name="nome" required minlength="3" maxlength="120" autocomplete="off"></div>
-<div class="field"><label for="d">Dia <span class="req" aria-hidden="true">*</span></label><input id="d" type="date" name="d" required min="${f.data_ini}" max="${f.data_fim}"></div>
-<div class="field" style="grid-column:1/-1"><label for="pix">Chave PIX</label><input id="pix" name="pix" maxlength="120" autocomplete="off" placeholder="CPF, telefone, e-mail ou chave aleatória"><p class="hint">Sem a chave, o fechamento não pode ser enviado.</p></div></div>`}
-<div class="card-b valores" data-original="${mb ? agil : 0}">
-<div><span class="rot">Valor no Agilizone</span><b class="num">${mb ? brl(agil) : '—'}</b>${mb ? html`<span class="mut small">${peds.length} entrega(s)</span>` : ''}</div>
-<div class="field"><label for="final">Valor a pagar no dia <span class="req" aria-hidden="true">*</span></label>${campoValor('final', reais(sugerido), 'id="final" required aria-describedby="dica-final"')}
-<p class="hint" id="dica-final">${!a && mb && linha?.confere === 'pendente' ? `Sugerido para bater com o Resumo. Confira se é este o dia.` : 'O valor que deve ser pago neste dia.'}</p></div>
-<div><span class="rot">Diferença</span><output class="num b" for="final" id="dif" aria-live="polite">${sugerido != null && mb ? `${sugerido - agil > 0 ? '+' : ''}${brl(sugerido - agil)}` : '—'}</output></div></div>
-<div class="card-b">
-<div class="field"><label for="justificativa">Justificativa <span class="req" aria-hidden="true">*</span></label><textarea id="justificativa" name="justificativa" required minlength="10" maxlength="2000" aria-describedby="dica-just" placeholder="O que aconteceu, quais pedidos, como foi conferido">${a?.justificativa}</textarea>
-<p class="hint" id="dica-just">Vai para o financeiro e no PDF.</p></div>
-<div class="field"><label for="evidencias">Evidências</label><label class="drop drop-sm">${icone('clipe')}<b class="drop-t">Anexar prints, fotos ou PDF</b><span class="small mut">até 6 arquivos de 10 MB</span><span class="fname" aria-live="polite"></span>
-<input id="evidencias" type="file" name="evidencias" multiple accept="image/*,application/pdf"></label>
-${evs.length ? html`<div class="chips" style="margin-top:8px"><span class="mut small">Já anexadas:</span>${evs.map((e) => html`<a class="badge nodot" href="/evidencias/${e.id}" target="_blank">${icone('clipe', 'sm')} ${e.nome}</a>`)}</div>` : ''}</div>
-<details class="fold" ${new Raw(a?.valor_informado != null ? 'open' : '')}><summary class="small">${icone('chevron', 'chev')} Valor que o motoboy informou (opcional)</summary>
-<div class="field" style="margin-top:10px;max-width:240px"><label for="informado" class="sr">Valor que o motoboy informou</label>${campoValor('informado', reais(a?.valor_informado), 'id="informado"')}</div></details></div>
-${peds.length ? html`<details class="fold pedidos"><summary>${icone('chevron', 'chev')} Pedidos do dia no Agilizone (${peds.length})</summary>
-<div class="tw"><table><thead><tr><th scope="col">Pedido</th><th scope="col">Situação</th><th scope="col" class="n">Taxa</th></tr></thead><tbody>
-${peds.map((p) => html`<tr><td>${p.numero}</td><td>${p.status === 'Cancelado' ? html`<span class="badge bad">Cancelado</span>` : html`<span class="mut small">${p.status}</span>`}</td><td class="n">${brl(p.taxa)}</td></tr>`)}</tbody>
-<tfoot><tr class="tot"><th scope="row" class="nome-c" colspan="2">Total</th><td class="n">${brl(agil)}</td></tr></tfoot></table></div></details>` : ''}
-<div class="card-f"><button class="btn btn-pri">Salvar divergência</button><a class="btn btn-ghost" href="${voltar}">Cancelar</a></div></form>
-${a ? html`<form method="post" action="/fechamentos/${f.id}/ajuste/${a.id}/excluir" onsubmit="return confirm('Remover esta divergência? O valor volta a ser o do Agilizone. Ela fica no histórico.')" class="acoes-f">
-<button class="btn btn-ghost btn-sm bad-t">${icone('lixo', 'sm')} Remover divergência</button></form>` : ''}`}`));
-});
-
-app.post('/fechamentos/:fid/ajuste', so((r) => podeEditar(r.user, r.f)), evidUpload, (req, res) => {
-  const f = req.f, arquivos = req.files || [];
-  try {
-    const d = String(req.body.d || ''), nome = String(req.body.nome || '').trim().replace(/\s+/g, ' ').slice(0, 120);
-    const pix = String(req.body.pix || '').trim().slice(0, 120);
-    // Motoboy que não veio do Agilizone: digitado pelo despachante (o registro interno é criado como em vincula()).
-    if (!req.body.m && nome.length < 3) throw falha('Digite o nome do motoboy.');
-    let m = req.body.m ? Number(req.body.m) : db.prepare('SELECT id FROM motoboys WHERE nome = ? COLLATE NOCASE').get(nome)?.id;
-    const mb = m ? db.prepare('SELECT * FROM motoboys WHERE id = ?').get(m) : { nome };
-    if (!mb) throw falha('Escolha o motoboy.');
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d < f.data_ini || d > f.data_fim) throw falha('Dia fora do período do fechamento.');
-    const final = valorDigitado(req.body.final), inf = String(req.body.informado || '').trim() ? valorDigitado(req.body.informado) : null;
-    if (Number.isNaN(final)) throw falha('Valor a pagar inválido. Use o formato 152,00 (ou 1.500,00).');
-    if (inf != null && Number.isNaN(inf)) throw falha('Valor informado pelo motoboy inválido. Use o formato 152,00.');
-    const just = String(req.body.justificativa || '').trim();
-    if (just.length < 10) throw falha('Escreva a justificativa (mínimo 10 caracteres).');
-    if (just.length > 2000) throw falha('Justificativa longa demais (máximo 2.000 caracteres).');
-    tx(() => {
-      m ??= Number(db.prepare('INSERT INTO motoboys (nome) VALUES (?)').run(nome).lastInsertRowid);
-      // Edição: a versão anterior fica guardada (substituída) e as evidências dela continuam valendo na nova.
-      const ant = db.prepare('SELECT * FROM ajustes WHERE fechamento_id = ? AND motoboy_id = ? AND dia = ? AND substituido_em IS NULL').get(f.id, m, d);
-      if (ant) db.prepare("UPDATE ajustes SET substituido_em = datetime('now','localtime'), substituido_por = ? WHERE id = ?").run(req.user.id, ant.id);
-      const aid = Number(db.prepare('INSERT INTO ajustes (fechamento_id, motoboy_id, dia, valor_informado, valor_final, justificativa, criado_por) VALUES (?,?,?,?,?,?,?)')
-        .run(f.id, m, d, inf, final, just, req.user.id).lastInsertRowid);
-      if (ant) db.prepare('INSERT INTO evidencias (ajuste_id, arquivo, nome, tipo) SELECT ?, arquivo, nome, tipo FROM evidencias WHERE ajuste_id = ?').run(aid, ant.id);
-      for (const a of arquivos) db.prepare('INSERT INTO evidencias (ajuste_id, arquivo, nome, tipo) VALUES (?,?,?,?)').run(aid, a.filename, a.originalname, a.mimetype);
-      if (pix && !grade(f).linhas.find((l) => l.id === m)?.pix) {
-        editaPix.run(f.id, m, pix);
-        log(req.user.id, `f:${f.id}`, `PIX de ${mb.nome} digitado: ${pix}`);
-      }
-      log(req.user.id, `f:${f.id}`, `${ant ? 'Editou' : 'Registrou'} divergência ${mb.nome} ${diaFmt(d)}: pagar ${brl(final)}${ant ? ` (antes ${brl(ant.valor_final)})` : ''}${inf != null ? ` (motoboy informou ${brl(inf)})` : ''}, ${arquivos.length} evidência(s) nova(s). Justificativa: ${just}`);
-    });
-  } catch (e) {
-    apagaArquivos(arquivos.map((a) => ({ arquivo: a.filename })));
-    if (e.publico) return volta(res, `/fechamentos/${f.id}/ajuste?m=${Number(req.body.m) || ''}&d=${encodeURIComponent(req.body.d || '')}`, 'erro', e.message);
-    throw e;
-  }
-  const rec = req.recusados || [];
-  rec.length ? volta(res, `/fechamentos/${f.id}`, 'erro', `Divergência salva, mas ${rec.length} arquivo(s) não foram aceitos (${rec.join(', ')}). Use imagem (PNG, JPG, WEBP) ou PDF.`)
-    : volta(res, `/fechamentos/${f.id}`, 'ok', 'Divergência salva.');
-});
-
-app.post('/fechamentos/:fid/ajuste/:aid/excluir', so((r) => podeEditar(r.user, r.f)), (req, res) => {
-  const a = db.prepare('SELECT a.*, m.nome FROM ajustes a JOIN motoboys m ON m.id = a.motoboy_id WHERE a.id = ? AND a.fechamento_id = ? AND a.substituido_em IS NULL').get(Number(req.params.aid), req.f.id);
-  if (!a) throw falha('Divergência não encontrada.', 404);
-  // Não apaga: o ajuste e as evidências ficam no histórico.
-  db.prepare("UPDATE ajustes SET substituido_em = datetime('now','localtime'), substituido_por = ? WHERE id = ?").run(req.user.id, a.id);
-  log(req.user.id, `f:${req.f.id}`, `Removeu divergência ${a.nome} ${diaFmt(a.dia)} (era ${brl(a.valor_final)}); o valor volta a ser o do Agilizone`);
-  volta(res, `/fechamentos/${req.f.id}`, 'ok', 'Divergência removida. O valor voltou a ser o do Agilizone.');
-});
-
-app.get('/evidencias/:id', (req, res) => {
-  const e = db.prepare('SELECT e.*, f.loja_id, f.status, f.versao FROM evidencias e JOIN ajustes a ON a.id = e.ajuste_id JOIN fechamentos f ON f.id = a.fechamento_id WHERE e.id = ?').get(Number(req.params.id));
-  if (!e || !podeVer(req.user, e)) throw falha('Arquivo não encontrado.', 404);
-  const tipo = TIPOS_EVIDENCIA[e.tipo] ? e.tipo : 'application/octet-stream'; // arquivos antigos de outro tipo viram download
-  res.setHeader('Content-Type', tipo);
-  res.setHeader('Content-Disposition', `${tipo === 'application/octet-stream' ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(e.nome)}`);
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'; img-src 'self'; style-src 'unsafe-inline'");
-  res.sendFile(path.join(UPLOADS, e.arquivo));
-});
-
 // ---------- Fluxo ----------
 // Destinatários padrão da solicitação (Configurações) + cópia para quem envia, se ativada.
 function destinatariosPadrao(autor) {
@@ -1016,19 +861,18 @@ app.get('/fechamentos/:fid/enviar', so((r) => podeEditar(r.user, r.f) || podeRee
   const f = req.f, reenvio = f.status !== 'rascunho', g = grade(f);
   if (!reenvio) { const p = pendenciasEnvio(f); if (p) return volta(res, `/fechamentos/${f.id}`, 'erro', p); }
   const padrao = destinatariosPadrao(req.user), aPagar = g.linhas.filter((l) => l.total > 0), pend = g.linhas.filter((l) => l.confere === 'pendente');
-  const ajustes = ajustesDetalhados(f, g), aceitos = g.linhas.filter((l) => l.confere === 'aceito'), alterados = g.linhas.filter((l) => l.alterado);
+  const alterados = g.linhas.filter((l) => l.alterado);
   const titulo = reenvio ? 'Reenviar e-mail ao financeiro' : 'Enviar ao financeiro';
   // Há algo para o despachante conferir antes de enviar? (não bloqueia o envio)
-  const conferir = !reenvio && (pend.length || ajustes.length || aceitos.length);
+  const conferir = !reenvio && pend.length;
   res.send(page(req, { titulo, trilha: [[inicio(req.user), '/'], [periodo(f), `/fechamentos/${f.id}`], [titulo]], largura: 'estreita' }, html`
 <form method="post" action="/fechamentos/${f.id}/${reenvio ? 'email' : 'enviar'}" id="form-envio" ${new Raw(conferir ? 'data-confirma="dlg-div"' : '')}>
 <dl class="resumo envio">
 <div><dt>Período</dt><dd>${dataFmt(f.data_ini).slice(0, 5)} a ${dataFmt(f.data_fim).slice(0, 5)}</dd></div>
 <div><dt>Pagamento previsto</dt><dd>${f.pagamento ? diaLongo(f.pagamento) : '—'}</dd></div>
 <div><dt>Motoboys</dt><dd>${aPagar.length}</dd></div>
-<div><dt>Divergências</dt><dd>${ajustes.length}</dd></div>
 <div class="destaque"><dt>Total</dt><dd>${brl(g.total)}</dd></div></dl>
-${pend.length && !reenvio ? html`<p class="nota bad">${icone('alerta', 'sm')} ${pend.length} motoboy(s) com diferença com o Resumo sem justificativa: ${pend.map((l) => l.nome).join(', ')}. <a href="/fechamentos/${f.id}#conferencia">Revisar</a></p>` : ''}
+${pend.length && !reenvio ? html`<p class="nota bad">${icone('alerta', 'sm')} ${pend.length} motoboy(s) com diferença com o Resumo do Agilizone: ${pend.map((l) => l.nome).join(', ')}. <a href="/fechamentos/${f.id}#conferencia">Revisar</a></p>` : ''}
 <p class="small"><a href="/fechamentos/${f.id}/pdf" target="_blank">${icone('arquivo', 'sm')} Ver o PDF que vai anexado</a></p>
 <details class="fold destinos" ${new Raw(padrao.length ? '' : 'open')}><summary>${icone('chevron', 'chev')} E-mail para ${padrao.length ? padrao.join(', ') : 'ninguém configurado'}</summary>
 <div class="field" style="margin-top:10px"><label for="para">Destinatários <span class="req" aria-hidden="true">*</span></label><textarea id="para" name="para" required style="min-height:90px" aria-describedby="dica-para" placeholder="financeiro@grupofornopaulista.com">${padrao.join('\n')}</textarea>
@@ -1038,10 +882,8 @@ ${!reenvio && alterados.length ? html`<div class="alert warn">${icone('alerta')}
 <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" name="revisei" value="1" required> Revisei essas mudanças</label></div></div>` : ''}
 ${reenvio ? '' : html`<p class="small mut">Depois de enviar, o fechamento fica travado para edição até o financeiro aprovar ou devolver. Entregadores já aprovados continuam aprovados.</p>`}
 <div class="acoes-f"><button class="btn btn-pri btn-lg">${icone('enviar')} ${reenvio ? 'Reenviar e-mail' : 'Confirmar envio'}</button><a class="btn btn-ghost" href="/fechamentos/${f.id}">Voltar</a></div>
-${conferir ? html`<dialog id="dlg-div" class="dlg" aria-labelledby="dlg-t"><h2 id="dlg-t">Confira as divergências antes de enviar</h2>
-<ul class="dlg-l">${pend.map((l) => html`<li class="bad"><b>${l.nome}</b>: diferença com o Resumo de ${brl(l.total - l.resumo)} <span class="badge bad">Sem justificativa</span></li>`)}
-${aceitos.map((l) => html`<li><b>${l.nome}</b>: diferença com o Resumo de ${brl(l.total - l.resumo)}<span class="quote">${l.aceite.justificativa}</span></li>`)}
-${ajustes.map((a) => html`<li><b>${a.motoboy}</b>, ${diaFmt(a.dia)}: Agilizone ${brl(a.agil)} → ${brl(a.valor_final)}<span class="quote">${a.justificativa}</span></li>`)}</ul>
+${conferir ? html`<dialog id="dlg-div" class="dlg" aria-labelledby="dlg-t"><h2 id="dlg-t">Há diferença com o Resumo. Enviar mesmo assim?</h2>
+<ul class="dlg-l">${pend.map((l) => html`<li class="bad"><b>${l.nome}</b>: soma dos dias ${brl(l.bruto)} · Resumo ${brl(l.resumo)}</li>`)}</ul>
 <div class="acoes-f"><button type="submit" class="btn btn-pri" data-confirmado>Enviar mesmo assim</button><button type="button" class="btn btn-ghost" data-fecha-dlg>Voltar e corrigir</button></div></dialog>` : ''}
 </form>`));
 });
@@ -1085,14 +927,14 @@ async function enviaELoga(f, rotulo, para, msg) {
 }
 
 async function solicitarPagamento(f, autor, para = destinatariosPadrao(autor)) {
-  const g = grade(f), ajustes = ajustesDetalhados(f, g), url = cfg('app_url').replace(/\/$/, '');
+  const g = grade(f), url = cfg('app_url').replace(/\/$/, '');
   return enviaELoga(f, 'solicitação', para, {
     subject: `Solicitação de pagamento · Motoboys · ${f.loja} · ${f.pagamento ? `pagamento ${dataFmt(f.pagamento)} · ` : ''}${brl(g.total)}`,
     text: `Olá,\n\n${autor.nome} enviou a solicitação de pagamento dos motoboys da loja ${f.loja}` + (f.pagamento ? `, pagamento de ${diaLongo(f.pagamento)}` : '') + `, referente a ${periodo(f)}.\n\n` +
-      `Total: ${brl(g.total)}\nMotoboys: ${g.linhas.filter((l) => l.total > 0).length}\nDivergências registradas: ${ajustes.length}\n\n` +
+      `Total: ${brl(g.total)}\nMotoboys: ${g.linhas.filter((l) => l.total > 0).length}\n\n` +
       g.linhas.filter((l) => l.total > 0).map((l) => `• ${l.nome}: ${brl(l.total)} · PIX ${l.pix}`).join('\n') +
-      `\n\nO PDF com os valores por dia e as divergências está em anexo.` + (url ? `\nAbrir no sistema: ${url}/fechamentos/${f.id}` : ''),
-    attachments: [{ filename: `solicitacao-pagamento-motoboys-${f.loja.replace(/\W+/g, '_')}-${f.pagamento || f.data_ini}.pdf`, content: await gerarPdf(f, g, ajustes) }],
+      `\n\nO PDF com os valores por dia está em anexo.` + (url ? `\nAbrir no sistema: ${url}/fechamentos/${f.id}` : ''),
+    attachments: [{ filename: `solicitacao-pagamento-motoboys-${f.loja.replace(/\W+/g, '_')}-${f.pagamento || f.data_ini}.pdf`, content: await gerarPdf(f, g) }],
   });
 }
 
@@ -1106,7 +948,7 @@ app.get('/fechamentos/:fid/pdf', async (req, res) => {
   const g = grade(req.f);
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="motoboys-${req.f.loja.replace(/\W+/g, '_')}-${req.f.data_ini}.pdf"`);
-  res.send(await gerarPdf(req.f, g, ajustesDetalhados(req.f, g)));
+  res.send(await gerarPdf(req.f, g));
 });
 
 // ---------- Decisões do financeiro ----------
@@ -1153,25 +995,45 @@ app.post('/fechamentos/:fid/devolver', so((r) => decideFin(r.user)), async (req,
   if (motivo.length < 5) recusa('Escreva o motivo da devolução (mínimo 5 caracteres). Nada foi alterado.', detalheFin(req.f, req.body.volta));
   const avisados = avisadosDevolucao(req.f), para = [...new Set(avisados.map((a) => a.email).filter(Boolean))];
   const r = tx(() => {
-    const { f, url, sel, total } = decisao(req);
+    const { f, url, sel, total, itens } = decisao(req);
     const apr = sel.filter((i) => i.sit === 'aprovado');
     if (apr.length) recusa(`${nomes(apr)} já foi aprovado e não pode ser devolvido. Nada foi alterado.`, url);
-    db.prepare("UPDATE fechamentos SET status = 'rascunho' WHERE id = ?").run(f.id);
     const ins = db.prepare('INSERT INTO devolucoes (fechamento_id, motoboy_id, versao, valor, pix, motivo, devolvido_por, para) VALUES (?,?,?,?,?,?,?,?)');
     for (const i of sel) ins.run(f.id, i.id, f.versao, i.total, i.pix, motivo, req.user.id, avisados.map((a) => a.nome).join(', '));
-    // Descongela o PIX que veio do Agilizone (pode mudar se o Resumo for anexado de novo); o digitado continua. Aprovações ficam.
-    db.prepare('DELETE FROM envio_pix WHERE fechamento_id = ?1 AND motoboy_id IN (SELECT motoboy_id FROM resumo WHERE fechamento_id = ?1 AND pix IS NOT NULL)').run(f.id);
-    log(req.user.id, `f:${f.id}`, `Devolveu para correção: ${motivo}`);
-    log(req.user.id, `f:${f.id}`, `Entregadores devolvidos (versão ${f.versao}, ${brl(total)}): ${sel.map((i) => `${i.nome} ${brl(i.total)}`).join('; ')}. Avisados: ${avisados.map((a) => a.nome).join(', ') || 'ninguém cadastrado'}`);
-    return { f, url, sel, total };
+    const quais = `${sel.map((i) => `${i.nome} ${brl(i.total)}`).join('; ')}. Avisados: ${avisados.map((a) => a.nome).join(', ') || 'ninguém cadastrado'}`;
+    // Aprovado em parte: os aprovados ficam fechados aqui e os não aprovados vão para um novo fechamento devolvido à loja.
+    const aprovados = itens.filter((i) => i.sit === 'aprovado'), resto = itens.filter((i) => i.sit !== 'aprovado').map((i) => i.id);
+    let alvo = f;
+    if (aprovados.length) {
+      const novo = Number(db.prepare(`INSERT INTO fechamentos (loja_id, data_ini, data_fim, status, criado_por, criado_em, arquivo, pagamento, versao, enviado_em, enviado_por, origem_id)
+        SELECT loja_id, data_ini, data_fim, 'rascunho', criado_por, criado_em, arquivo, pagamento, versao, enviado_em, enviado_por, id FROM fechamentos WHERE id = ?`).run(f.id).lastInsertRowid);
+      const lista = resto.map(Number).join(',') || '0';
+      for (const t of ['pedidos', 'resumo', 'edicoes', 'envio_pix'])
+        db.prepare(`UPDATE ${t} SET fechamento_id = ? WHERE fechamento_id = ? AND motoboy_id IN (${lista})`).run(novo, f.id);
+      db.prepare(`INSERT INTO devolucoes (fechamento_id, motoboy_id, versao, valor, pix, motivo, devolvido_por, devolvido_em, para)
+        SELECT ?, motoboy_id, versao, valor, pix, motivo, devolvido_por, devolvido_em, para FROM devolucoes WHERE fechamento_id = ? AND versao = ?`).run(novo, f.id, f.versao);
+      db.prepare("UPDATE fechamentos SET status = 'pago' WHERE id = ?").run(f.id);
+      const valorAp = aprovados.reduce((t, i) => t + i.total, 0);
+      log(req.user.id, `f:${f.id}`, `Devolveu ${resto.length} entregador(es) não aprovado(s) para o fechamento #${novo}: ${motivo}`);
+      log(req.user.id, `f:${f.id}`, `Aprovou a solicitação de pagamento em parte: ${aprovados.length} entregador(es), ${brl(valorAp)}`);
+      log(req.user.id, `f:${novo}`, `Criado a partir do fechamento #${f.id}: entregadores não aprovados (os aprovados, ${brl(valorAp)}, ficaram no #${f.id})`);
+      alvo = carregaF(novo);
+    }
+    db.prepare("UPDATE fechamentos SET status = 'rascunho' WHERE id = ?").run(alvo.id);
+    // Descongela o PIX que veio do Agilizone (pode mudar se o Resumo for anexado de novo); o digitado continua.
+    db.prepare('DELETE FROM envio_pix WHERE fechamento_id = ?1 AND motoboy_id IN (SELECT motoboy_id FROM resumo WHERE fechamento_id = ?1 AND pix IS NOT NULL)').run(alvo.id);
+    log(req.user.id, `f:${alvo.id}`, `Devolveu para correção: ${motivo}`);
+    log(req.user.id, `f:${alvo.id}`, `Entregadores devolvidos (versão ${f.versao}, ${brl(total)}): ${quais}`);
+    return { f: alvo, url: alvo.id === f.id ? url : detalheFin(alvo, req.body.volta), sel, total, separado: alvo.id !== f.id, origem: f };
   });
   const app_url = cfg('app_url').replace(/\/$/, '');
   const erro = await enviaELoga(r.f, 'devolução', para, {
     subject: `Fechamento devolvido para correção · ${r.f.loja} · ${periodo(r.f)}`,
-    text: `${req.user.nome} (financeiro) devolveu o fechamento de ${r.f.loja}, período ${periodo(r.f)}, para correção.\n\nMotivo:\n${motivo}\n\nEntregadores devolvidos:\n${r.sel.map((i) => `• ${i.nome}: ${brl(i.total)}`).join('\n')}\n\nOs entregadores já aprovados continuam aprovados.` + (app_url ? `\n\nAbrir no sistema: ${app_url}/fechamentos/${r.f.id}` : ''),
+    text: `${req.user.nome} (financeiro) devolveu o fechamento de ${r.f.loja}, período ${periodo(r.f)}, para correção.\n\nMotivo:\n${motivo}\n\nEntregadores devolvidos:\n${r.sel.map((i) => `• ${i.nome}: ${brl(i.total)}`).join('\n')}\n\n${r.separado ? `Os entregadores já aprovados ficaram fechados no fechamento #${r.origem.id}. Este novo fechamento (#${r.f.id}) tem só os que não foram aprovados: corrija e envie de novo.` : 'Nenhum entregador tinha sido aprovado; corrija e envie de novo.'}` + (app_url ? `\n\nAbrir no sistema: ${app_url}/fechamentos/${r.f.id}` : ''),
   });
-  volta(res, r.url, erro ? 'erro' : 'ok', erro ? `Devolvido à loja (${r.sel.length} entregador(es)), mas o e-mail não saiu: ${erro}. A loja vê a devolução ao entrar no sistema.`
-    : `Devolvido à loja (${r.sel.length} entregador(es), ${brl(r.total)}). Aviso enviado para ${para.join(', ')}.`);
+  const sep = r.separado ? ` Os aprovados ficaram fechados no #${r.origem.id}; os não aprovados estão neste novo fechamento #${r.f.id}.` : '';
+  volta(res, r.url, erro ? 'erro' : 'ok', (erro ? `Devolvido à loja (${r.sel.length} entregador(es)), mas o e-mail não saiu: ${erro}. A loja vê a devolução ao entrar no sistema.`
+    : `Devolvido à loja (${r.sel.length} entregador(es), ${brl(r.total)}). Aviso enviado para ${para.join(', ')}.`) + sep);
 });
 
 // Arquivar (no lugar de excluir): sai da lista, deixa de ser válido e libera os pedidos para outro fechamento. Nada é apagado.
@@ -1205,9 +1067,9 @@ app.get('/fechamentos/:fid/csv', (req, res) => {
   const cel = (v) => { let s = String(v ?? ''); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
   const num = (c) => (c / 100).toFixed(2).replace('.', ',');
   const linhas = [
-    ['NOME', 'PIX', ...g.dias.map(diaFmt), 'TOTAL'],
-    ...g.linhas.map((l) => [l.nome, l.pix, ...g.dias.map((d) => num(l.dias[d]?.final || 0)), num(l.total)]),
-    ['TOTAL', '', ...g.dias.map((d) => num(g.totDia[d])), num(g.total)],
+    ['NOME', 'PIX', ...g.dias.map(diaFmt), ...(g.temOc ? ['OCORRÊNCIAS'] : []), ...(g.temPago ? ['JÁ PAGO'] : []), 'TOTAL'],
+    ...g.linhas.map((l) => [l.nome, l.pix, ...g.dias.map((d) => num(l.dias[d]?.final || 0)), ...(g.temOc ? [num(l.oc)] : []), ...(g.temPago ? [num(-l.pago)] : []), num(l.total)]),
+    ['TOTAL', '', ...g.dias.map((d) => num(g.totDia[d])), ...(g.temOc ? [num(g.totOc)] : []), ...(g.temPago ? [num(-g.totPago)] : []), num(g.total)],
   ];
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="motoboys-${f.loja.replace(/\W+/g, '_')}-${f.data_ini}-a-${f.data_fim}.csv"`);
@@ -1416,7 +1278,7 @@ app.use((req, res) => res.status(404).send(telaErro(req, 'Página não encontrad
 app.use((err, req, res, next) => {
   if (err.volta) return volta(res, err.volta, 'erro', err.message); // recusa de decisão: volta para a tela com o motivo
   const grande = err instanceof multer.MulterError || err.type === 'entity.too.large';
-  const msg = err.publico ? err.message : grande ? 'Arquivo ou texto grande demais, ou arquivos demais (máximo 6 evidências de 10 MB).' : 'Erro inesperado. Avise a TI.';
+  const msg = err.publico ? err.message : grande ? 'Arquivo ou texto grande demais, ou arquivos demais.' : 'Erro inesperado. Avise a TI.';
   if (!err.publico && !grande) console.error(err);
   res.status(err.status || (err.publico || grande ? 400 : 500)).send(telaErro(req, 'Não foi possível concluir', msg));
 });

@@ -40,6 +40,7 @@ const SOL = `<svg viewBox="0 0 44 26" aria-hidden="true" width="34" height="20">
 
 // ---------- Layout ----------
 // o: { titulo, sub, trilha: [['Fechamentos', '/'], ['Loja']], acoes }
+const versao = (u) => { try { return Math.trunc(fs.statSync(path.join(__dirname, 'public', u.replace('/marca/', ''))).mtimeMs); } catch { return 0; } };
 function page(req, o, corpo) {
   if (typeof o === 'string') o = { titulo: o };
   const u = req.user, p = req.path, qq = req.query || {};
@@ -50,11 +51,11 @@ function page(req, o, corpo) {
   const flash = html`${q.ok ? html`<div class="toast" role="status">${icone('ok')}<span>${q.ok}</span><button type="button" class="icon-btn" data-fecha-toast aria-label="Fechar aviso">${icone('erro', 'sm')}</button></div>` : ''}${q.erro && !o.erroNoCampo ? html`<div class="alert bad" role="alert">${icone('erro')}<div>${q.erro}</div></div>` : ''}`;
   const desp = u?.perfil === 'despachante';
   const emFech = desp ? p === '/' || (p.startsWith('/fechamentos') && o.trilha?.[0]?.[0] !== 'Histórico') : p === '/' || p.startsWith('/fechamentos');
-  return html`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#df6d2a">
+  return html`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#df6d2a">
 <title>${o.titulo} · Motoboys Forno Paulista</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<style>${new Raw(CSS)}</style></head>
+<style>${new Raw(CSS)}</style>${o.css ? html`<link rel="stylesheet" href="${o.css}?v=${versao(o.css)}">` : ''}</head>
 ${u ? html`<body class="${o.largura || ''}"><a class="pular" href="#conteudo">Pular para o conteúdo</a><div class="app"><aside class="side" id="menu-lateral"><div class="side-top">${marca}<button type="button" class="icon-btn recolher" data-recolher aria-label="Recolher ou expandir o menu" title="Recolher/expandir menu">${icone('painel')}</button></div>
 <nav class="tabs" aria-label="Menu">${desp ? html`${aba('/', 'lista', 'Pendências', emFech)}${aba('/historico', 'historico', 'Histórico', p === '/historico' || (p.startsWith('/fechamentos') && !emFech))}`
     : aba('/', 'lista', 'Fechamentos', emFech)}
@@ -70,7 +71,7 @@ ${u.perfil === 'admin' ? html`${aba('/usuarios', 'escudo', 'Usuários', p.starts
 <div class="ph"><div><div class="ph-t"><h1>${o.titulo}</h1>${o.selo || ''}</div>${o.sub ? html`<p class="sub">${o.sub}</p>` : ''}</div>${o.acoes ? html`<div class="ph-actions">${o.acoes}</div>` : ''}</div>
 ${flash}${corpo}</main></div></div>`
     : html`<body class="auth"><main class="auth-box"><img class="logo-v" src="/marca/grupo-forno-vertical.jpg" alt="Grupo Forno"><p class="auth-sub">Pagamento de motoboys</p>${flash}${corpo}</main>`}
-<script>${new Raw(JS)}</script></body></html>`.s;
+<script>${new Raw(JS)}</script>${o.js ? html`<script src="${o.js}?v=${versao(o.js)}" defer></script>` : ''}</body></html>`.s;
 }
 const SEGREDO_MSG = crypto.randomBytes(16);
 const assina = (chave, msg) => crypto.createHmac('sha256', SEGREDO_MSG).update(`${chave}:${msg}`).digest('hex').slice(0, 16);
@@ -398,6 +399,109 @@ ${pag > 1 ? html`<a class="btn btn-sec btn-sm" href="${qs({ p: pag - 1 })}" rel=
 <details class="fold sec-agenda"><summary>${icone('chevron', 'chev')} Agenda de pagamentos das lojas</summary>${cardAgenda(u, ag)}</details>`));
 }
 
+// Bloco da tela de conferência (Resumo, Por dia, Histórico e detalhe). Financeiro: decide. Despachante: edita nome e PIX.
+function blocoConferencia(o) {
+  const { f, g, itens, decide, edita, modo, decisoes, hist, nomeDe, avisados, voltar } = o;
+  const ehAp = (i) => i.sit === 'aprovado', ehDev = (i) => i.sit === 'devolvido', ehPend = (i) => !ehAp(i) && !ehDev(i);
+  const conta = (fn) => itens.filter((i) => i.total > 0 && fn(i)).length;
+  const nBloq = conta((i) => i.sit === 'bloqueado'), nAprov = conta(ehAp);
+  const filtro = modo === 'desp'
+    ? [['todos', 'Todos', itens.length], ['semp', 'Falta PIX', itens.filter((i) => !i.pix && i.total > 0).length], ['oc', 'Com ajuste', itens.filter((i) => i.oc || i.qtdOc || i.pago).length], ['dif', 'Difere do Resumo', itens.filter((i) => g.temResumo && !i.noResumo && i.bruto !== (i.resumo || 0)).length]]
+    : [['todos', 'Todos', itens.length], ['pendente', 'Aguardando', itens.filter(ehPend).filter((i) => i.sit !== 'semvalor').length], ['bloqueado', 'Bloqueados', nBloq], ['aprovado', 'Aprovados', nAprov], ['devolvido', 'Devolvidos', conta(ehDev)], ['oc', 'Com ajuste', itens.filter((i) => i.oc || i.qtdOc || i.pago).length]];
+  const detalheSit = (i) => (i.sit === 'aprovado' ? (i.aprovacao ? `Por ${i.aprovacao.por || '—'} em ${quando(i.aprovacao.aprovado_em)}${i.aprovacao.versao ? ` (versão ${i.aprovacao.versao})` : ''}` : '')
+    : i.sit === 'devolvido' ? `Motivo: ${i.dev.motivo}`
+    : i.sit === 'bloqueado' ? `Não pode ser aprovado: ${i.bloq}.${i.alterado ? ' Também mudou depois de aprovado.' : ''}`
+    : i.sit === 'alterado' ? `Aprovado antes com ${brl(i.aprovacao.valor)} (PIX ${i.aprovacao.pix}); a loja mudou. Confira de novo.`
+    : i.dev ? `Devolvido na versão ${i.dev.versao}; a loja corrigiu e reenviou.` : '');
+  const temAj = (i) => !!(i.oc || i.qtdOc || i.pago);
+  const grupoDe = (i) => (['aguardando', 'alterado'].includes(i.sit) ? 'pendente' : i.sit === 'bloqueado' ? 'pendente bloqueado' : i.sit) + (temAj(i) ? ' oc' : '') + (difDe(i) ? ' dif' : '') + (!i.pix && i.total > 0 ? ' semp' : '');
+  const podeSelDe = (i) => decide && !['aprovado', 'semvalor'].includes(i.sit);
+  const difDe = (i) => (g.temResumo && !i.noResumo ? i.bruto - (i.resumo || 0) : 0);
+  // Despachante, antes de enviar: o que importa é se falta algo (PIX) ou se há diferença; o financeiro decide depois.
+  const sitDe = (i) => {
+    if (modo === 'desp' && f.status === 'rascunho') {
+      if (i.sit === 'bloqueado') return ['bad', i.bloq === 'sem chave PIX' ? 'Falta chave PIX' : 'Atenção'];
+      if (i.sit === 'aguardando') return difDe(i) ? ['warn', 'Confira a diferença'] : ['ok', 'Pronto'];
+    }
+    return SIT_ITEM[i.sit];
+  };
+  const detSit = (i) => (modo === 'desp' && f.status === 'rascunho' ? (i.sit === 'bloqueado' ? (i.bloq === 'sem chave PIX' ? 'Informe a chave PIX (botão Editar).' : `Atenção: ${i.bloq}.`) : '') : detalheSit(i));
+  const semanas = Math.ceil(g.dias.length / 7);
+  // Uma só fonte de dados: a tabela, a lista do celular e o detalhe leem este mesmo objeto.
+  const dados = {
+    decide, edit: edita ? `/fechamentos/${f.id}/motoboy/` : '', temResumo: g.temResumo, dias: g.dias.map((d, k) => ({ d, rot: diaFmt(d), sem: Math.floor(k / 7) })),
+    itens: itens.map((i) => ({ id: i.id, nome: i.nome, pix: i.pix || '', aviso: i.avisoPix, bruto: i.bruto, oc: i.oc, qtdOc: i.qtdOc, pago: i.pago, total: i.total, resumo: i.resumo, noResumo: !!i.noResumo, dif: difDe(i),
+      sit: i.sit, sitTxt: sitDe(i)[1], sitCor: sitDe(i)[0], det: detSit(i), bloq: i.bloq, pode: podeSelDe(i), dias: g.dias.map((d) => (i.dias[d] ? [i.dias[d].final, i.dias[d].n] : null)) })),
+  };
+  const json = new Raw(JSON.stringify(dados).replace(/</g, '\\u003c'));
+  const linhaResumo = (i) => {
+    const [cor, txt] = sitDe(i), pode = podeSelDe(i), d = difDe(i), aj = i.oc - i.pago;
+    return html`<tr class="${temAj(i) ? 'tem-oc' : ''}" data-id="${i.id}" data-q="${semAcento(i.nome)}" data-sit="${grupoDe(i)}" data-base="${i.bruto}" data-aj="${aj}" data-valor="${i.total}" ${i.bloq ? new Raw('data-bloq="1"') : ''}>
+${decide ? html`<td class="c-sel">${pode ? html`<label class="alvo"><input type="checkbox" name="m" value="${i.id}" aria-label="Selecionar ${i.nome}, ${brl(i.total)}"></label>` : ''}</td>` : ''}
+<th scope="row" class="c-nome"><button type="button" class="nm" data-det="${i.id}" title="Ver detalhes de ${i.nome}"><span>${i.nome}</span></button>
+<div class="meta"><span class="badge ${cor} so-estreito">${txt}</span>${!i.pix && sitDe(i)[1] !== 'Falta chave PIX' ? html`<span class="badge bad so-estreito">Sem PIX</span>` : ''}${temAj(i) ? html`<span class="badge warn nodot so-estreito">${icone('alerta', 'sm')} Ajuste ${aj > 0 ? '+' : ''}${brl(aj)}</span>` : ''}${d ? html`<span class="badge bad nodot" title="Soma dos dias diferente da soma das taxas do Resumo">${icone('alerta', 'sm')} Difere do Resumo ${d > 0 ? '+' : ''}${brl(d)}</span>` : ''}${i.avisoPix ? html`<span class="badge warn nodot">${i.avisoPix}</span>` : ''}</div></th>
+<td class="c-pix">${i.pix ? html`<span class="pix">${i.pix}<button type="button" class="icon-btn" data-copiar="${i.pix}" title="Copiar chave PIX" aria-label="Copiar chave PIX de ${i.nome}">${icone('copiar', 'sm')}</button></span>` : html`<span class="badge bad">Sem chave PIX</span>`}</td>
+<td class="n c-base">${brl(i.bruto)}</td>
+<td class="n c-aj">${temAj(i) ? html`<b class="${aj < 0 ? 'bad-t' : ''}">${aj > 0 ? '+' : ''}${brl(aj)}</b><small>${[i.oc || i.qtdOc ? `${i.qtdOc} ocorrência(s)` : '', i.pago ? `já pago ${brl(i.pago)}` : ''].filter(Boolean).join(' · ')}</small>` : html`<span class="mut">–<span class="sr">sem ajustes</span></span>`}</td>
+<td class="n c-tot"><b>${brl(i.total)}</b></td>
+<td class="c-sit"><span class="badge ${cor}">${txt}</span>${detSit(i) ? html`<span class="sit-d" id="sit-${i.id}">${detSit(i)}</span>` : ''}</td>
+${decide || edita ? html`<td class="n c-acoes"><div class="acoes-c">${edita ? html`<a class="btn btn-ghost btn-xs" href="/fechamentos/${f.id}/motoboy/${i.id}" aria-label="Editar nome e PIX de ${i.nome}">${icone('lapis', 'sm')} Editar</a>` : ''}${pode ? html`<button type="button" class="btn btn-ok btn-xs" data-linha="aprovar" data-id="${i.id}" aria-label="Aprovar ${i.nome}" ${i.bloq ? new Raw('disabled') : ''}>Aprovar</button><button type="button" class="btn btn-sec btn-xs so-largo" data-linha="devolver" data-id="${i.id}" aria-label="Devolver ${i.nome}">Devolver</button>` : ''}</div></td>` : ''}</tr>`;
+  };
+  const linhaDia = (i) => html`<tr data-q="${semAcento(i.nome)}" data-sit="${grupoDe(i)}">
+<th scope="row" class="c-nome"><button type="button" class="nm" data-det="${i.id}" title="Ver detalhes de ${i.nome}"><span>${i.nome}</span></button></th>
+${g.dias.map((d, k) => { const c = i.dias[d]; return html`<td class="n dcol" data-d="${d}" data-sem="${Math.floor(k / 7)}" data-v="${c ? c.final : 0}">${c ? brl(c.final) : html`<span class="mut" title="Sem entregas no dia">–<span class="sr">sem entregas</span></span>`}</td>`; })}
+<td class="n c-int"><b data-int>${brl(0)}</b></td></tr>`;
+  return html`<div class="fc" id="fc" data-w="largo">
+<div class="abas" role="tablist" aria-label="Seções do fechamento">
+<button type="button" role="tab" id="t-conf" aria-controls="conf" aria-selected="true">Resumo</button>
+<button type="button" role="tab" id="t-dia" aria-controls="pordia" aria-selected="false" tabindex="-1">Por dia</button>
+<button type="button" role="tab" id="t-hist" aria-controls="hist" aria-selected="false" tabindex="-1">Histórico <span class="c">${modo === 'desp' ? hist.length : decisoes.length}</span></button></div>
+<div class="fc-bar" role="search" aria-label="Buscar e filtrar entregadores">
+<div class="search">${icone('busca', 'sm')}<input type="search" id="fc-q" placeholder="Buscar entregador" aria-label="Buscar entregador" autocomplete="off"></div>
+<button type="button" class="btn btn-sec fc-filtros" id="fc-filtros-btn" aria-expanded="false" aria-controls="fc-seg">${icone('ajustes', 'sm')} Filtros <span class="c" data-fc-nfiltros>0</span></button>
+<div class="seg fc-seg" id="fc-seg" role="group" aria-label="Mostrar por situação">${filtro.filter(([k, , n]) => k === 'todos' || n).map(([k, t, n]) => html`<button type="button" data-f="${k}" class="${k === 'todos' ? 'on' : ''}" aria-pressed="${k === 'todos'}">${t}<span class="c">${n}</span></button>`)}</div>
+${decide ? html`<label class="sel-todos"><input type="checkbox" id="sel-todos"> Selecionar todos os visíveis</label>` : ''}</div>
+<form id="dec" method="post" action="/fechamentos/${f.id}/aprovar" data-aprovar="/fechamentos/${f.id}/aprovar" data-devolver="/fechamentos/${f.id}/devolver">
+<input type="hidden" name="versao" value="${f.versao}"><input type="hidden" name="volta" value="${voltar}"><input type="hidden" name="uma" value="">
+<section class="card painel" id="conf" role="tabpanel" aria-labelledby="t-conf">
+<div class="tw fc-tw"><table class="fc-t ${decide ? 'com-sel' : ''}" id="fc-resumo"><caption class="sr">Resumo por entregador</caption>
+<thead><tr>${decide ? html`<th scope="col" class="c-sel"><span class="sr">Selecionar</span></th>` : ''}<th scope="col" class="c-nome">Entregador</th><th scope="col" class="c-pix">PIX</th><th scope="col" class="n c-base">Valor base</th><th scope="col" class="n c-aj" title="Ocorrências do Agilizone (acréscimo ou desconto, sem data) e valor já pago no Agilizone">Ajustes</th><th scope="col" class="n c-tot">Total do fechamento</th><th scope="col" class="c-sit">Situação</th>${decide || edita ? html`<th scope="col" class="n c-acoes">Ações</th>` : ''}</tr></thead>
+<tbody>${itens.map(linhaResumo)}</tbody>
+<tfoot><tr class="tot">${decide ? html`<td class="c-sel"></td>` : ''}<th scope="row" class="c-nome"><span data-esc>Total do fechamento</span><small data-esc-n></small></th><td class="c-pix"></td><td class="n c-base" data-t="base">${brl(g.linhas.reduce((t, l) => t + l.bruto, 0))}</td><td class="n c-aj" data-t="aj">${brl(g.totOc - g.totPago)}</td><td class="n c-tot" data-t="tot">${brl(g.total)}</td><td class="c-sit"></td>${decide || edita ? html`<td class="c-acoes"></td>` : ''}</tr></tfoot></table></div>
+<p class="fc-vazio" data-vazio hidden>Nenhum entregador com esta busca ou filtro. <button type="button" class="btn btn-sec btn-sm" data-limpar-filtros>Limpar busca e filtros</button></p>
+<p class="fin-legenda">Valor base: Relatório de Pedidos do Agilizone. Ajustes: ocorrências do Agilizone (acréscimo ou desconto, sem data) e o que já foi pago lá; já estão no total. "Difere do Resumo": a soma dos dias não bate com o Resumo de entregas do Agilizone.${decide ? ' "Selecionar todos os visíveis" marca só as linhas que a busca e o filtro mostram.' : ''}</p>
+${decide ? html`<div class="barra" role="region" aria-label="Decisão sobre os selecionados"><div class="barra-in">
+<div><span class="mut small" data-sel-n aria-live="polite">Nenhum entregador selecionado</span><b data-sel-v>${brl(0)}</b></div>
+<span class="small bad-t" data-sel-bloq hidden></span>
+<button type="button" class="btn btn-ghost" data-limpar>Limpar</button>
+<button type="button" class="btn btn-sec" data-dec="devolver">${icone('desfazer', 'sm')} Devolver selecionados</button>
+<button type="button" class="btn btn-ok" data-dec="aprovar">${icone('check', 'sm')} Aprovar selecionados</button></div></div>
+<dialog id="dlg-dec" class="dlg" aria-labelledby="dlg-dec-t" aria-describedby="dlg-dec-r"><h2 id="dlg-dec-t">Confirmar decisão</h2><p id="dlg-dec-r"></p><ul class="dlg-l" data-dlg-lista></ul>
+<div class="field" data-dlg-motivo hidden style="margin-top:12px"><label for="motivo">Motivo da devolução <span class="req" aria-hidden="true">*</span></label><textarea id="motivo" name="motivo" minlength="5" maxlength="2000" aria-describedby="dica-motivo"></textarea>
+<p class="hint" id="dica-motivo">Vai para ${avisados.length ? avisados.map((a) => `${a.nome}${a.email ? ` (${a.email})` : ' (sem e-mail: vê no sistema)'}`).join(', ') : 'ninguém: a loja não tem despachante cadastrado'}. Entregadores já aprovados continuam aprovados.</p></div>
+<div class="acoes-f"><button class="btn btn-ok" data-dlg-ok>Confirmar</button><button type="button" class="btn btn-ghost" data-dlg-cancela>Cancelar</button></div></dialog>` : ''}
+</section>
+<section class="card painel" id="pordia" role="tabpanel" aria-labelledby="t-dia" hidden>
+<div class="dia-ctrl">${semanas > 1 ? html`<div class="seg dia-sem" role="group" aria-label="Semana">${Array.from({ length: semanas }, (_, k) => { const a = g.dias[k * 7], b = g.dias[Math.min(g.dias.length, k * 7 + 7) - 1]; return html`<button type="button" data-sem="${k}" class="${k === 0 ? 'on' : ''}" aria-pressed="${k === 0}">${diaFmt(a).slice(0, 5)} a ${diaFmt(b).slice(0, 5)}</button>`; })}</div>` : ''}
+<div class="field dia-sel"><label for="dia-sel">Dia</label><select id="dia-sel">${g.dias.map((d) => html`<option value="${d}">${diaFmt(d)}</option>`)}</select></div></div>
+<div class="tw fc-tw"><table class="fc-t fc-dia" id="fc-dia"><caption class="sr">Valores por dia e entregador</caption>
+<thead><tr><th scope="col" class="c-nome">Entregador</th>${g.dias.map((d, k) => html`<th scope="col" class="n dcol" data-d="${d}" data-sem="${Math.floor(k / 7)}">${diaFmt(d)}</th>`)}<th scope="col" class="n c-int">Total do intervalo</th></tr></thead>
+<tbody>${itens.map(linhaDia)}</tbody>
+<tfoot><tr class="tot"><th scope="row" class="c-nome"><span data-esc>Total do intervalo</span><small data-esc-n></small></th>${g.dias.map((d, k) => html`<td class="n dcol" data-d="${d}" data-sem="${Math.floor(k / 7)}" data-tdia="${d}">${brl(g.totDia[d])}</td>`)}<td class="n c-int" data-tint>${brl(0)}</td></tr></tfoot></table></div>
+<p class="fc-vazio" data-vazio hidden>Nenhum entregador com esta busca ou filtro. <button type="button" class="btn btn-sec btn-sm" data-limpar-filtros>Limpar busca e filtros</button></p>
+<p class="fin-legenda">Valores do Relatório de Pedidos do Agilizone (taxa do entregador) por dia. Ajustes (ocorrências e já pago) não têm data: aparecem só no Resumo, por isso o total do intervalo não inclui ajustes.</p>
+</section></form>
+<section class="card painel" id="hist" role="tabpanel" aria-labelledby="t-hist" hidden>
+${decisoes.length ? html`<div class="tw"><table><caption class="sr">Decisões do financeiro</caption><thead><tr><th scope="col">Quando</th><th scope="col">Decisão</th><th scope="col">Entregador</th><th scope="col" class="n">Valor</th><th scope="col">PIX considerado</th><th scope="col" class="n">Versão</th><th scope="col">Responsável</th></tr></thead><tbody>
+${decisoes.map((d) => html`<tr><td>${quando(d.quando)}</td><td><span class="badge ${d.tipo === 'Aprovado' ? 'ok' : 'bad'}">${d.tipo}</span>${d.motivo ? html`<div class="quote">${d.motivo}</div>` : ''}${d.para ? html`<div class="mut small">Avisados: ${d.para}</div>` : ''}</td>
+<td>${nomeDe(d.motoboy_id, d.entregador)}</td><td class="n">${d.valor == null ? '—' : brl(d.valor)}</td><td>${d.pix || '—'}</td><td class="n">${d.versao ?? '—'}</td><td>${d.por || '—'}</td></tr>`)}</tbody></table></div>`
+    : html`<p class="vazio-p">Nenhuma decisão registrada ainda.</p>`}
+<div class="card-b"><h3 class="sec-t">Linha do tempo</h3><ul class="timeline">${hist.map((h) => html`<li>${h.acao}<small>${quando(h.quando)} · ${h.nome || 'Sistema'}</small></li>`)}</ul></div></section></div>
+<script type="application/json" id="fc-dados">${json}</script>
+<dialog id="dlg-det" class="dlg sheet" aria-labelledby="det-t"><div class="sheet-h"><div><h2 id="det-t"></h2><span class="badge" id="det-sit"></span></div><button type="button" class="icon-btn alvo-ic" data-det-fecha aria-label="Fechar detalhe">${icone('erro')}</button></div>
+<div class="sheet-b" id="det-corpo"></div><div class="sheet-f" id="det-acoes"></div></dialog>`;
+}
+
 function conferenciaFin(req, res) {
   const f = req.f, u = req.user, g = grade(f), itens = itensFin(f, g), decide = podeDevolver(u, f);
   const voltar = voltaFila(req.query.volta);
@@ -413,30 +517,6 @@ function conferenciaFin(req, res) {
   const devolucao = hist.find((h) => /^Devolveu para correção/.test(h.acao));
   const alterados = itens.filter((i) => i.alterado && !ehAp(i));
   const totResumo = g.linhas.reduce((s, l) => s + (l.resumo || 0), 0);
-  const cols = 5 + g.dias.length + (decide ? 1 : 0);
-  const filtro = [['todos', 'Todos', itens.length], ['pendente', 'Aguardando', itens.filter(ehPend).filter((i) => i.sit !== 'semvalor').length], ['bloqueado', 'Bloqueados', nBloq], ['aprovado', 'Aprovados', nAprov], ['devolvido', 'Devolvidos', conta(ehDev)], ['oc', 'Com ocorrência', itens.filter((i) => i.oc || i.qtdOc).length]];
-  const detalheSit = (i) => (i.sit === 'aprovado' ? (i.aprovacao ? `Por ${i.aprovacao.por || '—'} em ${quando(i.aprovacao.aprovado_em)}${i.aprovacao.versao ? ` (versão ${i.aprovacao.versao})` : ''}` : '')
-    : i.sit === 'devolvido' ? `Motivo: ${i.dev.motivo}`
-    : i.sit === 'bloqueado' ? `Não pode ser aprovado: ${i.bloq}.${i.alterado ? ' Também mudou depois de aprovado.' : ''}`
-    : i.sit === 'alterado' ? `Aprovado antes com ${brl(i.aprovacao.valor)} (PIX ${i.aprovacao.pix}); a loja mudou. Confira de novo.`
-    : i.dev ? `Devolvido na versão ${i.dev.versao}; a loja corrigiu e reenviou.` : '');
-  const linha = (i) => {
-    const [cor, txt] = SIT_ITEM[i.sit], podeSel = decide && !['aprovado', 'semvalor'].includes(i.sit);
-    const comOc = !!(i.oc || i.qtdOc), dif = g.temResumo ? i.bruto - (i.resumo || 0) : null, grupo = (['aguardando', 'alterado'].includes(i.sit) ? 'pendente' : i.sit === 'bloqueado' ? 'pendente bloqueado' : i.sit) + (comOc ? ' oc' : '');
-    return html`<tr class="${comOc ? 'tem-oc' : ''}" data-id="${i.id}" data-q="${semAcento(i.nome)}" data-sit="${grupo}" data-valor="${i.total}" data-nome="${i.nome}" ${i.bloq ? new Raw('data-bloq="1"') : ''}>
-<th scope="row" class="nome-c"><div class="nome-l">${podeSel ? html`<input type="checkbox" name="m" value="${i.id}" aria-label="Selecionar ${i.nome}, ${brl(i.total)}">` : ''}<b>${i.nome}</b></div>
-<div class="pix-l">${i.pix ? html`<span class="rot-pix">PIX</span><span class="pix">${i.pix}<button type="button" class="icon-btn" data-copiar="${i.pix}" title="Copiar chave PIX" aria-label="Copiar chave PIX de ${i.nome}">${icone('copiar', 'sm')}</button></span>` : html`<span class="badge bad">Sem chave PIX</span>`}</div>
-${i.avisoPix ? html`<div class="small warn-t">${icone('alerta', 'sm')} ${i.avisoPix}</div>` : ''}
-${comOc ? html`<div class="chips"><span class="badge warn nodot" title="Acréscimo ou desconto lançado no Agilizone, sem data. Já está no total.">${icone('alerta', 'sm')} Ocorrência ${i.oc > 0 ? '+' : ''}${brl(i.oc)} (${i.qtdOc})</span></div>` : ''}
-</th>
-${g.dias.map((d) => { const c = i.dias[d];
-    return html`<td class="n dia-c">${c ? html`<span title="${c.n} entrega(s)">${brl(c.final)}</span>` : html`<span class="mut" title="Sem entregas no dia">–<span class="sr">sem entregas</span></span>`}</td>`; })}
-${g.temOc ? celOc(i) : ''}${g.temPago ? celPago(i) : ''}<td class="n b">${brl(i.total)}</td>
-<td class="n">${!g.temResumo ? html`<span class="mut small">sem Resumo</span>` : i.noResumo ? html`<span class="mut small">não consta</span>` : brl(i.resumo)}</td>
-<td class="n">${dif == null ? html`<span class="mut">—</span>` : dif === 0 ? html`<span class="ok-t small b">bate</span>` : diferenca(dif)}</td>
-<td class="sit-c"><span class="badge ${cor}">${txt}</span><span class="sit-d" id="sit-${i.id}">${detalheSit(i)}</span></td>
-${decide ? html`<td class="n"><div class="acoes-c">${podeSel ? html`<button name="uma" value="${i.id}" formaction="/fechamentos/${f.id}/aprovar" class="btn btn-ok btn-xs" data-linha="aprovar" aria-label="Aprovar ${i.nome}" aria-describedby="sit-${i.id}" ${i.bloq ? new Raw('disabled') : ''}>Aprovar</button><button name="uma" value="${i.id}" formaction="/fechamentos/${f.id}/devolver" class="btn btn-sec btn-xs" data-linha="devolver" aria-label="Devolver ${i.nome}">Devolver</button>` : ''}</div></td>` : ''}</tr>`;
-  };
   const avisados = avisadosDevolucao(f);
   const aviso = f.arquivado_em ? html`<div class="alert">${icone('arquivo')}<div><b>Arquivado pela loja em ${dataFmt(f.arquivado_em.slice(0, 10))}</b>Não conta como solicitação válida.</div></div>`
     : f.status === 'rascunho' ? html`<div class="alert warn" role="note">${icone('desfazer')}<div><b>Devolvido à loja${devolucao ? ` por ${devolucao.nome || '—'} em ${quando(devolucao.quando)}` : ''}</b>${devolucao ? devolucao.acao.replace(/^Devolveu para correção: /, '') : ''}<div class="small">A loja está corrigindo: os valores podem mudar até o reenvio. As aprovações já feitas continuam valendo.</div></div></div>`
@@ -444,7 +524,7 @@ ${decide ? html`<td class="n"><div class="acoes-c">${podeSel ? html`<button name
     : !decide ? html`<div class="alert info">${icone('info')}<div><b>Somente leitura.</b>Quem aprova ou devolve é o financeiro.</div></div>`
     : alterados.length ? html`<div class="alert warn">${icone('alerta')}<div><b>${alterados.length} entregador(es) mudaram depois de aprovados</b>${nomes(alterados)} voltaram para análise. Confira os novos valores e PIX.</div></div>` : '';
   res.send(page(req, {
-    titulo: `Fechamento #${f.id}`, selo: seloFin({ ...f, nAprov }),
+    titulo: `Fechamento #${f.id}`, selo: seloFin({ ...f, nAprov }), css: '/marca/conferencia.css', js: '/marca/conferencia.js',
     sub: html`<b>${f.loja}</b> · período ${periodo(f)}${f.pagamento ? html` · pagamento previsto <b>${diaLongo(f.pagamento)}</b>` : ''}<br><span class="mut">Enviado por ${f.enviou || f.autor}${f.enviado_em ? ` em ${quando(f.enviado_em)}` : ''} · versão ${f.versao}${f.arquivo ? ` · arquivo ${f.arquivo}` : ''}</span>`,
     trilha: [[u.perfil === 'financeiro' ? 'Fila do financeiro' : inicio(u), voltar], [`#${f.id} · ${lojaCurta(f.loja)}`]],
     acoes: html`<a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/pdf" target="_blank">${icone('arquivo', 'sm')} Baixar PDF</a><a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/csv">${icone('baixar', 'sm')} Baixar planilha</a>`,
@@ -454,37 +534,7 @@ ${decide ? html`<td class="n"><div class="acoes-c">${podeSel ? html`<button name
 <div><dt>Aprovado</dt><dd class="${nAprov ? 'ok-t' : ''}">${brl(soma(ehAp))}</dd><dd>${nAprov} entregador(es)</dd></div>
 <div class="destaque"><dt>Aguardando análise</dt><dd>${brl(soma(ehPend))}</dd><dd>${conta(ehPend)} entregador(es)${nBloq ? ` · ${nBloq} bloqueado(s)` : ''}</dd></div>
 <div><dt>Devolvido</dt><dd class="${conta(ehDev) ? 'bad-t' : ''}">${brl(soma(ehDev))}</dd><dd>${conta(ehDev)} entregador(es)</dd></div></dl>
-<div class="abas" role="tablist" aria-label="Seções do fechamento">
-<button type="button" role="tab" id="t-conf" aria-controls="conf" aria-selected="true">Conferência</button>
-<button type="button" role="tab" id="t-hist" aria-controls="hist" aria-selected="false" tabindex="-1">Histórico e decisões <span class="c">${decisoes.length}</span></button></div>
-<form id="dec" method="post" action="/fechamentos/${f.id}/aprovar" data-aprovar="/fechamentos/${f.id}/aprovar" data-devolver="/fechamentos/${f.id}/devolver">
-<input type="hidden" name="versao" value="${f.versao}"><input type="hidden" name="volta" value="${voltar}"><input type="hidden" name="uma" value="">
-<section class="card painel" id="conf" role="tabpanel" aria-labelledby="t-conf">
-<div class="ferramentas"><div class="search">${icone('busca', 'sm')}<input type="search" placeholder="Buscar entregador" data-filtro="#fin" aria-label="Buscar entregador"></div>
-<div class="seg" data-sit-filtro role="group" aria-label="Mostrar por situação">${filtro.filter(([k, , n]) => k === 'todos' || n).map(([k, t, n]) => html`<button type="button" data-f="${k}" class="${k === 'todos' ? 'on' : ''}" aria-pressed="${k === 'todos'}">${t}<span class="c">${n}</span></button>`)}</div>
-${g.dias.length > 5 ? html`<button type="button" class="btn btn-sec btn-sm" data-dias="#fin" data-n="${g.dias.length}" aria-pressed="false">Mostrar valores por dia (${g.dias.length})</button>` : ''}
-${decide ? html`<label class="sel-todos"><input type="checkbox" id="sel-todos"> Selecionar todos os visíveis</label>` : ''}</div>
-<div class="tw"><table class="grade fin${g.dias.length > 5 ? ' dias-off' : ''}" id="fin"><thead><tr><th scope="col" class="nome-c">Entregador e PIX</th>${g.dias.map((d) => html`<th scope="col" class="n dia-c">${diaFmt(d)}</th>`)}${thOc(g)}<th scope="col" class="n">Total a pagar</th><th scope="col" class="n" title="Soma das taxas no Resumo de entregas por entregador do Agilizone (sem ocorrências)">Resumo</th><th scope="col" class="n">Diferença</th><th scope="col">Situação</th>${decide ? html`<th scope="col" class="n">Ações</th>` : ''}</tr></thead>
-<tbody>${itens.map(linha)}</tbody>
-<tfoot><tr class="tot"><th scope="row" class="nome-c">Total</th>${g.dias.map((d) => html`<td class="n dia-c">${brl(g.totDia[d])}</td>`)}${g.temOc ? html`<td class="n">${brl(g.totOc)}</td>` : ''}${g.temPago ? html`<td class="n">−${brl(g.totPago)}</td>` : ''}<td class="n">${brl(g.total)}</td><td class="n">${g.temResumo ? brl(totResumo) : '—'}</td><td class="n">${g.temResumo ? diferenca(g.linhas.reduce((t, l) => t + l.bruto, 0) - totResumo) : '—'}</td><td></td>${decide ? html`<td></td>` : ''}</tr></tfoot></table></div>
-<p class="fin-legenda">Valores por dia: Relatório de Pedidos do Agilizone (taxa do entregador). Ocorrências: acréscimos ou descontos do Agilizone, sem data, já somados ao total.${g.temPago ? ' Já pago: acerto feito no Agilizone, descontado do total.' : ''} – sem entregas no dia · Resumo: Resumo de entregas por entregador do Agilizone ("não consta" = entregador ausente no Resumo).${decide ? ' "Selecionar todos os visíveis" marca só as linhas que a busca e o filtro mostram.' : ''}</p>
-${decide ? html`<div class="barra" role="region" aria-label="Decisão sobre os selecionados"><div class="barra-in">
-<div><span class="mut small" data-sel-n aria-live="polite">Nenhum entregador selecionado</span><b data-sel-v>${brl(0)}</b></div>
-<span class="small bad-t" data-sel-bloq hidden></span>
-<button type="button" class="btn btn-ghost" data-limpar>Limpar</button>
-<button formaction="/fechamentos/${f.id}/devolver" class="btn btn-sec" data-dec="devolver">${icone('desfazer', 'sm')} Devolver selecionados</button>
-<button formaction="/fechamentos/${f.id}/aprovar" class="btn btn-ok" data-dec="aprovar">${icone('check', 'sm')} Aprovar selecionados</button></div></div>
-<dialog id="dlg-dec" class="dlg" aria-labelledby="dlg-dec-t" aria-describedby="dlg-dec-r"><h2 id="dlg-dec-t">Confirmar decisão</h2><p id="dlg-dec-r"></p><ul class="dlg-l" data-dlg-lista></ul>
-<div class="field" data-dlg-motivo hidden style="margin-top:12px"><label for="motivo">Motivo da devolução <span class="req" aria-hidden="true">*</span></label><textarea id="motivo" name="motivo" minlength="5" maxlength="2000" aria-describedby="dica-motivo"></textarea>
-<p class="hint" id="dica-motivo">Vai para ${avisados.length ? avisados.map((a) => `${a.nome}${a.email ? ` (${a.email})` : ' (sem e-mail: vê no sistema)'}`).join(', ') : 'ninguém: a loja não tem despachante cadastrado'}. Entregadores já aprovados continuam aprovados.</p></div>
-<div class="acoes-f"><button class="btn btn-ok" data-dlg-ok>Confirmar</button><button type="button" class="btn btn-ghost" data-dlg-cancela>Cancelar</button></div></dialog>` : ''}
-</section></form>
-<section class="card painel" id="hist" role="tabpanel" aria-labelledby="t-hist" hidden>
-${decisoes.length ? html`<div class="tw"><table><caption class="sr">Decisões do financeiro</caption><thead><tr><th scope="col">Quando</th><th scope="col">Decisão</th><th scope="col">Entregador</th><th scope="col" class="n">Valor</th><th scope="col">PIX considerado</th><th scope="col" class="n">Versão</th><th scope="col">Responsável</th></tr></thead><tbody>
-${decisoes.map((d) => html`<tr><td>${quando(d.quando)}</td><td><span class="badge ${d.tipo === 'Aprovado' ? 'ok' : 'bad'}">${d.tipo}</span>${d.motivo ? html`<div class="quote">${d.motivo}</div>` : ''}${d.para ? html`<div class="mut small">Avisados: ${d.para}</div>` : ''}</td>
-<td>${nomeDe(d.motoboy_id, d.entregador)}</td><td class="n">${d.valor == null ? '—' : brl(d.valor)}</td><td>${d.pix || '—'}</td><td class="n">${d.versao ?? '—'}</td><td>${d.por || '—'}</td></tr>`)}</tbody></table></div>`
-    : html`<p class="vazio-p">Nenhuma decisão registrada ainda.</p>`}
-<div class="card-b"><h3 class="sec-t">Linha do tempo</h3><ul class="timeline">${hist.map((h) => html`<li>${h.acao}<small>${quando(h.quando)} · ${h.nome || 'Sistema'}</small></li>`)}</ul></div></section>`));
+${blocoConferencia({ f, g, itens, decide, edita: false, modo: 'fin', decisoes, hist, nomeDe, avisados, voltar })}`));
 }
 
 // Histórico: consulta com um filtro de situação e um de mês.
@@ -711,8 +761,8 @@ ${podeRecuperar(u, f) ? html`<form method="post" action="/fechamentos/${f.id}/re
   else if (!enviado && edita) {
     const passos = [
       ['Arquivos do Agilizone', g.temResumo ? ['ok', f.so_resumo ? 'Resumo do dia importado' : 'Relatório de Pedidos e Resumo importados'] : ['warn', 'Falta o Resumo de entregas'], '#conferencia'],
-      ['Chaves PIX', semPix.length ? ['bad', `Falta a chave de ${semPix.length} motoboy(s)`] : ['ok', g.linhas.some((l) => l.pixDigitado) ? 'Completas, algumas digitadas por você' : 'Completas'], semPix.length ? '#pix' : '#valores'],
-      ['Conferência com o Resumo', !g.temResumo ? ['nodot', 'Sem Resumo para comparar'] : pend.length ? ['warn', `${pend.length} motoboy(s) com diferença`] : ['ok', 'Bate com o Resumo'], pend.length ? '#conferencia' : '#valores'],
+      ['Chaves PIX', semPix.length ? ['bad', `Falta a chave de ${semPix.length} motoboy(s)`] : ['ok', g.linhas.some((l) => l.pixDigitado) ? 'Completas, algumas digitadas por você' : 'Completas'], semPix.length ? '#pix' : '#conf'],
+      ['Conferência com o Resumo', !g.temResumo ? ['nodot', 'Sem Resumo para comparar'] : pend.length ? ['warn', `${pend.length} motoboy(s) com diferença`] : ['ok', 'Bate com o Resumo'], pend.length ? '#conferencia' : '#conf'],
     ];
     estado = html`<section class="conferencia" aria-labelledby="conf-t"><h2 id="conf-t">${semPix.length ? 'Antes de enviar, preencha o que falta' : 'Revise e envie ao financeiro'}</h2><ol>
 ${passos.map(([t, [cor, txt], href]) => html`<li class="${cor}"><a href="${href}"><span class="marca" aria-hidden="true">${icone(cor === 'ok' ? 'check' : cor === 'nodot' || cor === 'info' ? 'info' : 'alerta', 'sm')}</span><span><b>${t}</b><span>${txt}</span></span></a></li>`)}</ol></section>`;
@@ -729,7 +779,7 @@ ${podeReenviar(u, f) ? html` <a href="/fechamentos/${f.id}/enviar">Reenviar e-ma
 
   const sub = html`${f.pagamento ? html`Pagamento previsto: <b>${diaLongo(f.pagamento)}</b>` : 'Sem data de pagamento no calendário'}${veTudo(u) ? html` · ${f.loja}` : ''} · <span class="mut">importado por ${f.autor}, ${quando(f.criado_em)}</span>`;
   res.send(page(req, {
-    titulo: `Fechamento de ${periodo(f)}`, selo: selo(f, devolvido), sub, trilha: [[inicio(u), '/'], [periodo(f)]],
+    titulo: `Fechamento de ${periodo(f)}`, selo: selo(f, devolvido), sub, css: '/marca/conferencia.css', js: '/marca/conferencia.js', trilha: [[inicio(u), '/'], [periodo(f)]],
     acoes: html`<a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/pdf" target="_blank">${icone('arquivo', 'sm')} Baixar PDF</a><a class="btn btn-sec btn-sm" href="/fechamentos/${f.id}/csv">${icone('baixar', 'sm')} Baixar planilha</a>`,
   }, html`
 ${devolvido ? html`<div class="motivo" role="note" id="devolvido"><b>Devolvido pelo financeiro${devolucao.nome ? ` (${devolucao.nome})` : ''} em ${quando(devolucao.quando)}</b>
@@ -746,38 +796,15 @@ ${semPix.length ? html`<form method="post" action="/fechamentos/${f.id}/pix" cla
 <div class="card-h"><span class="hico warn">${icone('chave')}</span><div class="t"><h2>Informe a chave PIX de ${semPix.length} motoboy${semPix.length > 1 ? 's' : ''}</h2>
 <p>${edita ? 'O Agilizone não trouxe a chave deles, e sem ela o financeiro não consegue pagar. Peça ao motoboy e cole aqui: vale CPF, telefone, e-mail ou chave aleatória. Vale só para este fechamento.' : 'O Agilizone não trouxe a chave deles. O despachante precisa informar.'}</p></div>
 ${edita ? html`<span class="pix-cont" data-pix-cont aria-live="polite">0 de ${semPix.length} preenchidas</span>` : ''}</div>
-<div class="pix-lista">${semPix.map((l) => html`<div class="pix-item"><div class="pix-quem"><b>${l.nome}</b><span>Vai receber <b>${brl(l.total)}</b></span></div>
-${edita ? html`<div class="field pix-campo"><label for="pix_${l.id}">Chave PIX<span class="sr"> de ${l.nome}</span></label><input id="pix_${l.id}" name="pix_${l.id}" value="${l.pix}" placeholder="Cole aqui: CPF, telefone, e-mail ou chave aleatória" autocomplete="off" maxlength="120" data-pix aria-describedby="tipo_${l.id}"><span class="pix-tipo" id="tipo_${l.id}" data-pix-tipo></span></div>` : html`<span class="badge bad">Sem PIX</span>`}</div>`)}</div>
+<div class="pix-lista">${edita ? html`<div class="pix-cab" aria-hidden="true"><span>Motoboy</span><span>Chave PIX</span></div>` : ''}${semPix.map((l) => html`<div class="pix-item"><div class="pix-quem"><b>${l.nome}</b><span>Vai receber <b>${brl(l.total)}</b></span></div>
+${edita ? html`<div class="field pix-campo"><label for="pix_${l.id}" class="sr">Chave PIX de ${l.nome}</label><input id="pix_${l.id}" name="pix_${l.id}" value="${l.pix}" placeholder="Cole aqui: CPF, telefone, e-mail ou chave aleatória" autocomplete="off" maxlength="120" data-pix aria-describedby="tipo_${l.id}"><span class="pix-tipo" id="tipo_${l.id}" data-pix-tipo></span></div>` : html`<span class="badge bad">Sem PIX</span>`}</div>`)}</div>
 ${edita ? html`<div class="card-f"><button class="btn btn-pri">${icone('check', 'sm')} Salvar chaves PIX</button><span class="small mut">Pode salvar só algumas agora e completar o resto depois.</span></div>` : ''}</form>` : ''}
 
 ${g.temResumo ? (pend.length ? html`<div class="alert warn" id="conferencia">${icone('alerta')}<div><b>Diferença com o Resumo do Agilizone (${pend.length})</b>${pend.map((l, i) => html`${i ? '; ' : ' '}${l.nome}: soma ${brl(l.bruto)}, Resumo ${brl(l.resumo)}`)}. O Agilizone é a referência: confira se os dois arquivos saíram da mesma tela, com o mesmo filtro. Se não, arquive este fechamento e importe de novo.</div></div>` : '')
   : html`<div class="alert warn" id="conferencia">${icone('alerta')}<div><b>Sem o Resumo de entregas</b>Os totais não foram conferidos com o Agilizone.${edita ? html`
 <form method="post" action="/fechamentos/${f.id}/resumo" enctype="multipart/form-data" class="linha-form"><input type="file" name="resumo" accept=".csv,text/csv" required aria-label="Resumo de entregas (.csv)"><button class="btn btn-sec btn-sm">Anexar Resumo</button></form>` : ' O despachante precisa anexar.'}</div></div>`}
 
-<div class="abas" role="tablist" aria-label="Seções do fechamento">
-<button type="button" role="tab" id="t-valores" aria-controls="valores" aria-selected="true">Valores por dia</button>
-<button type="button" role="tab" id="t-historico" aria-controls="historico" aria-selected="false" tabindex="-1">Histórico</button></div>
-
-<section class="card painel" id="valores" role="tabpanel" aria-labelledby="t-valores">
-<div class="ferramentas"><div class="search">${icone('busca', 'sm')}<input type="search" placeholder="Buscar motoboy" data-filtro="#grade" aria-label="Buscar motoboy"></div>
-<div class="seg" data-div-filtro="#grade" role="group" aria-label="Mostrar">
-<button type="button" data-f="todos" class="on" aria-pressed="true">Todos<span class="c">${g.linhas.length}</span></button>
-${g.linhas.some((l) => l.oc || l.qtdOc) ? html`<button type="button" data-f="oc" aria-pressed="false">Com ocorrência<span class="c">${g.linhas.filter((l) => l.oc || l.qtdOc).length}</span></button>` : ''}
-${pend.length ? html`<button type="button" data-f="res" aria-pressed="false">Diferença com o Resumo<span class="c">${pend.length}</span></button>` : ''}</div>
-${g.dias.length > 5 ? html`<button type="button" class="btn btn-sec btn-sm" data-dias="#grade" data-n="${g.dias.length}" aria-pressed="false">Mostrar valores por dia (${g.dias.length})</button>` : ''}
-<div class="tw grade-w"><table class="grade${g.dias.length > 5 ? ' dias-off' : ''}" id="grade" data-f="todos"><thead><tr>${colAprov ? html`<th scope="col" title="Aprovado pelo financeiro">Aprov.</th>` : ''}<th scope="col" class="nome-c">Motoboy</th>${g.dias.map((d) => html`<th scope="col" class="n dia-c">${diaFmt(d)}</th>`)}${thOc(g)}<th scope="col" class="n">Total a pagar</th>${g.temResumo ? html`<th scope="col" class="n" title="Soma das taxas no Resumo de entregas do Agilizone (sem ocorrências)">Resumo</th>` : ''}</tr></thead><tbody>
-${g.linhas.map((l) => html`<tr data-q="${semAcento(l.nome)}" data-res="${l.confere === 'pendente' ? 1 : 0}" data-oc="${l.oc || l.qtdOc ? 1 : 0}" class="${l.confere === 'pendente' ? 'nobate' : ''}${l.oc || l.qtdOc ? ' tem-oc' : ''}">
-${colAprov ? html`<td>${l.aprovado ? html`<span class="ok-t" title="Aprovado">${icone('check')}<span class="sr">Aprovado</span></span>` : l.alterado ? html`<span class="warn-t" title="Mudou depois de aprovado: o financeiro precisa aprovar de novo">${icone('alerta')}<span class="sr">Alterado após aprovação</span></span>` : ''}</td>` : ''}
-<th scope="row" class="nome-c"><div class="nome-l"><span><b>${l.nome}</b>${l.nomeAgil ? html`<span class="mut small" title="Nome no Agilizone: ${l.nomeAgil}"> (editado)</span>` : ''}</span>${edita ? html`<a class="btn btn-ghost btn-xs" href="/fechamentos/${f.id}/motoboy/${l.id}" aria-label="Editar nome e PIX de ${l.nome}">${icone('lapis', 'sm')} Editar</a>` : ''}</div>
-<div class="pix-l">${l.pix ? html`<span class="rot-pix">PIX</span><span class="pix">${l.pix}<button type="button" class="icon-btn" data-copiar="${l.pix}" title="Copiar chave PIX" aria-label="Copiar chave PIX de ${l.nome}">${icone('copiar', 'sm')}</button></span>` : html`<span class="badge bad">Sem PIX</span>`}</div>
-${l.oc || l.qtdOc || l.confere === 'pendente' ? html`<div class="chips">${l.oc || l.qtdOc ? html`<span class="badge warn nodot" title="Acréscimo ou desconto lançado no Agilizone, sem data. Já está no total.">${icone('alerta', 'sm')} Ocorrência ${l.oc > 0 ? '+' : ''}${brl(l.oc)} (${l.qtdOc})</span>` : ''}${l.confere === 'pendente' ? html`<span class="badge bad" title="Soma dos dias diferente da soma das taxas do Resumo">Diferença com o Resumo</span>` : ''}</div>` : ''}</th>
-${g.dias.map((d) => { const c = l.dias[d]; return html`<td class="n dia-c"><span class="cell${c ? '' : ' vazio'}" title="${c ? `${c.n} entrega(s)` : 'Sem entregas'}">${c ? brl(c.final) : '–'}</span></td>`; })}
-${g.temOc ? celOc(l) : ''}${g.temPago ? celPago(l) : ''}<td class="n tot-c">${brl(l.total)}</td>
-${g.temResumo ? html`<td class="n">${l.confere === 'pendente' ? html`<span class="bad-t b" title="Diferente da soma dos dias">${brl(l.resumo)}</span>` : html`<span class="mut" title="${'Bate com a soma dos dias'}">${brl(l.resumo)}</span>`}</td>` : ''}</tr>`)}</tbody>
-<tfoot><tr class="tot"><th scope="row" class="nome-c" colspan="${(colAprov ? 1 : 0) + 1}">Total</th>${g.dias.map((d) => html`<td class="n dia-c">${brl(g.totDia[d])}</td>`)}${g.temOc ? html`<td class="n">${brl(g.totOc)}</td>` : ''}${g.temPago ? html`<td class="n">−${brl(g.totPago)}</td>` : ''}<td class="n">${brl(g.total)}</td>${g.temResumo ? html`<td class="n mut">${brl(totResumo)}</td>` : ''}</tr></tfoot></table></div>
-</section>
-
-<section class="card painel" id="historico" role="tabpanel" aria-labelledby="t-historico" hidden><div class="card-b"><ul class="timeline">${hist.map((h) => html`<li>${h.acao}<small>${h.quando.slice(0, 10).split('-').reverse().join('/')} ${h.quando.slice(11, 16)} · ${h.nome || 'Sistema'}</small></li>`)}</ul></div></section>
+${blocoConferencia({ f, g, itens: itensFin(f, g), decide: false, edita, modo: 'desp', decisoes: [], hist, nomeDe: () => '', avisados: [], voltar: '/' })}
 
 
 ${edita ? html`<details class="fold mais-acoes"><summary class="small">${icone('chevron', 'chev')} Importou o arquivo errado?</summary>
@@ -793,7 +820,7 @@ const editaPix = db.prepare('INSERT INTO edicoes (fechamento_id, motoboy_id, pix
 app.get('/fechamentos/:fid/motoboy/:m', so((r) => podeEditar(r.user, r.f)), (req, res) => {
   const f = req.f, l = grade(f).linhas.find((x) => x.id === Number(req.params.m));
   if (!l) throw falha('Motoboy não está neste fechamento.', 404);
-  const voltar = `/fechamentos/${f.id}#valores`;
+  const voltar = `/fechamentos/${f.id}#conf`;
   res.send(page(req, { titulo: 'Editar motoboy', sub: html`Vale só para o fechamento de <b>${periodo(f)}</b>. Para corrigir de vez, ajuste o cadastro no Agilizone.`, trilha: [[inicio(req.user), '/'], [periodo(f), voltar], ['Editar motoboy']], largura: 'estreita' }, html`
 <form method="post" class="card"><div class="card-b fgrid">
 <div class="field" style="grid-column:1/-1"><label for="nome">Nome <span class="req" aria-hidden="true">*</span></label><input id="nome" name="nome" value="${l.nome}" required minlength="3" maxlength="120" autocomplete="off">${l.nomeAgil ? html`<p class="hint">No Agilizone: ${l.nomeAgil}</p>` : ''}</div>
@@ -868,25 +895,43 @@ app.get('/fechamentos/:fid/enviar', so((r) => podeEditar(r.user, r.f) || podeRee
   const padrao = destinatariosPadrao(req.user), aPagar = g.linhas.filter((l) => l.total > 0), pend = g.linhas.filter((l) => l.confere === 'pendente');
   const alterados = g.linhas.filter((l) => l.alterado);
   const titulo = reenvio ? 'Reenviar e-mail ao financeiro' : 'Enviar ao financeiro';
+  const rotulo = reenvio ? 'Reenviar e-mail' : 'Confirmar envio';
   // Há algo para o despachante conferir antes de enviar? (não bloqueia o envio)
   const conferir = !reenvio && pend.length;
-  res.send(page(req, { titulo, trilha: [[inicio(req.user), '/'], [periodo(f), `/fechamentos/${f.id}`], [titulo]], largura: 'estreita' }, html`
+  res.send(page(req, { titulo, css: '/marca/envio.css', js: '/marca/envio.js', trilha: [[inicio(req.user), '/'], [periodo(f), `/fechamentos/${f.id}`], [titulo]],
+    sub: reenvio ? 'O fechamento já foi enviado. Isto manda o e-mail com o PDF de novo.' : 'Confira o resumo e escolha quem recebe o e-mail com o PDF. Depois é só confirmar.' }, html`
 <form method="post" action="/fechamentos/${f.id}/${reenvio ? 'email' : 'enviar'}" id="form-envio" ${new Raw(conferir ? 'data-confirma="dlg-div"' : '')}>
-<dl class="resumo envio">
+<div class="envio-grid">
+<section class="card envio-card" aria-labelledby="env-h1">
+<div class="card-h"><span class="hico pri">${icone('lista')}</span><div class="t"><h2 id="env-h1">1. O que será enviado</h2><p>${f.loja}</p></div></div>
+<div class="card-b">
+<dl class="envio-dl">
 <div><dt>Período</dt><dd>${dataFmt(f.data_ini).slice(0, 5)} a ${dataFmt(f.data_fim).slice(0, 5)}</dd></div>
 <div><dt>Pagamento previsto</dt><dd>${f.pagamento ? diaLongo(f.pagamento) : '—'}</dd></div>
-<div><dt>Motoboys</dt><dd>${aPagar.length}</dd></div>
-<div class="destaque"><dt>Total</dt><dd>${brl(g.total)}</dd></div></dl>
-${pend.length && !reenvio ? html`<p class="nota bad">${icone('alerta', 'sm')} ${pend.length} motoboy(s) com diferença com o Resumo do Agilizone: ${pend.map((l) => l.nome).join(', ')}. <a href="/fechamentos/${f.id}#conferencia">Revisar</a></p>` : ''}
-<p class="small"><a href="/fechamentos/${f.id}/pdf" target="_blank">${icone('arquivo', 'sm')} Ver o PDF que vai anexado</a></p>
-<details class="fold destinos" ${new Raw(padrao.length ? '' : 'open')}><summary>${icone('chevron', 'chev')} E-mail para ${padrao.length ? padrao.join(', ') : 'ninguém configurado'}</summary>
-<div class="field" style="margin-top:10px"><label for="para">Destinatários <span class="req" aria-hidden="true">*</span></label><textarea id="para" name="para" required style="min-height:90px" aria-describedby="dica-para" placeholder="financeiro@grupofornopaulista.com">${padrao.join('\n')}</textarea>
-<p class="hint" id="dica-para">Um por linha. Vale só para este envio.</p></div></details>
+<div><dt>Motoboys a pagar</dt><dd>${aPagar.length}</dd></div>
+<div class="envio-total"><dt>Total</dt><dd>${brl(g.total)}</dd></div></dl>
+${pend.length && !reenvio ? html`<div class="alert warn">${icone('alerta')}<div><b>${pend.length} motoboy(s) com diferença com o Resumo do Agilizone</b>${pend.map((l) => l.nome).join(', ')}. <a href="/fechamentos/${f.id}#conferencia">Revisar antes de enviar</a></div></div>` : ''}
+<a class="anexo" href="/fechamentos/${f.id}/pdf" target="_blank" rel="noopener"><span class="hico">${icone('arquivo')}</span><span class="anexo-t"><b>Anexo: solicitação de pagamento (PDF)</b><small>Valores por motoboy e por dia, ocorrências, chaves PIX e assinaturas.</small></span><span class="btn btn-sec btn-sm">Ver o PDF</span></a>
+</div></section>
+<section class="card envio-card" aria-labelledby="env-h2">
+<div class="card-h"><span class="hico pri">${icone('email')}</span><div class="t"><h2 id="env-h2">2. Para quem enviar</h2><p>Todos desta lista recebem o e-mail com o PDF. Vale só para este envio.</p></div></div>
+<div class="card-b">
+<label class="para-rot" for="para-novo">Destinatários <span class="req" aria-hidden="true">*</span> <span class="para-n" data-para-n></span></label>
+<div class="para-box" data-para>
+<ul class="para-chips" aria-label="Destinatários do e-mail"></ul>
+<div class="para-add"><input id="para-novo" type="email" inputmode="email" autocomplete="off" placeholder="Digite um e-mail" aria-describedby="para-dica para-erro"><button type="button" class="btn btn-sec" data-para-add>${icone('mais', 'sm')} Adicionar</button></div></div>
+<p class="para-erro" id="para-erro" role="alert" hidden></p>
+<p class="hint" id="para-dica">Para incluir mais gente: digite o e-mail e aperte <b>Enter</b> (ou vírgula), ou clique em Adicionar. Para tirar alguém, clique no <b>×</b>.</p>
+<button type="button" class="btn btn-ghost btn-sm" data-para-padrao hidden>Voltar para a lista padrão</button>
+<textarea id="para" name="para" required class="para-txt" aria-label="Destinatários, um por linha" placeholder="financeiro@grupofornopaulista.com">${padrao.join('\n')}</textarea>
+</div></section>
+</div>
 ${!reenvio && alterados.length ? html`<div class="alert warn">${icone('alerta')}<div><b>Entregadores já aprovados que mudaram</b>O financeiro vai precisar aprovar de novo:
 <ul>${alterados.map((l) => html`<li>${l.nome}: aprovado ${brl(l.aprovacao.valor)} (PIX ${l.aprovacao.pix}) → agora ${brl(l.total)} (PIX ${l.pix})</li>`)}</ul>
 <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" name="revisei" value="1" required> Revisei essas mudanças</label></div></div>` : ''}
-${reenvio ? '' : html`<p class="small mut">Depois de enviar, o fechamento fica travado para edição até o financeiro aprovar ou devolver. Entregadores já aprovados continuam aprovados.</p>`}
-<div class="acoes-f"><button class="btn btn-pri btn-lg">${icone('enviar')} ${reenvio ? 'Reenviar e-mail' : 'Confirmar envio'}</button><a class="btn btn-ghost" href="/fechamentos/${f.id}">Voltar</a></div>
+<div class="envio-fim">
+${reenvio ? '' : html`<p class="small mut">${icone('info', 'sm')} Depois de enviar, o fechamento fica travado para edição até o financeiro aprovar ou devolver. Entregadores já aprovados continuam aprovados.</p>`}
+<div class="acoes-f"><button class="btn btn-pri btn-lg" data-envio>${icone('enviar')} <span class="lbl" data-rotulo="${rotulo}">${rotulo}</span></button><a class="btn btn-ghost" href="/fechamentos/${f.id}">Voltar</a></div></div>
 ${conferir ? html`<dialog id="dlg-div" class="dlg" aria-labelledby="dlg-t"><h2 id="dlg-t">Há diferença com o Resumo. Enviar mesmo assim?</h2>
 <ul class="dlg-l">${pend.map((l) => html`<li class="bad"><b>${l.nome}</b>: soma dos dias ${brl(l.bruto)} · Resumo ${brl(l.resumo)}</li>`)}</ul>
 <div class="acoes-f"><button type="submit" class="btn btn-pri" data-confirmado>Enviar mesmo assim</button><button type="button" class="btn btn-ghost" data-fecha-dlg>Voltar e corrigir</button></div></dialog>` : ''}

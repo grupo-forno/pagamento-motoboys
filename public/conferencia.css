@@ -1,0 +1,126 @@
+/* Tela de conferência (financeiro). O layout segue a largura do painel (#fc[data-w]), não a da janela:
+   largo (>= 1100px) · medio (640-1099px) · estreito (< 640px). Escala 4/8/12/16/24/32. */
+.fc{display:block}
+.fc-bar{display:flex;flex-wrap:wrap;align-items:center;gap:12px 16px;margin:16px 0}
+.fc-bar .search{flex:1 1 260px;max-width:420px}
+.fc:has(#hist:not([hidden])) .fc-bar{display:none}
+.fc-filtros{display:none}
+.sel-todos{margin-left:auto;min-height:40px}
+.fc-seg{flex:0 1 auto}
+
+/* Tabela */
+.fc-tw{overflow-x:auto}
+.fc-t{width:100%;border-collapse:collapse;font-size:14px;font-variant-numeric:tabular-nums}
+.fc-t th,.fc-t td{padding:12px 16px;border-bottom:1px solid var(--bd);vertical-align:middle;text-align:left;white-space:nowrap}
+.fc-t thead th{font-size:12.5px;font-weight:600;color:var(--tx-2);background:var(--surface-2);position:sticky;top:0}
+.fc-t .n{text-align:right}
+.fc-t tbody tr{min-height:56px}
+.fc-t tbody tr:hover>*{background:var(--surface-2)}
+.fc-t tr.fora{display:none}
+.fc-t .c-nome{width:99%;min-width:180px;white-space:normal;overflow-wrap:anywhere}
+.fc-t .c-pix{white-space:normal;max-width:260px;min-width:160px;word-break:break-all}
+.fc-t .c-pix .pix{display:inline-flex;align-items:center;gap:4px}
+.fc-t .c-sel{width:44px;padding-left:8px;padding-right:0}
+.fc-t .c-tot b{font-size:15px;font-weight:700}
+.fc-t .c-aj b{font-weight:700}
+.fc-t .c-aj small{display:block;font-size:12px;font-weight:400;color:var(--tx-2);white-space:normal}
+.fc-t .c-sit{white-space:normal;min-width:150px}
+.fc-t .sit-d{display:block;font-size:12.5px;color:var(--tx-2);margin-top:4px;max-width:240px;line-height:1.4}
+.fc-t .acoes-c{display:flex;gap:8px;justify-content:flex-end}
+.fc-t tfoot th,.fc-t tfoot td{background:var(--surface-2);font-weight:700;border-top:2px solid var(--bd);border-bottom:0}
+.fc-t tfoot small{display:block;font-weight:400;font-size:12.5px;color:var(--tx-2)}
+.fc-t tr.tem-oc>*{background:#fff7e0}
+.fc-t tr.tem-oc>.c-nome{box-shadow:inset 4px 0 0 var(--warn)}
+.fc-t tbody tr:has(input[name=m]:checked)>*{background:var(--pri-soft)}
+.fc-t .meta{display:flex;flex-wrap:wrap;gap:0 6px}
+.fc-t .meta .badge{margin-top:6px;white-space:normal;height:auto;min-height:24px;line-height:1.3}
+.so-estreito{display:none}
+.nm{background:none;border:0;padding:4px 0;font:inherit;font-weight:600;font-size:14px;color:var(--tx);text-align:left;cursor:pointer;min-height:28px}
+.nm:hover span{text-decoration:underline}
+.nm:focus-visible,.fc-t input:focus-visible,.fc-bar input:focus-visible{outline:2px solid var(--brand);outline-offset:2px;border-radius:4px}
+.alvo{display:grid;place-items:center;width:44px;height:44px;margin:-10px 0;cursor:pointer}
+.alvo input{width:20px;height:20px;margin:0}
+.fc-vazio{padding:32px 16px;text-align:center;color:var(--tx-2);margin:0}
+.fin-legenda{font-size:12.5px;color:var(--tx-2);padding:12px 16px;margin:0;border-top:1px solid var(--bd)}
+
+/* Por dia: rolagem horizontal só na grade; entregador fixo */
+.dia-ctrl{display:flex;flex-wrap:wrap;gap:12px 16px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--bd)}
+.dia-sel{display:none;margin:0}
+.fc-dia{min-width:max-content}
+.fc-dia .c-nome{position:sticky;left:0;z-index:2;background:var(--surface);box-shadow:inset -1px 0 0 var(--bd);width:auto;max-width:240px}
+.fc-dia thead .c-nome,.fc-dia tfoot .c-nome{background:var(--surface-2);z-index:3}
+.fc-dia .dcol{min-width:96px}
+.fc-dia .c-int{min-width:130px;font-weight:700}
+.dia-off{display:none!important}
+
+/* Largura intermediária: PIX completo, situação e ações secundárias vão para o detalhe */
+.fc[data-w=medio] .c-pix,.fc[data-w=medio] .c-sit,.fc[data-w=medio] .so-largo{display:none}
+.fc[data-w=medio] .so-estreito,.fc[data-w=estreito] .so-estreito{display:inline-flex}
+
+/* Estreito: lista com divisórias leves */
+.fc[data-w=estreito] .fc-filtros{display:inline-flex;align-items:center;gap:8px;height:44px}
+.fc[data-w=estreito] .fc-bar .search{flex:1 1 100%;max-width:none}
+.fc[data-w=estreito] .fc-bar .search input{height:44px}
+.fc[data-w=estreito] .fc-seg{display:none;width:100%}
+.fc[data-w=estreito] .fc-seg.aberto{display:flex;flex-wrap:wrap}
+.fc[data-w=estreito] .fc-seg button{min-height:44px}
+.fc[data-w=estreito] .sel-todos{margin-left:0;min-height:44px}
+.fc[data-w=estreito] .fc-t thead{display:none}
+.fc[data-w=estreito] .fc-t,.fc[data-w=estreito] .fc-t tbody,.fc[data-w=estreito] .fc-t tfoot{display:block;min-width:0}
+.fc[data-w=estreito] .fc-t tr{display:grid;grid-template-columns:1fr auto;align-items:center;gap:0 12px;padding:12px 16px;border-bottom:1px solid var(--bd)}
+.fc[data-w=estreito] .fc-t.com-sel tbody tr{grid-template-columns:44px 1fr auto;padding-left:4px}
+.fc[data-w=estreito] .fc-t td,.fc[data-w=estreito] .fc-t th{border:0;padding:0;background:none;box-shadow:none}
+.fc[data-w=estreito] .fc-t .c-nome{min-width:0;width:auto}
+.fc[data-w=estreito] .c-pix,.fc[data-w=estreito] .c-base,.fc[data-w=estreito] .c-aj,.fc[data-w=estreito] .c-sit,.fc[data-w=estreito] .c-acoes,.fc[data-w=estreito] .c-int,.fc[data-w=estreito] .fc-t tfoot .c-sel{display:none}
+.fc[data-w=estreito] .fc-t tfoot tr{grid-template-columns:1fr auto}
+.fc[data-w=estreito] .fc-t tr.tem-oc{background:#fff7e0;box-shadow:inset 4px 0 0 var(--warn)}
+.fc[data-w=estreito] .fc-t tr.tem-oc>*,.fc[data-w=estreito] .fc-t tbody tr:has(input[name=m]:checked)>*,.fc[data-w=estreito] .fc-t tbody tr:hover>*{background:none}
+.fc[data-w=estreito] .fc-t tbody tr:has(input[name=m]:checked){background:var(--pri-soft)}
+.fc[data-w=estreito] .fc-t tfoot{border-top:2px solid var(--bd);background:var(--surface-2)}
+.fc[data-w=estreito] .fc-t tfoot tr{border-bottom:0}
+.fc[data-w=estreito] .nm{min-height:44px;display:flex;align-items:center}
+.fc[data-w=estreito] .fc-dia .dcol{min-width:0;text-align:right;font-weight:700;font-size:15px}
+.fc[data-w=estreito] .fc-dia .c-nome{position:static;box-shadow:none;max-width:none}
+.fc[data-w=estreito] .dia-sem{display:none}
+.fc[data-w=estreito] .dia-sel{display:block}
+.fc[data-w=estreito] .dia-sel select{min-height:44px}
+
+/* Barra de seleção: área segura, ações que quebram linha, sem cobrir o último item */
+.fc .barra{padding-bottom:env(safe-area-inset-bottom)}
+.fc .barra-in{flex-wrap:wrap}
+.fc .barra .btn{white-space:normal;min-height:40px}
+.fc[data-w=estreito] .barra .btn{min-height:44px}
+.fc[data-w=estreito] .fc-tw{padding-bottom:8px}
+
+/* Detalhe (painel lateral no desktop, folha inferior no celular) */
+.sheet{padding:0;max-width:560px;width:calc(100% - 32px);max-height:88vh;overflow:hidden}
+.sheet[open]{display:flex;flex-direction:column}
+.sheet-h{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:16px 20px;border-bottom:1px solid var(--bd)}
+.sheet-h h2{font-size:18px;margin:0 0 8px;overflow-wrap:anywhere}
+.sheet-b{overflow:auto;padding:16px 20px;flex:1;font-size:14px}
+.sheet-f{display:flex;flex-wrap:wrap;gap:8px;padding:12px 20px calc(12px + env(safe-area-inset-bottom));border-top:1px solid var(--bd)}
+.sheet-f .btn{min-height:44px;flex:1 1 140px}
+.alvo-ic{min-width:44px;min-height:44px}
+.det-sec{margin:0 0 16px}
+.det-sec h3{font-size:12.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--tx-2);margin:0 0 8px}
+.det-pix{display:flex;align-items:center;gap:8px;word-break:break-all;font-size:15px;font-weight:600}
+dl.det{display:grid;grid-template-columns:1fr auto;gap:8px 16px;margin:0;font-variant-numeric:tabular-nums}
+dl.det dt{color:var(--tx-2)}
+dl.det dd{margin:0;text-align:right}
+dl.det .total{font-weight:700;font-size:16px;padding-top:8px;border-top:1px solid var(--bd)}
+.det-dias{list-style:none;margin:0;padding:0;font-variant-numeric:tabular-nums}
+.det-dias li{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--bd)}
+.det-dias small{color:var(--tx-2)}
+@media(max-width:640px){.sheet{margin:auto 0 0;width:100%;max-width:none;max-height:92vh;border-radius:16px 16px 0 0}}
+@media(prefers-reduced-motion:reduce){.fc *{transition:none!important}}
+.fc-t .c-pix{max-width:300px;min-width:200px;word-break:normal;overflow-wrap:anywhere}
+.fc-t .acoes-c{flex-wrap:nowrap}
+.fc-t .c-aj small{white-space:nowrap}
+.fc-t .c-acoes{width:1%}
+.fc-dia th,.fc-dia td{padding:12px}
+.fc-dia .dcol{min-width:84px}
+.fc-dia .c-nome{max-width:200px}
+.fc-dia .c-int{min-width:120px}
+.fc-dia th,.fc-dia td{padding:12px 10px}
+.fc-dia .dcol{min-width:80px}
+.fc-dia .c-int{min-width:110px}

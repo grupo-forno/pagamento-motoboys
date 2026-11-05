@@ -47,6 +47,19 @@ test('financeiro não acessa fechamento não enviado nem de outra loja', async (
   assert.strictEqual((await get(fin, `/fechamentos/${F1}`)).status, 200);
 });
 
+test('conferência: tabela, lista e detalhe leem os mesmos dados (JSON) e o rodapé bate com o total', async () => {
+  const fin = await entra('fin');
+  const pag = await (await get(fin, `/fechamentos/${F1}`)).text();
+  const m = pag.match(/<script type="application\/json" id="fc-dados">([\s\S]*?)<\/script>/);
+  assert.ok(m, 'dados embutidos');
+  const d = JSON.parse(m[1]);
+  assert.strictEqual(d.itens.length, 3);
+  assert.strictEqual(d.itens.reduce((t, i) => t + i.bruto + i.oc - i.pago, 0), d.itens.reduce((t, i) => t + i.total, 0));
+  for (const id of ['fc-resumo', 'fc-dia', 'dlg-det', 'fc-q']) assert.ok(pag.includes(`id="${id}"`), id);
+  const dp = await (await get(await entra('desp'), `/fechamentos/${F1}`)).text();
+  assert.ok(dp.includes('id="fc-dados"') && /"decide":false/.test(dp) && !dp.includes('data-linha=') && !dp.includes('data-dec='), 'despachante vê a mesma tabela, sem aprovar nem devolver');
+});
+
 test('aprovação parcial: bloqueia item sem PIX, grava valor/PIX/versão e recusa duplicada ou desatualizada', async () => {
   const fin = await entra('fin');
   assert.match(await post(fin, `/fechamentos/${F1}/aprovar`, { versao: 0, m: ids.Ana }), /erro=/);

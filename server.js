@@ -15,7 +15,7 @@ app.use(express.urlencoded({ extended: false }));
 app.use('/marca', express.static(path.join(__dirname, 'public'), { maxAge: '7d' })); // logos do Grupo Forno
 
 const PERFIS = { admin: 'TI / Admin', gestao: 'Gestão', financeiro: 'Financeiro', despachante: 'Despachante' };
-const STATUS = { rascunho: 'Em revisão', enviado: 'Aguardando aprovação', pago: 'Aprovado' }; // 'pago' no banco = aprovado pelo financeiro (não quer dizer pago)
+const STATUS = { rascunho: 'Falta enviar', enviado: 'Aguardando aprovação', pago: 'Aprovado' }; // 'pago' no banco = aprovado pelo financeiro (não quer dizer pago)
 // Situação mostrada ao usuário (texto sempre presente; a cor só reforça).
 const filhoDe = (id) => db.prepare('SELECT id FROM fechamentos WHERE origem_id = ? ORDER BY id DESC').get(id)?.id;
 const situacaoF = (f, devolvido) => f.arquivado_em ? ['nodot', 'Arquivado'] : devolvido && f.status === 'rascunho' ? ['bad', f.origem_id ? 'Devolvido · parte já aprovada' : 'Devolvido para correção']
@@ -291,7 +291,7 @@ function pendenciasDespachante(req, res) {
   const tarefas = [
     ...ativos.filter((f) => f.status === 'rascunho' && f.devolvido).map((f) => ({ ordem: 0, f, sit: ['bad', 'Devolvido para correção'], acao: 'Corrigir fechamento', motivo: motivoDevolucao(f) })),
     ...ag.filter((p) => !p.f && p.situacao === 'atrasado').map((p) => ({ ordem: 1, p, sit: ['bad', 'Envio do fechamento atrasado'], acao: 'Importar arquivos' })),
-    ...ativos.filter((f) => f.status === 'rascunho' && !f.devolvido).map((f) => ({ ordem: atrasadoF(f) ? 1 : 2, f, sit: atrasadoF(f) ? ['bad', 'Envio do fechamento atrasado'] : ['warn', 'Em revisão'], acao: 'Continuar revisão' })),
+    ...ativos.filter((f) => f.status === 'rascunho' && !f.devolvido).map((f) => ({ ordem: atrasadoF(f) ? 1 : 2, f, sit: atrasadoF(f) ? ['bad', 'Envio do fechamento atrasado'] : ['warn', 'Falta enviar'], acao: 'Continuar revisão' })),
     ...ag.filter((p) => !p.f && p.situacao === 'hoje').map((p) => ({ ordem: 3, p, sit: ['warn', 'Importar hoje'], acao: 'Importar arquivos' })),
   ].sort((a, b) => a.ordem - b.ordem || ((a.f || a.p).pagamento || '').localeCompare((b.f || b.p).pagamento || ''));
   const aguardando = ativos.filter((f) => f.status === 'enviado');
@@ -414,7 +414,7 @@ function conferenciaFin(req, res) {
   const alterados = itens.filter((i) => i.alterado && !ehAp(i));
   const totResumo = g.linhas.reduce((s, l) => s + (l.resumo || 0), 0);
   const cols = 5 + g.dias.length + (decide ? 1 : 0);
-  const filtro = [['todos', 'Todos', itens.length], ['pendente', 'Aguardando', itens.filter(ehPend).filter((i) => i.sit !== 'semvalor').length], ['bloqueado', 'Bloqueados', nBloq], ['aprovado', 'Aprovados', nAprov], ['devolvido', 'Devolvidos', conta(ehDev)]];
+  const filtro = [['todos', 'Todos', itens.length], ['pendente', 'Aguardando', itens.filter(ehPend).filter((i) => i.sit !== 'semvalor').length], ['bloqueado', 'Bloqueados', nBloq], ['aprovado', 'Aprovados', nAprov], ['devolvido', 'Devolvidos', conta(ehDev)], ['oc', 'Com ocorrência', itens.filter((i) => i.oc || i.qtdOc).length]];
   const detalheSit = (i) => (i.sit === 'aprovado' ? (i.aprovacao ? `Por ${i.aprovacao.por || '—'} em ${quando(i.aprovacao.aprovado_em)}${i.aprovacao.versao ? ` (versão ${i.aprovacao.versao})` : ''}` : '')
     : i.sit === 'devolvido' ? `Motivo: ${i.dev.motivo}`
     : i.sit === 'bloqueado' ? `Não pode ser aprovado: ${i.bloq}.${i.alterado ? ' Também mudou depois de aprovado.' : ''}`
@@ -422,11 +422,12 @@ function conferenciaFin(req, res) {
     : i.dev ? `Devolvido na versão ${i.dev.versao}; a loja corrigiu e reenviou.` : '');
   const linha = (i) => {
     const [cor, txt] = SIT_ITEM[i.sit], podeSel = decide && !['aprovado', 'semvalor'].includes(i.sit);
-    const dif = g.temResumo ? i.bruto - (i.resumo || 0) : null, grupo = ['aguardando', 'alterado'].includes(i.sit) ? 'pendente' : i.sit === 'bloqueado' ? 'pendente bloqueado' : i.sit;
-    return html`<tr data-id="${i.id}" data-q="${semAcento(i.nome)}" data-sit="${grupo}" data-valor="${i.total}" data-nome="${i.nome}" ${i.bloq ? new Raw('data-bloq="1"') : ''}>
+    const comOc = !!(i.oc || i.qtdOc), dif = g.temResumo ? i.bruto - (i.resumo || 0) : null, grupo = (['aguardando', 'alterado'].includes(i.sit) ? 'pendente' : i.sit === 'bloqueado' ? 'pendente bloqueado' : i.sit) + (comOc ? ' oc' : '');
+    return html`<tr class="${comOc ? 'tem-oc' : ''}" data-id="${i.id}" data-q="${semAcento(i.nome)}" data-sit="${grupo}" data-valor="${i.total}" data-nome="${i.nome}" ${i.bloq ? new Raw('data-bloq="1"') : ''}>
 <th scope="row" class="nome-c"><div class="nome-l">${podeSel ? html`<input type="checkbox" name="m" value="${i.id}" aria-label="Selecionar ${i.nome}, ${brl(i.total)}">` : ''}<b>${i.nome}</b></div>
 <div class="pix-l">${i.pix ? html`<span class="rot-pix">PIX</span><span class="pix">${i.pix}<button type="button" class="icon-btn" data-copiar="${i.pix}" title="Copiar chave PIX" aria-label="Copiar chave PIX de ${i.nome}">${icone('copiar', 'sm')}</button></span>` : html`<span class="badge bad">Sem chave PIX</span>`}</div>
 ${i.avisoPix ? html`<div class="small warn-t">${icone('alerta', 'sm')} ${i.avisoPix}</div>` : ''}
+${comOc ? html`<div class="chips"><span class="badge warn nodot" title="Acréscimo ou desconto lançado no Agilizone, sem data. Já está no total.">${icone('alerta', 'sm')} Ocorrência ${i.oc > 0 ? '+' : ''}${brl(i.oc)} (${i.qtdOc})</span></div>` : ''}
 </th>
 ${g.dias.map((d) => { const c = i.dias[d];
     return html`<td class="n dia-c">${c ? html`<span title="${c.n} entrega(s)">${brl(c.final)}</span>` : html`<span class="mut" title="Sem entregas no dia">–<span class="sr">sem entregas</span></span>`}</td>`; })}
@@ -488,7 +489,7 @@ ${decisoes.map((d) => html`<tr><td>${quando(d.quando)}</td><td><span class="badg
 // Histórico: consulta com um filtro de situação e um de mês.
 app.get('/historico', (req, res) => {
   const u = req.user, todos = fechamentosDe(u);
-  const SIT = { '': 'Todos', rascunho: 'Em revisão', enviado: 'Aguardando aprovação', pago: 'Aprovados', arquivado: 'Arquivados' };
+  const SIT = { '': 'Todos', rascunho: 'Falta enviar', enviado: 'Aguardando aprovação', pago: 'Aprovados', arquivado: 'Arquivados' };
   const s = req.query.s in SIT ? req.query.s : '';
   const mesDe = (f) => (f.pagamento || f.data_fim).slice(0, 7);
   const meses = [...new Set(todos.map(mesDe))].sort().reverse();
@@ -714,7 +715,7 @@ ${podeRecuperar(u, f) ? html`<form method="post" action="/fechamentos/${f.id}/re
     ];
     estado = html`<section class="conferencia" aria-labelledby="conf-t"><h2 id="conf-t">${semPix.length ? 'Antes de enviar, preencha o que falta' : 'Revise e envie ao financeiro'}</h2><ol>
 ${passos.map(([t, [cor, txt], href]) => html`<li class="${cor}"><a href="${href}"><span class="marca" aria-hidden="true">${icone(cor === 'ok' ? 'check' : cor === 'nodot' || cor === 'info' ? 'info' : 'alerta', 'sm')}</span><span><b>${t}</b><span>${txt}</span></span></a></li>`)}</ol></section>`;
-  } else if (!enviado) estado = html`<div class="estado"><div><b>Em revisão na loja</b><p>Quando o despachante enviar, o financeiro recebe o e-mail com o PDF.</p></div></div>`;
+  } else if (!enviado) estado = html`<div class="estado"><div><b>Ainda não enviado ao financeiro</b><p>Quando o despachante enviar, o financeiro recebe o e-mail com o PDF.</p></div></div>`;
   else if (f.status === 'pago') estado = html`<div class="estado ok"><div><b>Aprovado pelo financeiro${aprovou ? ` em ${quando(aprovou.quando)}` : ''}${aprovou?.nome ? `, por ${aprovou.nome}` : ''}</b><p>O pagamento é feito fora do sistema, com o PDF e as chaves PIX deste fechamento.</p></div></div>`;
   else estado = html`<div class="estado"><div><b>Aguardando aprovação do financeiro${envio ? ` · enviado em ${quando(envio.quando)}` : ''}</b><p>O fechamento fica travado para edição; só o financeiro pode devolver para correção.</p></div></div>`;
 
@@ -737,14 +738,16 @@ ${estado}${vinculo(f)}${email}
 <div class="destaque"><dt>Total a pagar</dt><dd>${brl(g.total)}</dd></div>
 <div><dt>Motoboys</dt><dd>${g.linhas.filter((l) => l.total > 0).length}</dd></div>
 <div><dt>Entregas</dt><dd>${entregas}</dd></div>${g.temOc ? html`<div><dt>Ocorrências</dt><dd class="${g.totOc < 0 ? 'bad-t' : ''}">${g.totOc > 0 ? '+' : ''}${brl(g.totOc)}</dd><dd>${g.linhas.reduce((t, l) => t + l.qtdOc, 0)} no período, já no total</dd></div>` : ''}</dl>
-${fora ? html`<div class="alert warn">${icone('calendario')}<div><b>Dias fora do período do pagamento</b>${fora.acao.replace(/^Atenção: dias fora do período desse pagamento: /, '')}. Confira o filtro de datas no Agilizone.</div></div>` : ''}
+${fora ? html`<div class="alert warn">${icone('calendario')}<div><b>Dias fora do período do pagamento</b>${(() => { const d = fora.acao.replace(/^Atenção: dias fora do período desse pagamento: /, '').split(', '); return d.length > 4 ? `${d.length} dias (de ${d[0]} a ${d[d.length - 1]})` : d.join(', '); })()}. Confira o filtro de datas no Agilizone.</div></div>` : ''}
 ${jaPago.length ? html`<div class="alert bad">${icone('alerta')}<div><b>Acerto já feito no Agilizone para ${jaPago.length} motoboy(s)</b>O valor já foi descontado do total a pagar: ${jaPago.map((r, i) => html`${i ? ', ' : ''}<b>${r.nome || r.entregador}</b> (${brl(r.pago)})`)}.</div></div>` : ''}
 
-${semPix.length ? html`<form method="post" action="/fechamentos/${f.id}/pix" class="card bloco ${semPix.length ? 'pede' : ''}" id="pix"><div class="card-h"><div class="t">
-<h2>${semPix.length ? `Falta a chave PIX de ${semPix.length} motoboy(s)` : 'Chaves PIX digitadas por você'}</h2><p>${edita ? 'Não vieram no Resumo do Agilizone. Valem só para este fechamento.' : 'Não vieram no Resumo do Agilizone. O despachante precisa informar.'}</p></div></div>
-<div class="items">${semPix.map((l) => html`<div class="item-h"><label for="pix_${l.id}"><b>${l.nome}</b><span class="mut small"> · ${brl(l.total)}</span></label>
-${edita ? html`<input id="pix_${l.id}" name="pix_${l.id}" value="${l.pix}" placeholder="CPF, telefone, e-mail ou chave aleatória" autocomplete="off" maxlength="120" class="campo-pix">` : html`<span class="badge bad">Sem PIX</span>`}</div>`)}</div>
-${edita ? html`<div class="card-f"><button class="btn btn-pri">Salvar chaves PIX</button></div>` : ''}</form>` : ''}
+${semPix.length ? html`<form method="post" action="/fechamentos/${f.id}/pix" class="card bloco pede pix-bloco" id="pix">
+<div class="card-h"><span class="hico warn">${icone('chave')}</span><div class="t"><h2>Informe a chave PIX de ${semPix.length} motoboy${semPix.length > 1 ? 's' : ''}</h2>
+<p>${edita ? 'O Agilizone não trouxe a chave deles, e sem ela o financeiro não consegue pagar. Peça ao motoboy e cole aqui: vale CPF, telefone, e-mail ou chave aleatória. Vale só para este fechamento.' : 'O Agilizone não trouxe a chave deles. O despachante precisa informar.'}</p></div>
+${edita ? html`<span class="pix-cont" data-pix-cont aria-live="polite">0 de ${semPix.length} preenchidas</span>` : ''}</div>
+<div class="pix-lista">${semPix.map((l) => html`<div class="pix-item"><div class="pix-quem"><b>${l.nome}</b><span>Vai receber <b>${brl(l.total)}</b></span></div>
+${edita ? html`<div class="field pix-campo"><label for="pix_${l.id}">Chave PIX<span class="sr"> de ${l.nome}</span></label><input id="pix_${l.id}" name="pix_${l.id}" value="${l.pix}" placeholder="Cole aqui: CPF, telefone, e-mail ou chave aleatória" autocomplete="off" maxlength="120" data-pix aria-describedby="tipo_${l.id}"><span class="pix-tipo" id="tipo_${l.id}" data-pix-tipo></span></div>` : html`<span class="badge bad">Sem PIX</span>`}</div>`)}</div>
+${edita ? html`<div class="card-f"><button class="btn btn-pri">${icone('check', 'sm')} Salvar chaves PIX</button><span class="small mut">Pode salvar só algumas agora e completar o resto depois.</span></div>` : ''}</form>` : ''}
 
 ${g.temResumo ? (pend.length ? html`<div class="alert warn" id="conferencia">${icone('alerta')}<div><b>Diferença com o Resumo do Agilizone (${pend.length})</b>${pend.map((l, i) => html`${i ? '; ' : ' '}${l.nome}: soma ${brl(l.bruto)}, Resumo ${brl(l.resumo)}`)}. O Agilizone é a referência: confira se os dois arquivos saíram da mesma tela, com o mesmo filtro. Se não, arquive este fechamento e importe de novo.</div></div>` : '')
   : html`<div class="alert warn" id="conferencia">${icone('alerta')}<div><b>Sem o Resumo de entregas</b>Os totais não foram conferidos com o Agilizone.${edita ? html`
@@ -758,14 +761,14 @@ ${g.temResumo ? (pend.length ? html`<div class="alert warn" id="conferencia">${i
 <div class="ferramentas"><div class="search">${icone('busca', 'sm')}<input type="search" placeholder="Buscar motoboy" data-filtro="#grade" aria-label="Buscar motoboy"></div>
 <div class="seg" data-div-filtro="#grade" role="group" aria-label="Mostrar">
 <button type="button" data-f="todos" class="on" aria-pressed="true">Todos<span class="c">${g.linhas.length}</span></button>
+${g.linhas.some((l) => l.oc || l.qtdOc) ? html`<button type="button" data-f="oc" aria-pressed="false">Com ocorrência<span class="c">${g.linhas.filter((l) => l.oc || l.qtdOc).length}</span></button>` : ''}
 ${pend.length ? html`<button type="button" data-f="res" aria-pressed="false">Diferença com o Resumo<span class="c">${pend.length}</span></button>` : ''}</div>
-<div class="tw grade-w"><table class="grade" id="grade" data-f="todos"><thead><tr>${colAprov ? html`<th scope="col" title="Aprovado pelo financeiro">Aprov.</th>` : ''}<th scope="col" class="nome-c">Motoboy</th>${g.dias.map((d) => html`<th scope="col" class="n">${diaFmt(d)}</th>`)}${thOc(g)}<th scope="col" class="n">Total</th>${g.temResumo ? html`<th scope="col" class="n" title="Soma das taxas no Resumo de entregas do Agilizone (sem ocorrências)">Resumo</th>` : ''}</tr></thead><tbody>
-${g.linhas.map((l) => html`<tr data-q="${semAcento(l.nome)}" data-res="${l.confere === 'pendente' ? 1 : 0}" class="${l.confere === 'pendente' ? 'nobate' : ''}">
+<div class="tw grade-w"><table class="grade" id="grade" data-f="todos"><thead><tr>${colAprov ? html`<th scope="col" title="Aprovado pelo financeiro">Aprov.</th>` : ''}<th scope="col" class="nome-c">Motoboy</th>${g.dias.map((d) => html`<th scope="col" class="n">${diaFmt(d)}</th>`)}${thOc(g)}<th scope="col" class="n">Total a pagar</th>${g.temResumo ? html`<th scope="col" class="n" title="Soma das taxas no Resumo de entregas do Agilizone (sem ocorrências)">Resumo</th>` : ''}</tr></thead><tbody>
+${g.linhas.map((l) => html`<tr data-q="${semAcento(l.nome)}" data-res="${l.confere === 'pendente' ? 1 : 0}" data-oc="${l.oc || l.qtdOc ? 1 : 0}" class="${l.confere === 'pendente' ? 'nobate' : ''}${l.oc || l.qtdOc ? ' tem-oc' : ''}">
 ${colAprov ? html`<td>${l.aprovado ? html`<span class="ok-t" title="Aprovado">${icone('check')}<span class="sr">Aprovado</span></span>` : l.alterado ? html`<span class="warn-t" title="Mudou depois de aprovado: o financeiro precisa aprovar de novo">${icone('alerta')}<span class="sr">Alterado após aprovação</span></span>` : ''}</td>` : ''}
-<th scope="row" class="nome-c"><div class="nome-l"><b>${l.nome}</b>${l.nomeAgil ? html`<span class="mut small" title="Nome no Agilizone: ${l.nomeAgil}"> (editado)</span>` : ''}</div>
+<th scope="row" class="nome-c"><div class="nome-l"><span><b>${l.nome}</b>${l.nomeAgil ? html`<span class="mut small" title="Nome no Agilizone: ${l.nomeAgil}"> (editado)</span>` : ''}</span>${edita ? html`<a class="btn btn-ghost btn-xs" href="/fechamentos/${f.id}/motoboy/${l.id}" aria-label="Editar nome e PIX de ${l.nome}">${icone('lapis', 'sm')} Editar</a>` : ''}</div>
 <div class="pix-l">${l.pix ? html`<span class="rot-pix">PIX</span><span class="pix">${l.pix}<button type="button" class="icon-btn" data-copiar="${l.pix}" title="Copiar chave PIX" aria-label="Copiar chave PIX de ${l.nome}">${icone('copiar', 'sm')}</button></span>` : html`<span class="badge bad">Sem PIX</span>`}</div>
-${edita ? html`<div class="acoes-l"><a class="btn btn-ghost btn-xs" href="/fechamentos/${f.id}/motoboy/${l.id}" aria-label="Editar nome e PIX de ${l.nome}">${icone('lapis', 'sm')} Editar</a></div>` : ''}
-${l.confere === 'pendente' ? html`<div class="chips"><span class="badge bad" title="Soma dos dias diferente da soma das taxas do Resumo">Diferença com o Resumo</span></div>` : ''}</th>
+${l.oc || l.qtdOc || l.confere === 'pendente' ? html`<div class="chips">${l.oc || l.qtdOc ? html`<span class="badge warn nodot" title="Acréscimo ou desconto lançado no Agilizone, sem data. Já está no total.">${icone('alerta', 'sm')} Ocorrência ${l.oc > 0 ? '+' : ''}${brl(l.oc)} (${l.qtdOc})</span>` : ''}${l.confere === 'pendente' ? html`<span class="badge bad" title="Soma dos dias diferente da soma das taxas do Resumo">Diferença com o Resumo</span>` : ''}</div>` : ''}</th>
 ${g.dias.map((d) => { const c = l.dias[d]; return html`<td class="n"><span class="cell${c ? '' : ' vazio'}" title="${c ? `${c.n} entrega(s)` : 'Sem entregas'}">${c ? brl(c.final) : '–'}</span></td>`; })}
 ${g.temOc ? celOc(l) : ''}${g.temPago ? celPago(l) : ''}<td class="n tot-c">${brl(l.total)}</td>
 ${g.temResumo ? html`<td class="n">${l.confere === 'pendente' ? html`<span class="bad-t b" title="Diferente da soma dos dias">${brl(l.resumo)}</span>` : html`<span class="mut" title="${'Bate com a soma dos dias'}">${brl(l.resumo)}</span>`}</td>` : ''}</tr>`)}</tbody>
@@ -1084,7 +1087,7 @@ app.get('/usuarios', soAdmin, (req, res) => {
   const campos = (u = {}) => html`<div class="field"><label>Nome <span class="req">*</span></label><input name="nome" required value="${u.nome}"></div>
 <div class="field"><label>E-mail</label><input name="email" type="email" value="${u.email}" placeholder="nome@grupofornopaulista.com"><p class="hint">Para avisos do sistema (ex.: o despachante recebe quando o financeiro devolve um fechamento).</p></div>
 <div class="fgrid"><div class="field"><label>Perfil</label><select name="perfil">${Object.entries(PERFIS).map(([k, v]) => html`<option value="${k}" ${u.perfil === k ? 'selected' : ''}>${v}</option>`)}</select></div>
-<div class="field"><label>Loja</label><select name="loja"><option value="">—</option>${lojas.map((l) => html`<option value="${l.id}" ${u.loja_id === l.id ? 'selected' : ''}>${l.nome}</option>`)}</select><p class="hint">Só para despachante.</p></div></div>`;
+<div class="field"><label>Loja</label><select name="loja"><option value="">—</option>${lojas.map((l) => html`<option value="${l.id}" ${u.loja_id === l.id ? 'selected' : ''}>${l.nome}</option>`)}</select><p class="hint">Obrigatória para despachante. No financeiro, vazia = vê todas as lojas.</p></div></div>`;
   res.send(page(req, { titulo: 'Usuários', sub: 'Quem acessa o sistema: despachantes, financeiro, gestão e TI.' }, html`<div class="split">
 <div class="card"><div class="card-h"><div class="t"><h2>Equipe (${us.length})</h2><p>Clique em uma pessoa para editar.</p></div></div><div class="items">
 ${us.map((u) => html`<details class="fold"><summary><div class="who" style="flex:1">${avatar(u.nome)}<div><b>${u.nome}</b><div class="mut small">${u.login}${u.email ? ` · ${u.email}` : ''}</div></div></div>

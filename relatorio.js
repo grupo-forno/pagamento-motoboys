@@ -35,7 +35,7 @@ function gerarPdf(f0, g0, ajustes0) {
     const quando = (x) => (x ? `${x.nome || 'Sistema'} · ${dataFmt(x.quando.slice(0, 10))} ${x.quando.slice(11, 16)}` : '—');
     const gerado = new Date().toLocaleString('pt-BR', { timeZone: 'America/Fortaleza', dateStyle: 'short', timeStyle: 'short' });
     const pend = g.linhas.filter((l) => l.confere === 'pendente'), aceitos = g.linhas.filter((l) => l.confere === 'aceito');
-    const conferencia = !g.temResumo ? 'Sem Resumo do Agilizone' : pend.length ? `${pend.length} motoboy(s) diferente(s) do Resumo` : aceitos.length ? `Bate, com ${aceitos.length} diferença(s) aceita(s)` : 'Bate com o Resumo do Agilizone';
+    const conferencia = !g.temResumo ? 'Sem Resumo do Agilizone' : pend.length ? `${pend.length} motoboy(s) diferente(s) do Resumo` : g.linhas.some((l) => l.confere !== 'ok') ? 'Diferenças explicadas por divergência ou justificativa' : 'Bate com o Resumo do Agilizone';
     const aPagar = g.linhas.filter((l) => l.total > 0);
 
     // ---- cabeçalho (repete em toda página)
@@ -99,7 +99,7 @@ function gerarPdf(f0, g0, ajustes0) {
           if (cel?.ajuste) { doc.rect(x + 1, y + 1, c.w - 2, H - 2).fill(COR.laranjaSoft); cor = COR.laranjaEsc; bold = true; v += ' *'; }
           if (!cel) cor = '#B5ADA9';
         } else if (c.t === 'Total') { v = brl(l.total); bold = true; }
-        else { v = l.resumo == null ? '–' : brl(l.resumo); cor = l.confere === 'ok' ? COR.verde : l.confere === 'aceito' ? COR.laranjaEsc : COR.vermelho; }
+        else { v = l.resumo == null ? '–' : brl(l.resumo); cor = l.confere === 'ok' ? COR.verde : l.confere === 'pendente' ? COR.vermelho : COR.laranjaEsc; }
         doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(8.5).fillColor(cor).text(v, x + 5, y + 5, { width: c.w - 10, align: c.n ? 'right' : 'left', lineBreak: false, ellipsis: true });
         x += c.w;
       }
@@ -115,7 +115,7 @@ function gerarPdf(f0, g0, ajustes0) {
       x += c.w;
     }
     y += H + 8;
-    doc.font('Helvetica').fontSize(7.5).fillColor(COR.cinza).text(`* Valor corrigido pelo despachante (ver Divergências).${g.temResumo ? '  Coluna Resumo: verde = bate com o Agilizone; laranja = diferença aceita; vermelho = diferente.' : ''}`, L, y);
+    doc.font('Helvetica').fontSize(7.5).fillColor(COR.cinza).text(`* Valor corrigido pelo despachante (ver Divergências).${g.temResumo ? '  Coluna Resumo: verde = bate com o Agilizone; laranja = diferença explicada (divergência ou justificativa); vermelho = diferente.' : ''}`, L, y);
     y += 18;
 
     // ---- divergências

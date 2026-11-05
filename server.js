@@ -179,7 +179,7 @@ function grade(f) {
       const total = Object.values(c).reduce((s, x) => s + x.final, 0), res = temResumo ? (resumo.get(m.id) ?? 0) : null;
       // ok: bate com o Resumo · aceito: diferença aceita com justificativa (vale para aquele valor exato) · pendente: precisa resolver
       const aceite = aceites.get(m.id);
-      const confere = res == null || total === res ? 'ok' : aceite && aceite.diferenca === total - res ? 'aceito' : 'pendente';
+      const confere = res == null || total === res ? 'ok' : aceite && aceite.diferenca === total - res ? 'aceito' : Object.values(c).some((x) => x.ajuste) ? 'div' : 'pendente'; // div: a divergência registrada já explica a diferença
       return { ...m, aprovado: f.status === 'pago' || aprov.has(m.id), pix: pixF.get(m.id) ?? pixR.get(m.id) ?? m.pix, pixDigitado: f.status === 'rascunho' && pixF.has(m.id) && !pixR.has(m.id), dias: c, total, resumo: res, confere, aceite };
     }).sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
   const diasArr = [...dias].sort();
@@ -508,7 +508,7 @@ ${podeRecuperar(u, f) ? html`<form method="post" action="/fechamentos/${f.id}/re
     const passos = [
       ['Arquivos do Agilizone', g.temResumo ? ['ok', 'Relatório de Pedidos e Resumo importados'] : ['warn', 'Falta o Resumo de entregas'], '#conferencia'],
       ['Chaves PIX', semPix.length ? ['bad', `Falta a chave de ${semPix.length} motoboy(s)`] : ['ok', g.linhas.some((l) => l.pixDigitado) ? 'Completas, algumas digitadas por você' : 'Completas'], semPix.length ? '#pix' : '#valores'],
-      ['Conferência com o Resumo', !g.temResumo ? ['nodot', 'Sem Resumo para comparar'] : pend.length ? ['warn', `${pend.length} motoboy(s) com diferença`] : ['ok', aceitos.length ? `Bate, com ${aceitos.length} diferença(s) justificada(s)` : 'Bate com o Resumo'], pend.length ? '#conferencia' : '#valores'],
+      ['Conferência com o Resumo', !g.temResumo ? ['nodot', 'Sem Resumo para comparar'] : pend.length ? ['warn', `${pend.length} motoboy(s) com diferença`] : ['ok', g.linhas.some((l) => l.confere !== 'ok') ? 'Diferenças explicadas por divergência ou justificativa' : 'Bate com o Resumo'], pend.length ? '#conferencia' : '#valores'],
       ['Divergências', ajustes.length ? ['info', `${ajustes.length} registrada(s)`] : ['nodot', 'Nenhuma'], '#ajustes'],
     ];
     estado = html`<section class="conferencia" aria-labelledby="conf-t"><h2 id="conf-t">${semPix.length ? 'Antes de enviar, preencha o que falta' : 'Revise e envie ao financeiro'}</h2><ol>
@@ -584,7 +584,7 @@ ${g.dias.map((d) => { const c = l.dias[d];
     const sr = c?.ajuste ? html`<span class="sr"> (corrigido; Agilizone ${brl(c.agil)})</span>` : '';
     return html`<td class="n">${edita ? html`<a class="${cls}" href="/fechamentos/${f.id}/ajuste?m=${l.id}&d=${d}" title="${tit}">${v}${sr}</a>` : html`<span class="${cls}" title="${tit}">${v}${sr}</span>`}</td>`; })}
 <td class="n tot-c">${brl(l.total)}</td>
-${g.temResumo ? html`<td class="n">${l.confere === 'pendente' ? html`<span class="bad-t b" title="Diferente da soma dos dias">${brl(l.resumo)}</span>` : html`<span class="mut" title="${l.confere === 'ok' ? 'Bate com a soma dos dias' : 'Diferença justificada'}">${brl(l.resumo)}</span>`}</td>` : ''}</tr>
+${g.temResumo ? html`<td class="n">${l.confere === 'pendente' ? html`<span class="bad-t b" title="Diferente da soma dos dias">${brl(l.resumo)}</span>` : html`<span class="mut" title="${l.confere === 'ok' ? 'Bate com a soma dos dias' : l.confere === 'div' ? 'Diferença explicada pela divergência registrada' : 'Diferença justificada'}">${brl(l.resumo)}</span>`}</td>` : ''}</tr>
 ${n ? html`<tr class="det" data-det="${l.id}" hidden><td colspan="${(colAprov ? 1 : 0) + 2 + g.dias.length + (g.temResumo ? 1 : 0)}"><div class="items">${ajDe(l.id).map((a) => html`<div>
 <div class="flow"><b>${diaFmt(a.dia)}</b> · Agilizone ${brl(a.agil)} → a pagar <b>${brl(a.valor_final)}</b> ${diferenca(a.valor_final - a.agil)}${a.valor_informado == null ? '' : html` · motoboy informou ${brl(a.valor_informado)}`}${edita ? html` · <a href="/fechamentos/${f.id}/ajuste?m=${a.motoboy_id}&d=${a.dia}">editar</a>` : ''}</div>
 <div class="quote">${a.justificativa}</div></div>`)}</div></td></tr>` : ''}`; })}</tbody>

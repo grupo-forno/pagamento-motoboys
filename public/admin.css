@@ -1,0 +1,34 @@
+/* Telas do admin: listas com edição na própria linha, abas de configuração, diálogos de cadastro */
+.lista-ed{margin:0}
+.lista-ed>details{border-bottom:1px solid var(--bd)}.lista-ed>details:last-child{border-bottom:0}
+.lista-ed>details>summary{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr) minmax(0,1fr) auto;gap:8px 16px;align-items:center;padding:14px 20px;cursor:pointer;list-style:none}
+.lista-ed>details>summary::-webkit-details-marker{display:none}
+.lista-ed>details>summary:hover{background:var(--surface-2)}
+.lista-ed>details[open]>summary{background:var(--pri-soft)}
+.lista-ed .chev{color:var(--mut);transition:transform .15s}.lista-ed details[open] .chev{transform:rotate(90deg)}
+.lista-ed .corpo{padding:16px 20px 20px;border-top:1px solid var(--bd);background:var(--surface)}
+.lista-ed .corpo form{max-width:720px}
+.lista-ed .inativo{opacity:.6}
+.lista-cab{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr) minmax(0,1fr) 18px;gap:16px;padding:10px 20px;font-size:12.5px;font-weight:600;color:var(--mut);background:var(--surface-2);border-bottom:1px solid var(--bd)}
+.lista-ed .sub{font-size:13px;color:var(--mut);overflow-wrap:anywhere}
+.lista-ed .nome-l{font-weight:600}
+.lista-ed .cal{font-size:14px;color:var(--tx-2)}
+.admin-barra{display:flex;gap:12px;align-items:center;padding:12px 20px;border-bottom:1px solid var(--bd);flex-wrap:wrap}
+.admin-barra input[type=search]{max-width:340px;height:38px}
+.vazio-busca{padding:24px;text-align:center;color:var(--mut)}
+.perfis-guia{display:grid;gap:12px 24px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));padding:16px 20px;margin:0}
+.perfis-guia dt{font-weight:600}.perfis-guia dd{margin:2px 0 0;color:var(--mut);font-size:13.5px}
+.abas-cfg{margin:0 0 20px}
+.pills{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.pills .rot{font-size:13px;font-weight:600;color:var(--tx-2);margin-right:2px}
+.pills a{display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 14px;border:1px solid var(--bd-2);border-radius:99px;background:var(--surface);color:var(--tx);font-weight:600;font-size:14px;text-decoration:none}
+.pills a .c{background:var(--surface-2);border-radius:99px;padding:0 8px;font-size:12px}
+.pills a.on{background:var(--tx);border-color:var(--tx);color:#fff}.pills a.on .c{background:rgba(255,255,255,.2);color:#fff}
+.pills a:not(.on):hover{background:var(--surface-2)}
+.card-h .sel-loja{min-width:220px}
+.ag-prox{border-top:1px solid var(--bd)}.ag-prox>summary{padding:12px 20px;cursor:pointer;font-weight:600;color:var(--tx-2)}
+.ag-prox>summary:hover{background:var(--surface-2)}
+.cfg-ajuda{font-size:13px;color:var(--mut);margin-top:6px}
+.dlg .acoes-dlg{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
+.lista-ed.lojas>details>summary,.lista-cab.lojas{grid-template-columns:minmax(0,1.2fr) minmax(0,2.2fr) 110px 18px}.cfg-estreito{max-width:760px}
+@media(max-width:760px){.lista-cab{display:none}.lista-ed>details>summary,.lista-ed.lojas>details>summary{grid-template-columns:minmax(0,1fr) auto}.lista-ed>details>summary>:nth-child(2),.lista-ed>details>summary>:nth-child(3){grid-column:1}}

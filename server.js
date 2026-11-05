@@ -265,14 +265,17 @@ const SITUACAO = {
 
 function cardAgenda(u, itens) {
   const pode = (p) => editaMotoboy(u) && (u.perfil === 'admin' || u.loja_id === p.loja.id);
-  return html`<div class="card agenda" id="agenda" style="margin-bottom:20px"><div class="card-h"><span class="hico pri">${icone('calendario')}</span><div class="t"><h2>Agenda de pagamentos</h2>
-<p>Segunda paga sexta a domingo; sexta paga segunda a quinta${u.perfil === 'despachante' && !/dirceu/i.test(u.loja || '') ? '' : ' (DIRCEU: quarta paga seg/ter e sexta paga qua/qui)'}. Datas no fuso de Teresina.</p></div></div>
-${itens.length ? html`<div class="tw"><table><thead><tr><th scope="col">Pagamento</th><th scope="col">Loja</th><th scope="col">Referente a</th><th scope="col">Situação</th><th scope="col"><span class="sr">Ação</span></th></tr></thead><tbody>
-${itens.map((p) => { const [cor, txt] = p.aprovado ? ['ok', 'Aprovado'] : SITUACAO[p.situacao]; return html`<tr${p.f ? new Raw(` data-href="/fechamentos/${p.f.id}"`) : ''}>
+  const linha = (p) => { const [cor, txt] = p.aprovado ? ['ok', 'Aprovado'] : SITUACAO[p.situacao]; return html`<tr${p.f ? new Raw(` data-href="/fechamentos/${p.f.id}"`) : ''}>
 <td class="nw"><b>${diaLongo(p.pagamento)}</b></td><td>${lojaCurta(p.loja.nome)}</td><td><span class="nw">${diaLongo(p.dias[0])}</span>${p.dias.length > 1 ? html` a <span class="nw">${diaLongo(p.dias[p.dias.length - 1])}</span>` : ''}<div class="mut small">Filtro no Agilizone: ${filtroAgilizone(p)}</div></td>
 <td><span class="badge ${cor}">${txt}</span></td>
 <td class="n">${p.f ? html`<a class="btn btn-ghost btn-sm" href="/fechamentos/${p.f.id}">Abrir ${icone('chevron', 'sm')}</a>`
-      : p.situacao !== 'futuro' && pode(p) ? html`<a class="btn btn-sec btn-sm" href="/fechamentos/novo">${icone('subir', 'sm')} Importar</a>` : ''}</td></tr>`; })}</tbody></table></div>`
+      : p.situacao !== 'futuro' && pode(p) ? html`<a class="btn btn-sec btn-sm" href="/fechamentos/novo?p=${p.pagamento}&l=${p.loja.id}">${icone('subir', 'sm')} Importar</a>` : ''}</td></tr>`; };
+  const tabela = (arr) => html`<div class="tw"><table><thead><tr><th scope="col">Pagamento</th><th scope="col">Loja</th><th scope="col">Referente a</th><th scope="col">Situação</th><th scope="col"><span class="sr">Ação</span></th></tr></thead><tbody>${arr.map(linha)}</tbody></table></div>`;
+  // O que pede ação (atrasado, hoje, em conferência, enviado) fica à vista; o que ainda vai chegar fica recolhido.
+  const agora = itens.filter((p) => p.situacao !== 'futuro' || p.f), prox = itens.filter((p) => !agora.includes(p));
+  return html`<div class="card agenda" id="agenda" style="margin-bottom:20px"><div class="card-h"><span class="hico pri">${icone('calendario')}</span><div class="t"><h2>Agenda de pagamentos</h2>
+<p>Segunda paga sexta a domingo; sexta paga segunda a quinta${u.perfil === 'despachante' && !/dirceu/i.test(u.loja || '') ? '' : ' (DIRCEU: quarta paga seg/ter e sexta paga qua/qui)'}. Datas no fuso de Teresina.</p></div></div>
+${itens.length ? html`${agora.length ? tabela(agora) : html`<div class="card-b mut">Nenhum pagamento pendente agora.</div>`}${prox.length ? html`<details class="ag-prox" ${agora.length ? '' : new Raw('open')}><summary>Próximos pagamentos (${prox.length})</summary>${tabela(prox)}</details>` : ''}`
     : html`<div class="card-b mut">Nenhum pagamento nos próximos dias.</div>`}</div>`;
 }
 
@@ -592,7 +595,7 @@ app.get('/', (req, res) => {
   const seg = (st, txt, n) => html`<a href="${qs(st)}" class="${filtro === st ? 'on' : ''}">${txt}<span class="c">${n}</span></a>`;
   const contaL = (st) => daLoja.filter((f) => f.status === st).length;
 
-  res.send(page(req, { titulo: 'Fechamentos', sub, acoes: editaMotoboy(u) ? html`<a class="btn btn-pri" href="/fechamentos/novo">${icone('mais')} Novo fechamento</a>` : '' }, html`
+  res.send(page(req, { titulo: 'Fechamentos', sub, css: '/marca/admin.css', acoes: editaMotoboy(u) ? html`<a class="btn btn-pri" href="/fechamentos/novo">${icone('mais')} Novo fechamento</a>` : '' }, html`
 ${devolvidos.length ? html`<section class="aviso-dev" aria-label="Devolvidos para correção"><h2>${devolvidos.length === 1 ? 'O financeiro devolveu um fechamento' : `O financeiro devolveu ${devolvidos.length} fechamentos`}</h2>
 ${devolvidos.map((f) => html`<a class="aviso-item" href="/fechamentos/${f.id}"><span><b>${f.loja} · ${f.pagamento ? `pagamento de ${diaLongo(f.pagamento)}` : periodo(f)}</b>
 <span class="quote">${f.motivo ? f.motivo.acao.replace(/^Devolveu para correção: /, '') : ''}</span><small class="mut">${f.motivo ? `${f.motivo.nome || ''}, ${f.motivo.quando.slice(0, 16)}` : ''}</small></span><span class="btn btn-pri btn-sm">Corrigir</span></a>`)}</section>` : ''}
@@ -603,10 +606,10 @@ ${u.perfil === 'despachante' ? '' : html`<div class="stats">
 <div class="card stat"><span class="hico ok">${icone('check')}</span><div><div class="v">${brl(todos.filter((f) => f.status === 'pago' && mesDe(f) === mes0).reduce((t, f) => t + f.total, 0))}</div><div class="l">Aprovado este mês</div></div></div></div>`}
 ${editaMotoboy(u) ? (() => { const amanha = AG.soma(hoje, 1), fazer = itens.filter((p) => !p.f && (['hoje', 'atrasado'].includes(p.situacao) || p.pagamento === amanha)), atr = fazer.filter((p) => p.situacao === 'atrasado').length; return fazer.length ? html`<div class="faixa ${atr ? 'bad' : ''}">${icone(atr ? 'alerta' : 'calendario')}<p><b>${fazer.length} pagamento(s) para importar</b>${atr ? html`, ${atr} atrasado(s)` : ''}. <a href="#agenda">Ver na agenda</a></p><a class="btn btn-pri btn-sm" href="/fechamentos/novo">${icone('subir', 'sm')} Importar</a></div>` : ''; })() : ''}
 ${doUsuario.length ? html`<div class="card"><div class="card-h"><div class="t"><h2>${verArq ? 'Fechamentos arquivados' : ant ? 'Meses anteriores' : `Fechamentos de ${new Date(hoje + 'T12:00:00Z').toLocaleDateString('pt-BR', { month: 'long', year: 'numeric', timeZone: 'UTC' })}`}</h2>
-<p>${verArq ? 'Não contam como fechamento válido. Abra um para ver ou recuperar.' : 'Clique em uma linha para abrir.'}</p>
-<nav class="seg" style="margin-top:8px" aria-label="Período"><a href="/" class="${ant || verArq ? '' : 'on'}">Este mês<span class="c">${todos.filter((f) => mesDe(f) === mes0).length}</span></a><a href="/?m=ant" class="${ant && !verArq ? 'on' : ''}">Meses anteriores<span class="c">${todos.filter((f) => mesDe(f) !== mes0).length}</span></a><a href="/?arq=1" class="${verArq ? 'on' : ''}">Arquivados<span class="c">${arquivados.length}</span></a></nav></div>
-${lojas.length ? html`<form method="get" action="/" style="min-width:220px">${filtro ? html`<input type="hidden" name="s" value="${filtro}">` : ''}${ant ? html`<input type="hidden" name="m" value="ant">` : ''}${verArq ? html`<input type="hidden" name="arq" value="1">` : ''}<select name="loja" onchange="this.form.submit()" aria-label="Filtrar por loja"><option value="">Todas as lojas</option>${lojas.map((l) => html`<option value="${l.id}" ${l.id === lojaF ? 'selected' : ''}>${l.nome}</option>`)}</select></form>` : ''}
-${u.perfil === 'despachante' ? '' : html`<nav class="seg" aria-label="Filtrar por situação">${seg('', 'Todos', daLoja.length)}${seg('rascunho', 'Em conferência', contaL('rascunho'))}${seg('enviado', 'Aguardando aprovação', contaL('enviado'))}${seg('pago', 'Aprovados', contaL('pago'))}</nav>`}</div>
+<p>${verArq ? 'Não contam como fechamento válido. Abra um para ver ou recuperar.' : 'Clique em uma linha para abrir.'}</p></div>
+${lojas.length ? html`<form method="get" action="/" class="sel-loja">${filtro ? html`<input type="hidden" name="s" value="${filtro}">` : ''}${ant ? html`<input type="hidden" name="m" value="ant">` : ''}${verArq ? html`<input type="hidden" name="arq" value="1">` : ''}<select name="loja" onchange="this.form.submit()" aria-label="Filtrar por loja"><option value="">Todas as lojas</option>${lojas.map((l) => html`<option value="${l.id}" ${l.id === lojaF ? 'selected' : ''}>${l.nome}</option>`)}</select></form>` : ''}</div>
+<nav class="seg" style="padding:0 20px;margin:0" aria-label="Período"><a href="/" class="${ant || verArq ? '' : 'on'}">Este mês<span class="c">${todos.filter((f) => mesDe(f) === mes0).length}</span></a><a href="/?m=ant" class="${ant && !verArq ? 'on' : ''}">Meses anteriores<span class="c">${todos.filter((f) => mesDe(f) !== mes0).length}</span></a><a href="/?arq=1" class="${verArq ? 'on' : ''}">Arquivados<span class="c">${arquivados.length}</span></a></nav>
+${u.perfil === 'despachante' ? '' : html`<div class="ferramentas" style="padding-top:14px"><nav class="pills" aria-label="Filtrar por situação"><span class="rot">Mostrar:</span>${seg('', 'Todos', daLoja.length)}${seg('rascunho', 'Em conferência', contaL('rascunho'))}${seg('enviado', 'Aguardando aprovação', contaL('enviado'))}${seg('pago', 'Aprovados', contaL('pago'))}</nav></div>`}
 <div class="tw"><table><thead><tr><th scope="col">Pagamento</th><th scope="col">Loja</th><th scope="col">Período</th><th scope="col">Situação</th><th scope="col" class="n">Motoboys</th><th scope="col" class="n">Total</th><th scope="col"><span class="sr">Ação</span></th></tr></thead><tbody>
 ${lista.map((f) => html`<tr data-href="/fechamentos/${f.id}"><td><b>${f.pagamento ? diaLongo(f.pagamento) : '—'}</b></td><td>${f.loja}</td><td>${periodo(f)}<div class="mut small">por ${f.autor}</div></td><td>${f.arquivado_em ? html`<span class="badge nodot">Arquivado em ${dataFmt(f.arquivado_em.slice(0, 10))}</span>` : f.devolvido && f.status === 'rascunho' ? html`<span class="badge bad">Devolvido para correção</span>` : badgeStatus(f.status)}</td>
 <td class="n">${f.n}</td><td class="n b">${brl(f.total)}</td><td class="n"><a class="btn btn-ghost btn-sm" href="/fechamentos/${f.id}">Abrir ${icone('chevron', 'sm')}</a></td></tr>`)}
@@ -1181,20 +1184,30 @@ const soAdmin = so((r) => r.user.perfil === 'admin');
 app.get('/usuarios', soAdmin, (req, res) => {
   const us = db.prepare("SELECT u.*, l.nome loja FROM usuarios u LEFT JOIN lojas l ON l.id = u.loja_id WHERE u.perfil <> 'motoboy' ORDER BY u.ativo DESC, u.nome").all();
   const lojas = db.prepare('SELECT * FROM lojas ORDER BY nome').all();
-  const campos = (u = {}) => html`<div class="field"><label>Nome <span class="req">*</span></label><input name="nome" required value="${u.nome}"></div>
-<div class="field"><label>E-mail</label><input name="email" type="email" value="${u.email}" placeholder="nome@grupofornopaulista.com"><p class="hint">Para avisos do sistema (ex.: o despachante recebe quando o financeiro devolve um fechamento).</p></div>
-<div class="fgrid"><div class="field"><label>Perfil</label><select name="perfil">${Object.entries(PERFIS).map(([k, v]) => html`<option value="${k}" ${u.perfil === k ? 'selected' : ''}>${v}</option>`)}</select></div>
-<div class="field"><label>Loja</label><select name="loja"><option value="">—</option>${lojas.map((l) => html`<option value="${l.id}" ${u.loja_id === l.id ? 'selected' : ''}>${l.nome}</option>`)}</select><p class="hint">Obrigatória para despachante. No financeiro, vazia = vê todas as lojas.</p></div></div>`;
-  res.send(page(req, { titulo: 'Usuários', sub: 'Quem acessa o sistema: despachantes, financeiro, gestão e TI.' }, html`<div class="split">
-<div class="card"><div class="card-h"><div class="t"><h2>Equipe (${us.length})</h2><p>Clique em uma pessoa para editar.</p></div></div><div class="items">
-${us.map((u) => html`<details class="fold"><summary><div class="who" style="flex:1">${avatar(u.nome)}<div><b>${u.nome}</b><div class="mut small">${u.login}${u.email ? ` · ${u.email}` : ''}</div></div></div>
-<span class="badge nodot">${PERFIS[u.perfil]}${u.loja ? ` · ${u.loja}` : ''}</span>${u.ativo ? '' : html`<span class="badge bad">inativo</span>`}${icone('chevron', 'chev')}</summary>
-<form method="post" action="/usuarios/${u.id}" style="margin-top:16px">${campos(u)}<div class="fgrid"><div class="field"><label>Nova senha</label><input name="senha" type="password" minlength="8" placeholder="Deixe vazio para manter" autocomplete="new-password"></div></div>
-<label class="check"><input type="checkbox" name="ativo" value="1" ${u.ativo ? 'checked' : ''}> Ativo</label><button class="btn btn-pri btn-sm">${icone('check', 'sm')} Salvar</button></form></details>`)}</div></div>
-<form method="post" class="card"><div class="card-h"><span class="hico pri">${icone('mais')}</span><div class="t"><h2>Novo usuário</h2></div></div><div class="card-b">
-<div class="field"><label>Login <span class="req">*</span></label><input name="login" required autocapitalize="none"></div>${campos({ perfil: 'despachante' })}
-<div class="field"><label>Senha inicial <span class="req">*</span></label><input name="senha" type="password" minlength="8" required autocomplete="new-password"><p class="hint">Mínimo 8 caracteres. A pessoa pode trocar em "Minha conta".</p></div></div>
-<div class="card-f"><button class="btn btn-pri">${icone('mais')} Criar usuário</button></div></form></div>`));
+  const campos = (u = {}, p = '') => html`<div class="field"><label for="${p}nome">Nome <span class="req">*</span></label><input id="${p}nome" name="nome" required value="${u.nome}"></div>
+<div class="field"><label for="${p}email">E-mail</label><input id="${p}email" name="email" type="email" value="${u.email}" placeholder="nome@grupofornopaulista.com"><p class="hint">Para avisos do sistema (ex.: o despachante recebe quando o financeiro devolve um fechamento).</p></div>
+<div class="fgrid"><div class="field"><label for="${p}perfil">Perfil</label><select id="${p}perfil" name="perfil">${Object.entries(PERFIS).map(([k, v]) => html`<option value="${k}" ${u.perfil === k ? 'selected' : ''}>${v}</option>`)}</select></div>
+<div class="field"><label for="${p}loja">Loja</label><select id="${p}loja" name="loja"><option value="">—</option>${lojas.map((l) => html`<option value="${l.id}" ${u.loja_id === l.id ? 'selected' : ''}>${l.nome}</option>`)}</select><p class="hint">Obrigatória para despachante. No financeiro, vazia = vê todas as lojas.</p></div></div>`;
+  res.send(page(req, { titulo: 'Usuários', sub: 'Quem acessa o sistema: despachantes, financeiro, gestão e TI.', css: '/marca/admin.css', js: '/marca/admin.js',
+    acoes: html`<button type="button" class="btn btn-pri" data-abre="dlg-novo">${icone('mais')} Novo usuário</button>` }, html`
+<div class="card"><div class="card-h"><div class="t"><h2>Equipe (${us.length})</h2><p>Clique em uma pessoa para ver e editar o cadastro.</p></div></div>
+<div class="admin-barra"><label class="sr" for="busca-u">Buscar pessoa</label><input id="busca-u" type="search" placeholder="Buscar por nome, login ou e-mail" data-busca=".lista-ed>details" autocomplete="off"></div>
+<div class="lista-cab" aria-hidden="true"><span>Pessoa</span><span>Perfil</span><span>Loja</span><span></span></div>
+<div class="lista-ed">
+${us.map((u) => html`<details class="${u.ativo ? '' : 'inativo'}"><summary><div class="who">${avatar(u.nome)}<div><div class="nome-l">${u.nome}</div><div class="sub">${u.login}${u.email ? ` · ${u.email}` : ''}</div></div></div>
+<span><span class="badge nodot">${PERFIS[u.perfil]}</span>${u.ativo ? '' : html` <span class="badge bad">Inativo</span>`}</span><span class="cal">${u.loja || '—'}</span>${icone('chevron', 'chev')}</summary>
+<div class="corpo"><form method="post" action="/usuarios/${u.id}">${campos(u, `u${u.id}-`)}<div class="fgrid"><div class="field"><label for="u${u.id}-senha">Nova senha</label><input id="u${u.id}-senha" name="senha" type="password" minlength="8" placeholder="Deixe vazio para manter" autocomplete="new-password"></div></div>
+<label class="check"><input type="checkbox" name="ativo" value="1" ${u.ativo ? 'checked' : ''}> Ativo (pode entrar no sistema)</label><button class="btn btn-pri">${icone('check', 'sm')} Salvar alterações</button></form></div></details>`)}
+<p class="vazio-busca" id="vazio-busca" hidden>Ninguém encontrado com esse texto.</p></div></div>
+<section class="card" style="margin-top:20px" aria-labelledby="perfis-t"><div class="card-h"><div class="t"><h2 id="perfis-t">O que cada perfil faz</h2></div></div><dl class="perfis-guia">
+<div><dt>Despachante</dt><dd>Importa os relatórios do Agilizone, confere e envia ao financeiro. Vê só a própria loja.</dd></div>
+<div><dt>Financeiro</dt><dd>Aprova ou devolve cada entregador. Vê só fechamentos já enviados (todas as lojas, ou só a escolhida no cadastro).</dd></div>
+<div><dt>Gestão</dt><dd>Acompanha os fechamentos de todas as lojas, sem alterar nada.</dd></div>
+<div><dt>TI / Admin</dt><dd>Tudo isso, mais usuários, lojas e configurações de e-mail.</dd></div></dl></section>
+<dialog id="dlg-novo" class="dlg" aria-labelledby="novo-t"><form method="post"><h2 id="novo-t">Novo usuário</h2>
+<div class="field"><label for="n-login">Login <span class="req">*</span></label><input id="n-login" name="login" required autocapitalize="none" autocomplete="off"></div>${campos({ perfil: 'despachante' }, 'n-')}
+<div class="field"><label for="n-senha">Senha inicial <span class="req">*</span></label><input id="n-senha" name="senha" type="password" minlength="8" required autocomplete="new-password"><p class="hint">Mínimo 8 caracteres. A pessoa pode trocar em "Minha conta".</p></div>
+<div class="acoes-dlg"><button type="button" class="btn btn-ghost" data-fecha>Cancelar</button><button class="btn btn-pri">${icone('mais')} Criar usuário</button></div></form></dialog>`));
 });
 function dadosUsuario(b) {
   const v = { nome: String(b.nome || '').trim(), perfil: String(b.perfil), loja_id: Number(b.loja) || null, email: String(b.email || '').trim() || null };
@@ -1229,17 +1242,19 @@ app.post('/usuarios/:id', soAdmin, (req, res) => {
 app.get('/config', so((r) => r.user.perfil === 'admin'), (req, res) => {
   const v = (k) => cfg(k), lojas = db.prepare('SELECT l.*, (SELECT COUNT(*) FROM fechamentos WHERE loja_id = l.id) n FROM lojas l ORDER BY nome').all();
   const ultimosAlertas = db.prepare("SELECT acao, quando FROM log WHERE ref = 'alertas' ORDER BY id DESC LIMIT 15").all();
-  const temSenha = !!v('smtp_pass');
-  res.send(page(req, { titulo: 'Configurações', sub: 'E-mail da solicitação de pagamento e lojas. Só a TI vê esta tela.' }, html`<div class="split">
+  const temSenha = !!v('smtp_pass'), semSmtp = !v('smtp_host');
+  const aba = ['email', 'alertas', 'lojas'].includes(req.query.aba) ? req.query.aba : 'email';
+  const nav = html`<nav class="seg abas-cfg" aria-label="Seções das configurações">${[['email', 'E-mail'], ['alertas', 'Alertas'], ['lojas', 'Lojas e pagamentos']].map(([k, t]) => html`<a href="/config?aba=${k}" class="${k === aba ? 'on' : ''}" ${k === aba ? new Raw('aria-current="page"') : ''}>${t}${k === 'email' && semSmtp ? html`<span class="c" title="Falta configurar o servidor de e-mail">!</span>` : ''}</a>`)}</nav>`;
+  const email = html`<div class="split">
 <form method="post" action="/config" class="stack">
-${v('smtp_host') ? '' : html`<div class="alert warn">${icone('alerta')}<div><b>Servidor de e-mail ainda não configurado</b>Enquanto isso, os e-mails não saem: ficam salvos no servidor (pasta data/emails) e o fechamento mostra o aviso.</div></div>`}
-<div class="card"><div class="card-h"><span class="hico pri">${icone('email')}</span><div class="t"><h2>Solicitação de pagamento</h2><p>Quando o despachante clica em "Enviar ao financeiro", sai um e-mail com o PDF em anexo.</p></div></div><div class="card-b">
+${semSmtp ? html`<div class="alert warn">${icone('alerta')}<div><b>Servidor de e-mail ainda não configurado</b>Enquanto isso, os e-mails não saem: ficam salvos no servidor (pasta data/emails) e o fechamento mostra o aviso.</div></div>` : ''}
+<div class="card"><div class="card-h"><span class="hico pri">${icone('email')}</span><div class="t"><h2>Solicitação de pagamento</h2><p>Quando o despachante clica em "Enviar ao financeiro", sai um e-mail com a planilha e o PDF em anexo.</p></div></div><div class="card-b">
 <div class="field"><label for="email_para">Enviar para <span class="req">*</span></label><textarea id="email_para" name="email_para" style="min-height:80px" placeholder="financeiro@grupofornopaulista.com">${v('email_para')}</textarea><p class="hint">Um ou mais e-mails, um por linha ou separados por vírgula.</p></div>
 <label class="check"><input type="checkbox" name="email_copia" value="1" ${v('email_copia') === '1' ? 'checked' : ''}> Enviar cópia para quem enviou o fechamento (se tiver e-mail no cadastro)</label>
 <div class="field"><label for="app_url">Endereço do sistema</label><input id="app_url" name="app_url" value="${v('app_url')}" placeholder="https://motoboys.grupofornopaulista.com"><p class="hint">Vai no e-mail como link para abrir o fechamento.</p></div></div></div>
 
 <div class="card"><div class="card-h"><span class="hico">${icone('enviar')}</span><div class="t"><h2>Conta que envia (servidor SMTP)</h2><p>O e-mail sai desta conta.</p></div></div><div class="card-b">
-<details class="alert fold" style="display:block;margin-bottom:16px" ${v('smtp_host') ? '' : 'open'}><summary>${icone('info')} <b style="display:inline">Como configurar com o Google Workspace do grupo (5 minutos)</b> ${icone('chevron', 'chev')}</summary>
+<details class="alert fold" style="display:block;margin-bottom:16px" ${semSmtp ? 'open' : ''}><summary>${icone('info')} <b style="display:inline">Como configurar com o Google Workspace do grupo (5 minutos)</b> ${icone('chevron', 'chev')}</summary>
 <ol style="margin:10px 0 0 22px;padding:0;line-height:1.7">
 <li>Escolha a conta que vai enviar, ex.: <b>tecnologia@grupofornopaulista.com</b> (ou crie uma como <b>naoresponda@</b>).</li>
 <li>Entre nela e ative a <b>Verificação em duas etapas</b>: myaccount.google.com → Segurança.</li>
@@ -1253,27 +1268,27 @@ ${v('smtp_host') ? '' : html`<div class="alert warn">${icone('alerta')}<div><b>S
 <div class="field"><label for="smtp_from">Remetente</label><input id="smtp_from" name="smtp_from" value="${v('smtp_from')}" placeholder='Motoboys Forno Paulista <tecnologia@grupofornopaulista.com>'><p class="hint">Opcional. Se vazio, usa o usuário.</p></div></div>
 <div class="card-f"><button class="btn btn-pri">${icone('check')} Salvar configurações</button></div></div></form>
 
-<div class="stack">
 <form method="post" action="/config/teste" class="card"><div class="card-h"><span class="hico">${icone('email')}</span><div class="t"><h2>Testar envio</h2><p>Manda um e-mail de teste com as configurações salvas.</p></div></div>
-<div class="card-b"><div class="field" style="margin:0"><label for="teste">Para</label><input id="teste" name="para" type="email" required value="${req.user.email || listaEmails(v('email_para'))[0] || ''}"></div></div>
-<div class="card-f"><button class="btn btn-sec">${icone('enviar')} Enviar teste</button></div></form>
-
-<form method="post" action="/config/alertas" class="card" id="alertas"><div class="card-h"><span class="hico pri">${icone('relogio')}</span><div class="t"><h2>Alertas automáticos por e-mail</h2><p>Horário de Teresina. Cada alerta sai uma vez por pagamento.</p></div></div><div class="card-b">
+<div class="card-b"><div class="field" style="margin:0"><label for="teste">Para</label><input id="teste" name="para" type="email" required value="${req.user.email || listaEmails(v('email_para'))[0] || ''}"></div><p class="cfg-ajuda">Salve as configurações antes de testar.</p></div>
+<div class="card-f"><button class="btn btn-sec">${icone('enviar')} Enviar teste</button></div></form></div>`;
+  const alertas = html`<form method="post" action="/config/alertas" class="card cfg-estreito" id="alertas"><div class="card-h"><span class="hico pri">${icone('relogio')}</span><div class="t"><h2>Alertas automáticos por e-mail</h2><p>Horário de Teresina. Cada alerta sai uma vez por pagamento.</p></div></div><div class="card-b">
 ${[['alerta_resumo', 'hora_resumo', '16:00', 'Resumo diário ao financeiro', 'Nos dias de pagamento: quais lojas já enviaram (com o total) e quais faltam. Vai para os destinatários da solicitação de pagamento.']]
     .map(([k, h, padrao, t, d]) => html`<div class="field" style="display:flex;gap:12px;align-items:flex-start"><label class="check" style="flex:1;margin:0;align-items:flex-start"><input type="checkbox" name="${k}" value="1" ${v(k) !== '0' ? 'checked' : ''} style="margin-top:3px"><span><b>${t}</b><br><span class="mut small" style="font-weight:400">${d}</span></span></label>
 <input type="time" name="${h}" value="${v(h) || padrao}" aria-label="Horário: ${t}" style="width:120px"></div>`)}
 ${process.env.ALERTAS === '0' ? html`<div class="alert warn">${icone('alerta')}<div>Os alertas estão desligados neste servidor (variável ALERTAS=0).</div></div>` : ''}
-${v('smtp_host') ? '' : html`<div class="alert warn">${icone('alerta')}<div>Sem servidor de e-mail configurado, os alertas não saem.</div></div>`}
+${semSmtp ? html`<div class="alert warn">${icone('alerta')}<div>Sem servidor de e-mail configurado, os alertas não saem. <a href="/config?aba=email">Configurar agora</a></div></div>` : ''}
 <p class="hint">O despachante vê os avisos (amanhã, hoje, atrasado) na tela inicial do sistema.</p>
 ${ultimosAlertas.length ? html`<details class="fold" style="margin-top:8px"><summary class="mut small">${icone('chevron', 'chev')} Últimos alertas</summary><ul class="timeline" style="margin-top:10px">${ultimosAlertas.map((a) => html`<li>${a.acao}<small>${a.quando}</small></li>`)}</ul></details>` : ''}</div>
-<div class="card-f"><button class="btn btn-sec">${icone('check')} Salvar alertas</button></div></form>
-</div></div>
-<section class="card lojas-cfg" aria-labelledby="lojas-t"><div class="card-h"><span class="hico">${icone('loja')}</span><div class="t"><h2 id="lojas-t">Lojas e dias de pagamento</h2><p>O nome precisa ser <b>igual ao do Agilizone</b>. Dias de pagamento no formato <b>dia: dias de referência</b>, separados por ponto e vírgula. Ex.: <b>seg: sex sab dom; sex: seg ter qua qui</b> (padrão).</p></div></div>
-<div class="loja-cab" aria-hidden="true"><span>Nome no Agilizone</span><span>Dias de pagamento</span><span>Como fica</span><span></span></div>
-${lojas.map((l) => html`<form method="post" action="/config/lojas/${l.id}" class="loja-l"><input name="nome" value="${l.nome}" required aria-label="Nome da loja">
-<input name="calendario" value="${l.calendario || AG.PADRAO}" required aria-label="Dias de pagamento de ${l.nome}">
-<span class="mut small">${AG.textoCalendario(calendarioDa(l))} · ${l.n} fechamento(s)</span><button class="btn btn-sec btn-sm">Salvar</button></form>`)}
-<form method="post" action="/config/lojas" class="loja-l nova"><input name="nome" required placeholder="Nova loja (nome igual ao Agilizone)" aria-label="Nova loja"><span></span><span></span><button class="btn btn-sec btn-sm">${icone('mais', 'sm')} Adicionar</button></form></section>`));
+<div class="card-f"><button class="btn btn-pri">${icone('check')} Salvar alertas</button></div></form>`;
+  const calCampos = (p, nome, cal) => html`<div class="field"><label for="${p}-nome">Nome no Agilizone</label><input id="${p}-nome" name="nome" value="${nome}" required></div>
+<div class="field"><label for="${p}-cal">Dias de pagamento</label><input id="${p}-cal" name="calendario" value="${cal}" required><p class="hint">Formato <b>dia: dias de referência</b>, separados por ponto e vírgula. Ex.: <b>seg: sex sab dom; sex: seg ter qua qui</b> = segunda paga sexta a domingo; sexta paga segunda a quinta.</p></div>`;
+  const lojasTab = html`<section class="card" aria-labelledby="lojas-t"><div class="card-h"><span class="hico">${icone('loja')}</span><div class="t"><h2 id="lojas-t">Lojas e dias de pagamento</h2><p>O nome precisa ser <b>igual ao do Agilizone</b>. Clique em uma loja para editar.</p></div><button type="button" class="btn btn-sec" data-abre="dlg-loja">${icone('mais', 'sm')} Nova loja</button></div>
+<div class="lista-cab lojas" aria-hidden="true"><span>Loja</span><span>Quando paga</span><span>Fechamentos</span><span></span></div>
+<div class="lista-ed lojas">${lojas.map((l) => html`<details><summary><span class="nome-l">${l.nome}</span><span class="cal">${AG.textoCalendario(calendarioDa(l))}</span><span class="sub">${l.n} fechamento(s)</span>${icone('chevron', 'chev')}</summary>
+<div class="corpo"><form method="post" action="/config/lojas/${l.id}">${calCampos(`l${l.id}`, l.nome, l.calendario || AG.PADRAO)}<button class="btn btn-pri">${icone('check', 'sm')} Salvar loja</button></form></div></details>`)}</div></section>
+<dialog id="dlg-loja" class="dlg" aria-labelledby="loja-t"><form method="post" action="/config/lojas"><h2 id="loja-t">Nova loja</h2>${calCampos('nl', '', AG.PADRAO)}
+<div class="acoes-dlg"><button type="button" class="btn btn-ghost" data-fecha>Cancelar</button><button class="btn btn-pri">${icone('mais')} Adicionar loja</button></div></form></dialog>`;
+  res.send(page(req, { titulo: 'Configurações', sub: 'E-mail da solicitação de pagamento, alertas e lojas. Só a TI vê esta tela.', css: '/marca/admin.css', js: '/marca/admin.js' }, html`${nav}${aba === 'alertas' ? alertas : aba === 'lojas' ? lojasTab : email}`));
 });
 
 app.post('/config', so((r) => r.user.perfil === 'admin'), (req, res) => {
@@ -1287,7 +1302,7 @@ app.post('/config', so((r) => r.user.perfil === 'admin'), (req, res) => {
   const set = db.prepare('INSERT INTO config (chave, valor) VALUES (?, ?) ON CONFLICT (chave) DO UPDATE SET valor = excluded.valor');
   tx(() => { for (const [k, val] of Object.entries(valores)) set.run(k, val); });
   log(req.user.id, 'config', `Configurações de e-mail salvas (destinatários: ${valores.email_para || 'nenhum'}; servidor: ${valores.smtp_host || 'nenhum'}${b.smtp_pass ? '; senha alterada' : ''})`);
-  volta(res, '/config', 'ok', 'Configurações salvas. Use "Enviar teste" para conferir.');
+  volta(res, '/config?aba=email', 'ok', 'Configurações salvas. Use "Enviar teste" para conferir.');
 });
 
 app.post('/config/teste', so((r) => r.user.perfil === 'admin'), async (req, res) => {
@@ -1295,10 +1310,10 @@ app.post('/config/teste', so((r) => r.user.perfil === 'admin'), async (req, res)
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(para)) throw falha('E-mail inválido.');
   try {
     const r = await enviarEmail({ to: para, subject: 'Teste · Motoboys Forno Paulista', text: 'Se você recebeu este e-mail, o envio das solicitações de pagamento está funcionando.' });
-    if (r.salvo) return volta(res, '/config', 'erro', 'O servidor de e-mail não está configurado: o teste foi salvo no servidor e não foi enviado.');
-    volta(res, '/config', 'ok', `E-mail de teste enviado para ${para}. Confira a caixa de entrada (e o spam).`);
+    if (r.salvo) return volta(res, '/config?aba=email', 'erro', 'O servidor de e-mail não está configurado: o teste foi salvo no servidor e não foi enviado.');
+    volta(res, '/config?aba=email', 'ok', `E-mail de teste enviado para ${para}. Confira a caixa de entrada (e o spam).`);
   } catch (e) {
-    volta(res, '/config', 'erro', `O servidor de e-mail recusou: ${e.message}`);
+    volta(res, '/config?aba=email', 'erro', `O servidor de e-mail recusou: ${e.message}`);
   }
 });
 
@@ -1313,7 +1328,7 @@ const salvaLoja = (req, res) => {
   if (id) db.prepare('UPDATE lojas SET nome = ?, calendario = COALESCE(?, calendario) WHERE id = ?').run(nome, cal ? String(req.body.calendario).trim() : null, id);
   else db.prepare('INSERT INTO lojas (nome, calendario) VALUES (?, ?)').run(nome, cal ? String(req.body.calendario).trim() : AG.PADRAO);
   log(req.user.id, 'config', `${id ? 'Alterou loja #' + id : 'Criou loja'} "${nome}"${cal ? ` · pagamentos: ${AG.textoCalendario(cal)}` : ''}`);
-  volta(res, '/config', 'ok', 'Loja salva.');
+  volta(res, '/config?aba=lojas', 'ok', 'Loja salva.');
 };
 app.post('/config/lojas', so((r) => r.user.perfil === 'admin'), salvaLoja);
 app.post('/config/lojas/:id', so((r) => r.user.perfil === 'admin'), salvaLoja);
@@ -1326,7 +1341,7 @@ app.post('/config/alertas', so((r) => r.user.perfil === 'admin'), (req, res) => 
     set.run('hora_resumo', String(b.hora_resumo));
   });
   log(req.user.id, 'config', `Resumo diário ao financeiro: ${b.alerta_resumo ? b.hora_resumo : 'desligado'}`);
-  volta(res, '/config', 'ok', 'Alertas salvos.');
+  volta(res, '/config?aba=alertas', 'ok', 'Alertas salvos.');
 });
 
 // ---------- Alertas automáticos ----------

@@ -7,7 +7,7 @@ const { db, UPLOADS, hashSenha, confereSenha, log, tx } = require('./db');
 const { lerRelatorio, lerResumo, valorDigitado, pixValido } = require('./importar');
 const AG = require('./agenda');
 const { gerarPdf, enviarEmail, cfg, listaEmails, brl, diaFmt, dataFmt } = require('./relatorio');
-const { Raw, html, icone, iniciais, semAcento, CSS, JS } = require('./ui');
+const { Raw, html, esc, icone, iniciais, semAcento, CSS, JS } = require('./ui');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -977,14 +977,44 @@ async function enviaELoga(f, rotulo, para, msg) {
 }
 
 async function solicitarPagamento(f, autor, para = destinatariosPadrao(autor)) {
-  const g = grade(f), url = cfg('app_url').replace(/\/$/, '');
+  const g = grade(f), url = cfg('app_url').replace(/\/$/, ''), link = url ? `${url}/fechamentos/${f.id}` : '';
+  const pagar = g.linhas.filter((l) => l.total > 0), nome = f.loja.replace(/\W+/g, '_'), ref = f.pagamento || f.data_ini;
+  const quem = f.pagamento ? `pagamento de ${diaLongo(f.pagamento)}` : '';
+  const resumo = [['Loja', f.loja], ['Período das entregas', periodo(f)], ['Pagamento previsto', f.pagamento ? diaLongo(f.pagamento) : '—'], ['Motoboys a pagar', String(pagar.length)],
+    ...(g.temOc ? [['Ocorrências do Agilizone (já no total)', `${g.totOc > 0 ? '+' : ''}${brl(g.totOc)}`]] : []), ...(g.temPago ? [['Já pago no Agilizone (descontado)', `-${brl(g.totPago)}`]] : [])];
+  const td = 'padding:8px 12px;border-bottom:1px solid #e7e2df;font-size:14px;color:#140a08';
+  const corpoHtml = `<!doctype html><html lang="pt-BR"><body style="margin:0;background:#f8f7f6;font-family:Arial,Helvetica,sans-serif">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8f7f6;padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="640" cellpadding="0" cellspacing="0" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e7e2df;border-radius:10px;overflow:hidden">
+<tr><td style="border-top:6px solid #df6d2a;padding:24px 24px 8px"><div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#6b6360">Grupo Forno · Pagamento de motoboys</div>
+<h1 style="margin:8px 0 0;font-size:22px;color:#140a08">Solicitação de pagamento</h1></td></tr>
+<tr><td style="padding:8px 24px 16px;font-size:14px;line-height:1.55;color:#140a08">Olá,<br>${esc(autor.nome)} enviou a solicitação de pagamento dos motoboys da loja <b>${esc(f.loja)}</b>${quem ? `, ${esc(quem)}` : ''}. Confira os valores e as chaves PIX e aprove no sistema.</td></tr>
+<tr><td style="padding:0 24px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#faf8f7;border:1px solid #e7e2df;border-radius:8px">
+${resumo.map(([k, v]) => `<tr><td style="${td};color:#6b6360;width:55%">${esc(k)}</td><td style="${td};text-align:right;font-weight:bold">${esc(v)}</td></tr>`).join('')}
+<tr><td style="padding:14px 12px;font-size:14px;color:#6b6360">Total a pagar</td><td style="padding:14px 12px;text-align:right;font-size:24px;font-weight:bold;color:#c2521a">${esc(brl(g.total))}</td></tr></table></td></tr>
+${link ? `<tr><td style="padding:20px 24px 4px"><a href="${esc(link)}" style="display:inline-block;background:#c2521a;color:#ffffff;text-decoration:none;font-weight:bold;font-size:15px;padding:12px 22px;border-radius:8px">Abrir no sistema e aprovar</a></td></tr>` : ''}
+<tr><td style="padding:20px 24px 4px;font-size:15px;font-weight:bold;color:#140a08">Anexos neste e-mail</td></tr>
+<tr><td style="padding:0 24px 8px;font-size:14px;line-height:1.6;color:#140a08">1. <b>Planilha (.csv)</b>: valores por motoboy e por dia, ocorrências, chaves PIX e total.<br>2. <b>PDF</b>: a mesma solicitação para conferência e assinatura.</td></tr>
+<tr><td style="padding:12px 24px 4px;font-size:15px;font-weight:bold;color:#140a08">Motoboys a pagar (${pagar.length})</td></tr>
+<tr><td style="padding:0 24px 16px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e7e2df;border-radius:8px;border-collapse:separate">
+<tr style="background:#140a08"><td style="padding:8px 12px;font-size:12px;color:#ffffff;font-weight:bold">Motoboy</td><td style="padding:8px 12px;font-size:12px;color:#ffffff;font-weight:bold">Chave PIX</td><td style="padding:8px 12px;font-size:12px;color:#ffffff;font-weight:bold;text-align:right">Total</td></tr>
+${pagar.map((l, i) => `<tr style="background:${i % 2 ? '#faf8f7' : '#ffffff'}"><td style="${td}"><b>${esc(l.nome)}</b>${l.oc || l.qtdOc ? `<br><span style="font-size:12px;color:#b8501a">inclui ocorrência ${l.oc > 0 ? '+' : ''}${esc(brl(l.oc))}</span>` : ''}</td><td style="${td};word-break:break-all">${esc(l.pix || '—')}</td><td style="${td};text-align:right;font-weight:bold;white-space:nowrap">${esc(brl(l.total))}</td></tr>`).join('')}
+</table></td></tr>
+<tr><td style="padding:8px 24px 24px;font-size:12.5px;line-height:1.5;color:#6b6360">Aprovar no sistema não é pagar: o pagamento é feito fora do sistema, com as chaves PIX acima. Este e-mail foi enviado automaticamente pelo sistema Pagamento de motoboys.</td></tr>
+</table></td></tr></table></body></html>`;
+  const texto = `Olá,\n\n${autor.nome} enviou a solicitação de pagamento dos motoboys da loja ${f.loja}${quem ? `, ${quem}` : ''}.\n\n` +
+    resumo.map(([k, v]) => `${k}: ${v}`).join('\n') + `\nTOTAL A PAGAR: ${brl(g.total)}\n\n` +
+    'Motoboys a pagar:\n' + pagar.map((l) => `• ${l.nome}: ${brl(l.total)} · PIX ${l.pix || '—'}`).join('\n') +
+    '\n\nAnexos: 1) planilha (.csv) com os valores por dia; 2) PDF da solicitação.' + (link ? `\nAbrir no sistema e aprovar: ${link}` : '') +
+    '\n\nAprovar no sistema não é pagar: o pagamento é feito fora do sistema.';
   return enviaELoga(f, 'solicitação', para, {
     subject: `Solicitação de pagamento · Motoboys · ${f.loja} · ${f.pagamento ? `pagamento ${dataFmt(f.pagamento)} · ` : ''}${brl(g.total)}`,
-    text: `Olá,\n\n${autor.nome} enviou a solicitação de pagamento dos motoboys da loja ${f.loja}` + (f.pagamento ? `, pagamento de ${diaLongo(f.pagamento)}` : '') + `, referente a ${periodo(f)}.\n\n` +
-      `Total: ${brl(g.total)}\nMotoboys: ${g.linhas.filter((l) => l.total > 0).length}\n\n` +
-      g.linhas.filter((l) => l.total > 0).map((l) => `• ${l.nome}: ${brl(l.total)} · PIX ${l.pix}`).join('\n') +
-      `\n\nO PDF com os valores por dia está em anexo.` + (url ? `\nAbrir no sistema: ${url}/fechamentos/${f.id}` : ''),
-    attachments: [{ filename: `solicitacao-pagamento-motoboys-${f.loja.replace(/\W+/g, '_')}-${f.pagamento || f.data_ini}.pdf`, content: await gerarPdf(f, g) }],
+    text: texto, html: corpoHtml,
+    // Os dois anexos vão juntos, na ordem: planilha e depois o PDF.
+    attachments: [
+      { filename: `planilha-motoboys-${nome}-${ref}.csv`, content: csvFechamento(g), contentType: 'text/csv; charset=utf-8' },
+      { filename: `solicitacao-pagamento-motoboys-${nome}-${ref}.pdf`, content: await gerarPdf(f, g), contentType: 'application/pdf' },
+    ],
   });
 }
 
@@ -1111,9 +1141,8 @@ app.post('/fechamentos/:fid/recuperar', so((r) => podeRecuperar(r.user, r.f)), (
   volta(res, `/fechamentos/${f.id}`, 'ok', 'Fechamento recuperado.');
 });
 
-app.get('/fechamentos/:fid/csv', (req, res) => {
-  const f = req.f, g = grade(f);
-  // Aspas sempre; e texto começando com = + - @ vira texto (não fórmula) no Excel.
+// Planilha do fechamento (CSV com ; e BOM, abre direto no Excel). Aspas sempre; texto começando com = + - @ vira texto, não fórmula.
+function csvFechamento(g) {
   const cel = (v) => { let s = String(v ?? ''); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
   const num = (c) => (c / 100).toFixed(2).replace('.', ',');
   const linhas = [
@@ -1121,9 +1150,13 @@ app.get('/fechamentos/:fid/csv', (req, res) => {
     ...g.linhas.map((l) => [l.nome, l.pix, ...g.dias.map((d) => num(l.dias[d]?.final || 0)), ...(g.temOc ? [num(l.oc)] : []), ...(g.temPago ? [num(-l.pago)] : []), num(l.total)]),
     ['TOTAL', '', ...g.dias.map((d) => num(g.totDia[d])), ...(g.temOc ? [num(g.totOc)] : []), ...(g.temPago ? [num(-g.totPago)] : []), num(g.total)],
   ];
+  return '\ufeff' + linhas.map((r) => r.map(cel).join(';')).join('\r\n');
+}
+app.get('/fechamentos/:fid/csv', (req, res) => {
+  const f = req.f;
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="motoboys-${f.loja.replace(/\W+/g, '_')}-${f.data_ini}-a-${f.data_fim}.csv"`);
-  res.send('﻿' + linhas.map((r) => r.map(cel).join(';')).join('\r\n'));
+  res.send(csvFechamento(grade(f)));
 });
 
 // ---------- Usuários (admin) ----------

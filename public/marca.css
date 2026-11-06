@@ -448,3 +448,9 @@ body.auth .erro-pag{grid-template-columns:1fr;margin:0}
 .erro-campo:focus{outline:2px solid var(--bad);outline-offset:3px;border-radius:6px}
 /* Pendências no celular: a situação (com motivo e devolvidos) ocupa a linha inteira e a ação vem embaixo, à direita */
 @container sec (max-width:560px){.sec-p .tab-p tr{grid-template-areas:"pag tot" "per tot" "sit sit" "acao acao"}.sec-p .tab-p td:nth-child(5){justify-self:end}}
+
+/* Histórico: filtros de loja e entregador */
+.hist-f{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.hist-f .search{min-width:200px;flex:1 1 200px}
+
+/* Aviso "não abra os arquivos" na importação: destacado */
+.aviso-abrir{border-width:2px;border-left-width:6px;padding:16px 18px;font-size:15px;line-height:1.5}.aviso-abrir>div>b{display:block;font-size:16.5px;margin-bottom:6px}.aviso-abrir p b{display:inline;font-size:inherit;margin:0}.aviso-abrir p{margin:4px 0 0}.aviso-abrir>.ico,.aviso-abrir>svg{width:26px;height:26px;flex:none}

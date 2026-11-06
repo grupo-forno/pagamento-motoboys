@@ -19,7 +19,7 @@ before(async () => {
   const user = (login, perfil, l) => Number(db.prepare('INSERT INTO usuarios (nome, login, senha, perfil, loja_id) VALUES (?,?,?,?,?)').run(login, login, hashSenha('senha12345'), perfil, l).lastInsertRowid);
   ids.desp = user('desp', 'despachante', loja); user('fin', 'financeiro', null);
   for (const n of ['Ana', 'Bia']) ids[n] = Number(db.prepare('INSERT INTO motoboys (nome) VALUES (?)').run(n).lastInsertRowid);
-  srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '0' } });
+  srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '0', EMAIL_SO_ARQUIVO: '1' } });
   srv.stderr.on('data', (d) => process.stderr.write(d));
   await new Promise((ok, erro) => { srv.stdout.on('data', (d) => String(d).includes('Pagamento Entregadores') && ok()); srv.on('exit', erro); });
 });
@@ -105,9 +105,22 @@ test('envio com diferença exige justificativa e e-mail; a justificativa chega a
   assert.match(msg(await post(desp, `/fechamentos/${F}/enviar`, { para: 'fin@teste.com', justificativa: 'curta' })), /justificativa/);
   await post(desp, `/fechamentos/${F}/enviar`, { para: '', justificativa: 'Resumo saiu com filtro diferente' }); // sem destinatário: recusado
   assert.strictEqual(db.prepare('SELECT status FROM fechamentos WHERE id = ?').get(F).status, 'rascunho');
+  // E-mail que falha (servidor inacessível): nada é enviado, o fechamento continua com a loja e o PDF segue disponível.
+  db.prepare("INSERT OR REPLACE INTO config (chave, valor) VALUES ('smtp_host', '127.0.0.1'), ('smtp_port', '1')").run();
+  const falhou = await post(desp, `/fechamentos/${F}/enviar`, { para: 'fin@teste.com', justificativa: 'Resumo saiu com filtro diferente' });
+  db.prepare("DELETE FROM config WHERE chave IN ('smtp_host', 'smtp_port')").run();
+  assert.match(msg(falhou), /Nada foi enviado/); assert.match(new URL(falhou, B).searchParams.get('lk'), /\/pdf\t/);
+  assert.strictEqual(db.prepare('SELECT status FROM fechamentos WHERE id = ?').get(F).status, 'rascunho');
+  assert.strictEqual((await get(desp, `/fechamentos/${F}/pdf`)).status, 200);
   await post(desp, `/fechamentos/${F}/enviar`, { para: 'fin@teste.com', justificativa: 'Resumo saiu com filtro diferente' });
   assert.strictEqual(db.prepare('SELECT status FROM fechamentos WHERE id = ?').get(F).status, 'enviado');
-  assert.ok((await texto(await entra('fin'), `/fechamentos/${F}`)).includes('Resumo saiu com filtro diferente'));
+  const fin = await entra('fin');
+  assert.ok((await texto(fin, `/fechamentos/${F}`)).includes('Resumo saiu com filtro diferente'));
+  // Histórico: busca por entregador e filtro de datas
+  const h = await texto(fin, '/historico?q=ana');
+  assert.ok(h.includes(`data-href="/fechamentos/${F}"`));
+  assert.ok(!(await texto(fin, '/historico?q=ninguem')).includes(`data-href="/fechamentos/${F}"`));
+  assert.ok(!(await texto(fin, '/historico?ini=2026-12-01&fim=2026-12-31')).includes(`data-href="/fechamentos/${F}"`));
 });
 
 test('importação: erro no modo 1 dia mantém modo e data, fala do arquivo certo e não cita "segundo arquivo"', async () => {

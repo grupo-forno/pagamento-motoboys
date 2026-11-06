@@ -92,6 +92,11 @@ function lerResumo(buf) {
     return { entregador: String(c[col('Entregador')] ?? '').trim(), pedidos: Number(c[col('Pedidos')]) || 0, cpf: limpa(c[col('CPF')]), pix: limpa(c[col('Chave Pix')]), total, pago, ocorrencias: comOc - total, qtdOc: col('Ocorrências') < 0 ? 0 : Number(c[col('Ocorrências')]) || 0 };
   }).filter((r) => r.entregador);
   if (!rows.length) throw erro('O Resumo de entregas está vazio.');
+  // Arquivo aberto e salvo no Excel antes de importar: números longos viram notação científica (ex.: 1,234E+12).
+  const cientifico = (v) => /^\d+([.,]\d+)?e[+-]?\d+$/i.test(String(v || '').trim());
+  const estragados = rows.filter((r) => cientifico(r.pix) || cientifico(r.cpf));
+  if (estragados.length)
+    throw erro(`Chaves PIX estragadas (${estragados.slice(0, 3).map((r) => `${r.entregador}: ${r.pix || r.cpf}`).join('; ')}${estragados.length > 3 ? '…' : ''}): o arquivo foi aberto antes de importar. Baixe de novo no Agilizone e importe sem abrir.`);
   return rows;
 }
 

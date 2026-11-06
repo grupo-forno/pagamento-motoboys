@@ -37,6 +37,8 @@ test('lê resumo de entregadores (CSV do Agilizone)', () => {
   ]);
   assert.equal(lerResumo(Buffer.from(csv, 'latin1'))[1].entregador, 'Vinícius Amaral'); // salvo pelo Excel
   assert.throws(() => lerResumo(Buffer.from('Número;Loja\n1;A')), /Resumo de entregas/);
+  // Aberto no Excel antes de importar: PIX em notação científica é recusado.
+  assert.throws(() => lerResumo(Buffer.from(csv.replace(';02675373362;26/', ';1,234E+12;26/'))), /estragadas.*Mike Rodrigues: 1,234E\+12/);
 });
 
 const planilha = (linhas) => {

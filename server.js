@@ -303,16 +303,16 @@ function periodoSel(q, hoje) {
   const [ini, fim] = tipo === 'livre' ? [cini || '0000-01-01', cfim || '9999-12-31'] : mes ? [mes + '-01', ultimo(mes)] : R[tipo];
   return { tipo, mes, ini, fim, cini, cfim, R, param: mes || tipo === 'livre' || tipo === 'semana' ? '' : tipo, dentro: (d) => !!d && d >= ini && d <= fim };
 }
-function barraPeriodo(per, datas, href, nota) {
+function barraPeriodo(per, datas, href, nota, padraoTipo = 'semana') {
   const n = (r) => datas.filter((d) => d >= r[0] && d <= r[1]).length, dm = (d) => dataFmt(d).slice(0, 5);
   const meses = [...new Set(datas.map((d) => d.slice(0, 7)))].sort().reverse(), limpo = { per: '', mes: '', ini: '', fim: '' };
   const nomeMes = (m) => new Date(m + '-15T12:00:00Z').toLocaleDateString('pt-BR', { month: 'long', year: 'numeric', timeZone: 'UTC' });
   const base = new URL(href(limpo), 'http://x'), campos = [...base.searchParams.entries()]; // os outros filtros da tela seguem junto
   const faixa = per.tipo === 'tudo' ? 'Todos os períodos' : per.tipo === 'livre' ? `${per.cini ? dataFmt(per.cini) : 'início'} a ${per.cfim ? dataFmt(per.cfim) : 'sem data final'}` : `${dm(per.ini)} a ${dm(per.fim)}`;
   const rotulo = { semana: 'Esta semana', mes: 'Este mês', ano: 'Este ano', tudo: 'Tudo', outro: nomeMes(per.mes || '2000-01'), livre: 'Período personalizado' }[per.tipo];
-  const padrao = per.tipo === 'semana', id = 'dlg-per-' + Math.random().toString(36).slice(2, 7);
+  const padrao = per.tipo === padraoTipo, id = 'dlg-per-' + Math.random().toString(36).slice(2, 7);
   return html`<div class="per-resumo"><button type="button" class="btn btn-sec btn-sm" data-abre="${id}">${icone('calendario', 'sm')} Filtrar por data</button>
-<span class="per-atual"><b>${rotulo}</b> · ${faixa} · ${pl(n([per.ini, per.fim]), 'item', 'itens')}</span>${padrao ? '' : html`<a class="per-limpar" href="${href(limpo)}">Voltar à semana</a>`}</div>
+<span class="per-atual"><b>${rotulo}</b> · ${faixa} · ${pl(n([per.ini, per.fim]), 'item', 'itens')}</span>${padrao ? '' : html`<a class="per-limpar" href="${href(limpo)}">${padraoTipo === 'semana' ? 'Voltar à semana' : 'Limpar datas'}</a>`}</div>
 <dialog id="${id}" class="dlg dlg-per" aria-labelledby="${id}-t"><h2 id="${id}-t">Filtrar por data</h2>${nota ? html`<p class="hint">${nota}.</p>` : ''}
 <h3 class="per-sub">Atalhos</h3>
 <nav class="pills per-atalhos" aria-label="Atalhos de período">${[['semana', 'Esta semana'], ['mes', 'Este mês'], ['ano', 'Este ano'], ['tudo', 'Tudo']].map(([k, t]) => html`<a href="${href({ ...limpo, per: k })}" class="${per.tipo === k ? 'on' : ''}" ${per.tipo === k ? new Raw('aria-current="true"') : ''}>${t}<span class="c">${n(per.R[k])}</span></a>`)}</nav>
@@ -608,25 +608,35 @@ ${f.justificativa && f.status !== 'rascunho' ? html`<div class="alert warn" role
 ${blocoConferencia({ f, g, itens, decide, edita: false, modo: 'fin', decisoes, hist, nomeDe, avisados, voltar })}`));
 }
 
-// Histórico: consulta com um filtro de situação e um de mês.
+// Histórico: consulta com filtros de situação, período (data do pagamento previsto), loja e entregador. Padrão: tudo.
 app.get('/historico', (req, res) => {
   if (req.user.perfil === 'despachante') return res.redirect('/'); // o despachante trabalha só pelas Pendências
-  const u = req.user, todos = fechamentosDe(u);
-  const SIT = { '': 'Todos', rascunho: 'Falta enviar', enviado: 'Aguardando aprovação', pago: 'Aprovados', arquivado: 'Arquivados' };
-  const s = req.query.s in SIT ? req.query.s : '';
-  const mesDe = (f) => (f.pagamento || f.data_fim).slice(0, 7);
-  const meses = [...new Set(todos.map(mesDe))].sort().reverse();
-  const m = meses.includes(req.query.m) ? req.query.m : '';
-  const daSit = (k) => todos.filter((f) => (k === 'arquivado' ? !!f.arquivado_em : !f.arquivado_em && (!k || f.status === k)) && (!m || mesDe(f) === m));
+  const u = req.user, q = req.query, todos = fechamentosDe(u);
+  const SIT = { '': 'Todos', rascunho: 'Em conferência', enviado: 'Aguardando aprovação', pago: 'Aprovados', arquivado: 'Arquivados' };
+  const s = q.s in SIT ? q.s : '';
+  const per = periodoSel({ ...q, per: q.per || 'tudo' }, agora().data), dataF = (f) => f.pagamento || f.data_fim;
+  const lojas = veTudo(u) ? db.prepare('SELECT id, nome FROM lojas ORDER BY nome').all().filter((l) => todos.some((f) => f.loja_id === l.id)) : [];
+  const loja = lojas.some((l) => String(l.id) === q.loja) ? Number(q.loja) : 0;
+  const busca = String(q.q || '').trim().slice(0, 80), bq = semAcento(busca);
+  // Fechamentos em que aparece um entregador com esse nome (Relatório de Pedidos ou Resumo).
+  const comEnt = bq ? new Set(db.prepare('SELECT DISTINCT fechamento_id id, entregador FROM resumo UNION SELECT DISTINCT fechamento_id, entregador FROM pedidos').all().filter((x) => semAcento(x.entregador || '').includes(bq)).map((x) => x.id)) : null;
+  const base = todos.filter((f) => per.dentro(dataF(f)) && (!loja || f.loja_id === loja) && (!comEnt || comEnt.has(f.id)));
+  const daSit = (k) => base.filter((f) => (k === 'arquivado' ? !!f.arquivado_em : !f.arquivado_em && (!k || f.status === k)));
   const lista = daSit(s);
-  const qs = (k) => { const p = new URLSearchParams(); if (k) p.set('s', k); if (m) p.set('m', m); return p.size ? `/historico?${p}` : '/historico'; };
-  const nomeMes = (x) => new Date(x + '-15T12:00:00Z').toLocaleDateString('pt-BR', { month: 'long', year: 'numeric', timeZone: 'UTC' });
-  res.send(page(req, { titulo: 'Histórico' }, html`
-<div class="ferramentas"><nav class="seg" aria-label="Situação">${Object.entries(SIT).map(([k, t]) => html`<a href="${qs(k)}" class="${s === k ? 'on' : ''}" ${s === k ? new Raw('aria-current="page"') : ''}>${t}<span class="c">${daSit(k).length}</span></a>`)}</nav>
-<form method="get" action="/historico">${s ? html`<input type="hidden" name="s" value="${s}">` : ''}<label class="sr" for="mes">Mês</label><select id="mes" name="m" onchange="this.form.submit()"><option value="">Todos os meses</option>${meses.map((x) => html`<option value="${x}" ${x === m ? 'selected' : ''}>${nomeMes(x)}</option>`)}</select><noscript><button class="btn btn-sec btn-sm">Filtrar</button></noscript></form></div>
+  const perQ = per.param === 'tudo' ? '' : per.tipo === 'semana' ? 'semana' : per.param; // "tudo" é o padrão daqui: não vai na URL
+  const qs = (o = {}) => { const p = new URLSearchParams(), v = { s, per: perQ, mes: per.mes, ini: per.cini, fim: per.cfim, loja: loja || '', q: busca, ...o };
+    for (const [k, x] of Object.entries(v)) if (x) p.set(k, x); return p.size ? `/historico?${p}` : '/historico'; };
+  const filtros = [per.tipo !== 'tudo', loja, busca].filter(Boolean).length;
+  res.send(page(req, { titulo: 'Histórico', sub: 'Todos os fechamentos. Filtre por situação, data do pagamento, loja ou entregador.' }, html`
+<div class="ferramentas"><nav class="seg" aria-label="Situação">${Object.entries(SIT).map(([k, t]) => html`<a href="${qs({ s: k })}" class="${s === k ? 'on' : ''}" ${s === k ? new Raw('aria-current="page"') : ''}>${t}<span class="c">${daSit(k).length}</span></a>`)}</nav>
+<form method="get" action="/historico" class="hist-f" role="search">${[['s', s], ['per', perQ], ['mes', per.mes], ['ini', per.cini], ['fim', per.cfim]].filter(([, v]) => v).map(([k, v]) => html`<input type="hidden" name="${k}" value="${v}">`)}
+${lojas.length > 1 ? html`<label class="sr" for="h-loja">Loja</label><select id="h-loja" name="loja" onchange="this.form.submit()"><option value="">Todas as lojas</option>${lojas.map((l) => html`<option value="${l.id}" ${l.id === loja ? 'selected' : ''}>${lojaCurta(l.nome)}</option>`)}</select>` : ''}
+<div class="search">${icone('busca', 'sm')}<input type="search" name="q" value="${busca}" placeholder="Buscar entregador" aria-label="Buscar fechamentos por entregador"></div><button class="btn btn-sec btn-sm">Buscar</button>
+${filtros ? html`<a class="btn btn-ghost btn-sm" href="${s ? `/historico?s=${s}` : '/historico'}">Limpar filtros</a>` : ''}</form></div>
+${barraPeriodo(per, todos.filter((f) => (!loja || f.loja_id === loja) && (!comEnt || comEnt.has(f.id))).map(dataF), (o) => qs({ per: o.per, mes: o.mes, ini: o.ini, fim: o.fim }), 'pela data do pagamento previsto (ou o fim do período)', 'tudo')}
 <div class="tw card"><table class="tab-hist"><thead><tr><th scope="col">Pagamento previsto</th><th scope="col">Período</th>${veTudo(u) ? html`<th scope="col">Loja</th>` : ''}<th scope="col">Situação</th><th scope="col" class="n">Total</th><th scope="col"><span class="sr">Ação</span></th></tr></thead><tbody>
 ${lista.map((f) => html`<tr data-href="/fechamentos/${f.id}"><td class="c-pag"><b>${f.pagamento ? diaLongo(f.pagamento) : '—'}</b><span class="mut small"> ${f.pagamento ? dataFmt(f.pagamento).slice(6) : ''}</span></td><td class="c-per">${periodo(f)}</td>${veTudo(u) ? html`<td class="c-loja">${f.loja}</td>` : ''}<td class="c-sit">${selo(f, f.devolvido)}</td><td class="n c-tot">${brl(f.total)}</td><td class="n c-acao"><a class="btn btn-ghost btn-sm" href="/fechamentos/${f.id}">Abrir</a></td></tr>`)}
-${lista.length ? '' : html`<tr><td colspan="6" class="vazio-p">Nenhum fechamento ${s ? `com a situação "${SIT[s].toLowerCase()}"` : ''}${m ? ` em ${nomeMes(m)}` : ''}.</td></tr>`}</tbody></table></div>`));
+${lista.length ? '' : html`<tr><td colspan="6" class="vazio-p">Nenhum fechamento ${s ? `com a situação "${SIT[s].toLowerCase()}"` : ''}${busca ? ` com o entregador "${busca}"` : ''}${filtros ? ' nestes filtros' : ''}.${filtros ? html` <a href="${s ? `/historico?s=${s}` : '/historico'}">Limpar filtros</a>` : ''}</td></tr>`}</tbody></table></div>`));
 });
 
 // Primeira configuração (admin): o que falta para o sistema funcionar, cada item leva à tela certa.
@@ -634,7 +644,7 @@ function checklistAdmin() {
   const nLojas = db.prepare('SELECT COUNT(*) n FROM lojas').get().n, perfis = new Set(db.prepare("SELECT perfil FROM usuarios WHERE ativo = 1").all().map((x) => x.perfil));
   const itens = [['Lojas e calendários de pagamento', nLojas > 0, '/config', `${nLojas} loja(s) cadastrada(s)`],
     ['Usuários: despachante e financeiro', perfis.has('despachante') && perfis.has('financeiro'), '/usuarios', perfis.has('despachante') && perfis.has('financeiro') ? 'Perfis principais cadastrados' : `Falta: ${['despachante', 'financeiro'].filter((p) => !perfis.has(p)).map((p) => PERFIS[p]).join(' e ')}`],
-    ['Notificações por e-mail', !!(cfg('email_para') && cfg('smtp_host')), '/config', !cfg('email_para') ? 'Sem destinatários: o envio ao financeiro exige pelo menos um' : !cfg('smtp_host') ? 'Sem servidor: os e-mails não saem' : 'Configuradas']];
+    ['Notificações por e-mail', !!(cfg('email_para') && cfg('smtp_host')), '/config', !cfg('email_para') ? 'Sem destinatários: o envio ao financeiro exige pelo menos um' : !cfg('smtp_host') ? 'Sem servidor: os e-mails não saem e o envio ao financeiro fica bloqueado' : 'Configuradas']];
   if (itens.every((i) => i[1])) return '';
   return html`<section class="conferencia" aria-labelledby="chk-t"><h2 id="chk-t">Primeira configuração</h2><ol>${itens.map(([t, ok, href, txt]) => html`<li class="${ok ? 'ok' : 'warn'}"><a href="${href}"><span class="marca" aria-hidden="true">${icone(ok ? 'check' : 'alerta', 'sm')}</span><span><b>${t}</b><span>${txt}</span></span></a></li>`)}</ol></section>`;
 }
@@ -725,6 +735,8 @@ ${opcoes.length > 1 ? html`<nav class="outros" aria-label="Outros períodos pend
 <label><input type="radio" name="modo" value="dia" ${modoDia ? new Raw('checked') : ''}><span><b>Só 1 dia</b><small>Só o Resumo de entregas</small></span></label></div></fieldset>
 <div class="field dia-campo" data-so-dia ${modoDia ? '' : new Raw('hidden')}>${u.perfil === 'admin' ? html`<label for="f-loja">Loja</label><select id="f-loja" name="loja"><option value="">Escolha a loja</option>${lojas.map((x) => html`<option value="${x.id}" ${x.id === lojaQ ? new Raw('selected') : ''}>${x.nome}</option>`)}</select>` : ''}
 <label for="f-dia">Dia das entregas</label><input id="f-dia" type="date" name="dia" max="${hoje}" value="${diaQ}" ${new Raw(erro && campo === 'dia' ? 'aria-invalid="true" aria-describedby="erro-dia"' : '')}>${erroDe('dia')}<p class="hint">No Agilizone, filtre do dia escolhido às ${FILTRO_HORA} até o dia seguinte às ${FILTRO_HORA} e use só <b>Exportar Resumo</b>.</p></div>
+<div class="alert bad aviso-abrir" role="note">${icone('alerta')}<div><b>Não abra os arquivos antes de importar</b>
+<p>Abrir no Excel estraga as chaves PIX. Se abriu, baixe de novo no Agilizone.</p></div></div>
 <ol class="uploads">${upload(1, 'arquivo', '.xlsx,.xls', 'Relatório de Pedidos (botão "Exportar Pedidos")', '.xlsx')}${upload(2, 'resumo', '.csv,text/csv', 'Resumo de entregas (botão "Exportar Resumo")', '.csv')}</ol>
 </div>
 <div class="card-f"><button class="btn btn-pri btn-lg">Importar e revisar</button><a class="btn btn-ghost" href="/">Cancelar</a></div></form></div>
@@ -1005,7 +1017,7 @@ app.get('/fechamentos/:fid/enviar', so((r) => podeEditar(r.user, r.f) || podeRee
 <div><dt>Entregadores a pagar</dt><dd>${aPagar.length}</dd></div>
 <div class="envio-total"><dt>Total a pagar</dt><dd>${brl(g.total)}</dd></div></dl>
 ${!padrao.length ? html`<div class="alert warn">${icone('email')}<div><b>Nenhum destinatário padrão configurado</b>Hoje o envio exige pelo menos um e-mail: digite abaixo quem deve receber. Para deixar uma lista fixa, peça ao Admin para configurar em Configurações.</div></div>` : ''}
-${!cfg('smtp_host') ? html`<div class="alert info">${icone('info')}<div><b>Servidor de e-mail não configurado</b>O fechamento ${reenvio ? 'continua' : 'vai'} para a fila do financeiro normalmente, mas o e-mail com o PDF não sai até o Admin configurar o servidor em Configurações.</div></div>` : ''}
+${!cfg('smtp_host') && process.env.EMAIL_SO_ARQUIVO !== '1' ? html`<div class="alert bad">${icone('alerta')}<div><b>Servidor de e-mail não configurado</b>${reenvio ? 'O e-mail não vai sair' : 'O envio fica bloqueado, porque o e-mail ao financeiro é obrigatório'} até o Admin configurar o servidor em Configurações. Enquanto isso, você pode baixar o PDF e o Excel abaixo.</div></div>` : ''}
 ${pend.length && !reenvio ? html`<div class="alert warn">${icone('alerta')}<div><b>${pend.length} entregador(s) com diferença com o Resumo do Agilizone</b>${pend.map((l) => l.nome).join(', ')}. <a href="/fechamentos/${f.id}#conferencia">Revisar antes de enviar</a>
 <label class="just-rot" for="justificativa">Justificativa da diferença <span class="req" aria-hidden="true">*</span></label>
 <textarea id="justificativa" name="justificativa" required minlength="10" maxlength="2000" rows="3" aria-describedby="just-dica">${f.justificativa || ''}</textarea>
@@ -1057,7 +1069,12 @@ app.post('/fechamentos/:fid/enviar', so((r) => podeEditar(r.user, r.f)), async (
   const difs = grade(f).linhas.filter((l) => l.confere === 'pendente');
   const just = difs.length ? String(req.body.justificativa || '').trim().slice(0, 2000) : null;
   if (difs.length && just.length < 10) return volta(res, `/fechamentos/${f.id}/enviar`, 'erro', `Escreva a justificativa da diferença com o Resumo (${nomes(difs)}), com pelo menos 10 caracteres. Nada foi enviado.`);
-  tx(() => {
+  // O e-mail ao financeiro é obrigatório: sai primeiro e, se falhar, nada é enviado (o fechamento continua com a loja).
+  const erro = await solicitarPagamento({ ...f, status: 'enviado', justificativa: just, envioAgora: req.user.nome }, req.user, para);
+  if (erro) return volta(res, `/fechamentos/${f.id}/enviar`, 'erro', `Nada foi enviado: o e-mail ao financeiro não saiu (${erro}). O fechamento continua com você. Se precisar, baixe o PDF e o Excel nesta tela; quando o e-mail voltar a funcionar, envie de novo.`, [`/fechamentos/${f.id}/pdf`, 'Baixar o PDF']);
+  const ok = tx(() => {
+    const atual = carregaF(f.id);
+    if (atual.status !== 'rascunho' || atual.versao !== f.versao) return false; // clique duplo ou outra aba: já enviado
     db.prepare("UPDATE fechamentos SET status = 'enviado', versao = versao + 1, enviado_em = datetime('now','localtime'), enviado_por = ?, justificativa = ? WHERE id = ?").run(req.user.id, just, f.id);
     if (just) log(req.user.id, `f:${f.id}`, `Justificou a diferença com o Resumo (${difs.map((l) => `${l.nome}: pedidos ${brl(l.bruto)}, Resumo ${brl(l.resumo || 0)}`).join('; ')}): ${just}`);
     // Congela o PIX de cada entregador como foi enviado ao financeiro.
@@ -1068,10 +1085,9 @@ app.post('/fechamentos/:fid/enviar', so((r) => podeEditar(r.user, r.f)), async (
     log(req.user.id, `f:${f.id}`, `Enviou ao financeiro (versão ${f.versao + 1}, total ${brl(g.total)}${alterados.length ? `; revisou mudanças em itens já aprovados: ${alterados.map((l) => l.nome).join(', ')}` : ''})`);
     // Reenvio em que tudo já estava aprovado (aprovações preservadas): conclui direto.
     if (!g.linhas.some((l) => l.total > 0 && !l.aprovado)) { db.prepare("UPDATE fechamentos SET status = 'pago' WHERE id = ?").run(f.id); log(null, `f:${f.id}`, 'Aprovou a solicitação de pagamento (todos já estavam aprovados)'); }
+    return true;
   });
-  const erro = await solicitarPagamento({ ...f, status: 'enviado', justificativa: just }, req.user, para);
-  erro ? volta(res, `/fechamentos/${f.id}`, 'erro', `Fechamento: enviado ao financeiro (já está em Para aprovar). E-mail: não saiu (${erro}). Para avisar, use "Reenviar e-mail" depois de corrigir; isso não reenvia o fechamento.`)
-    : volta(res, `/fechamentos/${f.id}`, 'ok', `Fechamento enviado ao financeiro. E-mail com o PDF enviado para ${para.join(', ')}.`);
+  volta(res, `/fechamentos/${f.id}`, 'ok', ok ? `Fechamento enviado ao financeiro. E-mail com o PDF enviado para ${para.join(', ')}.` : 'Este fechamento já tinha sido enviado. Nada mudou.');
 });
 
 // Envia e registra no histórico do fechamento. Devolve null se enviou, ou o motivo de não ter enviado.
@@ -1079,7 +1095,8 @@ async function enviaELoga(f, rotulo, para, msg) {
   if (!para.length) { log(null, `f:${f.id}`, `E-mail (${rotulo}) não enviado: nenhum destinatário configurado`); return 'nenhum destinatário configurado em Configurações'; }
   try {
     const r = await enviarEmail({ to: para.join(', '), ...msg });
-    if (r.salvo) { log(null, `f:${f.id}`, `E-mail (${rotulo}) não enviado: servidor de e-mail não configurado (cópia salva no servidor)`); return 'servidor de e-mail não configurado em Configurações'; }
+    // EMAIL_SO_ARQUIVO=1 (testes e desenvolvimento): a cópia salva em data/emails conta como enviada.
+    if (r.salvo && process.env.EMAIL_SO_ARQUIVO !== '1') { log(null, `f:${f.id}`, `E-mail (${rotulo}) não enviado: servidor de e-mail não configurado (cópia salva no servidor)`); return 'servidor de e-mail não configurado em Configurações'; }
     log(null, `f:${f.id}`, `E-mail (${rotulo}) enviado para ${para.join(', ')}`);
     return null;
   } catch (e) {

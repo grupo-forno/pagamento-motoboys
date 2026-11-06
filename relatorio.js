@@ -30,7 +30,8 @@ function gerarPdf(f0, g0) {
 
     const L = 30, R = doc.page.width - 30, W = R - L, FIM = doc.page.height - 50;
     const ultimo = (re) => db.prepare('SELECT l.acao, l.quando, u.nome FROM log l LEFT JOIN usuarios u ON u.id = l.usuario_id WHERE l.ref = ? AND l.acao LIKE ? ORDER BY l.id DESC').get(`f:${f.id}`, re);
-    const envio = ultimo('Enviou ao financeiro%'), aprov = ultimo('Aprovou a solicitação%');
+    // envioAgora: PDF gerado no momento do envio, antes de o envio ser gravado (o e-mail sai primeiro).
+    const envio = f.envioAgora ? { nome: f.envioAgora, quando: new Date().toLocaleString('sv-SE', { timeZone: 'America/Fortaleza' }) } : ultimo('Enviou ao financeiro%'), aprov = ultimo('Aprovou a solicitação%');
     const quando = (x) => (x ? `${x.nome || 'Sistema'} · ${dataFmt(x.quando.slice(0, 10))} ${x.quando.slice(11, 16)}` : '—');
     const gerado = new Date().toLocaleString('pt-BR', { timeZone: 'America/Fortaleza', dateStyle: 'short', timeStyle: 'short' });
     const pend = g.linhas.filter((l) => l.confere === 'pendente');
@@ -69,9 +70,11 @@ function gerarPdf(f0, g0) {
     y += 40;
 
     // ---- tabela por entregador e dia
-    const mostraDias = g.dias.length <= 7; // mais que isso não cabe uma coluna por dia: aparece o valor base e os dias ficam na planilha
+    // Uma coluna por dia só quando cabe (até 7 dias e ~50pt cada); senão aparece o valor base e os dias ficam na planilha.
+    const fixas = 22 + 150 + 125 + 78 + (g.temOc ? 80 : 0) + (g.temPago ? 60 : 0) + (g.temResumo ? 132 : 0);
+    const mostraDias = g.dias.length <= 7 && (W - fixas) / Math.max(g.dias.length, 1) >= 50;
     const cols = [{ t: '#', w: 22, n: true }, { t: 'Entregador', w: 150 }, { t: 'Chave PIX', w: 125 },
-      ...(mostraDias ? g.dias.map((d) => ({ t: diaFmt(d), w: 0, n: true, dia: d })) : [{ t: 'Valor base', w: 90, n: true }]), ...(g.temOc ? [{ t: 'Ocorrências', w: 80, n: true }] : []), ...(g.temPago ? [{ t: 'Já pago', w: 60, n: true }] : []), { t: 'Total a pagar', w: 78, n: true }, ...(g.temResumo ? [{ t: 'Resumo', w: 68, n: true }] : [])];
+      ...(mostraDias ? g.dias.map((d) => ({ t: diaFmt(d), w: 0, n: true, dia: d })) : [{ t: 'Valor base', w: 90, n: true }]), ...(g.temOc ? [{ t: 'Ocorrências', w: 80, n: true }] : []), ...(g.temPago ? [{ t: 'Já pago', w: 60, n: true }] : []), { t: 'Total a pagar', w: 78, n: true }, ...(g.temResumo ? [{ t: 'Resumo', w: 68, n: true }, { t: 'Diferença', w: 64, n: true }] : [])];
     const livre = (W - cols.reduce((s, c) => s + c.w, 0)) / Math.max(g.dias.length, 1);
     cols.forEach((c) => { if (!c.w) c.w = Math.min(livre, 95); });
     if (!mostraDias) { const sobra = W - cols.reduce((s, c) => s + c.w, 0); cols[1].w += sobra * 0.55; cols[2].w += sobra * 0.45; }
@@ -102,6 +105,7 @@ function gerarPdf(f0, g0) {
         else if (c.t === 'Ocorrências') { v = l.oc || l.qtdOc ? `${l.oc > 0 ? '+' : ''}${brl(l.oc)} (${l.qtdOc})` : '–'; if (l.oc < 0) cor = COR.vermelho; }
         else if (c.t === 'Já pago') { v = l.pago ? `-${brl(l.pago)}` : '–'; if (l.pago) cor = COR.vermelho; }
         else if (c.t === 'Total a pagar') { v = brl(l.total); bold = true; }
+        else if (c.t === 'Diferença') { const d = l.resumo == null ? 0 : l.bruto - l.resumo; v = d ? `${d > 0 ? '+' : ''}${brl(d)}` : '–'; cor = d ? COR.vermelho : '#B5ADA9'; bold = !!d; }
         else { v = l.resumo == null ? '–' : brl(l.resumo); cor = l.confere === 'ok' ? COR.verde : l.confere === 'pendente' ? COR.vermelho : COR.laranjaEsc; }
         doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(8.5);
         if (doc.widthOfString(v) > c.w - 10) { let t = v; while (t.length > 1 && doc.widthOfString(t + '…') > c.w - 10) t = t.slice(0, -1); v = t.trimEnd() + '…'; }
@@ -115,13 +119,24 @@ function gerarPdf(f0, g0) {
     doc.rect(L, y, TW, H + 2).fill(COR.laranjaSoft);
     let x = L;
     for (const c of cols) {
-      const v = c.t === 'Entregador' ? 'TOTAL' : c.dia ? brl(g.totDia[c.dia]) : c.t === 'Valor base' ? brl(g.linhas.reduce((t, l) => t + l.bruto, 0)) : c.t === 'Total a pagar' ? brl(g.total) : c.t === 'Ocorrências' ? brl(g.totOc) : c.t === 'Já pago' ? `-${brl(g.totPago)}` : c.t === 'Resumo' ? brl(g.linhas.reduce((s, l) => s + (l.resumo || 0), 0)) : '';
+      const v = c.t === 'Entregador' ? 'TOTAL' : c.dia ? brl(g.totDia[c.dia]) : c.t === 'Valor base' ? brl(g.linhas.reduce((t, l) => t + l.bruto, 0)) : c.t === 'Total a pagar' ? brl(g.total) : c.t === 'Ocorrências' ? brl(g.totOc) : c.t === 'Já pago' ? `-${brl(g.totPago)}` : c.t === 'Resumo' ? brl(g.linhas.reduce((s, l) => s + (l.resumo || 0), 0)) : c.t === 'Diferença' ? brl(g.linhas.reduce((s, l) => s + (l.resumo == null ? 0 : l.bruto - l.resumo), 0)) : '';
       doc.font('Helvetica-Bold').fontSize(8.5).fillColor(c.t === 'Total a pagar' ? COR.laranjaEsc : COR.preto).text(v, x + 5, y + 6, { width: c.w - 10, align: c.n ? 'right' : 'left', lineBreak: false });
       x += c.w;
     }
     y += H + 8;
-    doc.font('Helvetica').fontSize(7.5).fillColor(COR.cinza).text(`Valores conforme o Agilizone.${mostraDias ? '' : `  Período de ${g.dias.length} dias: os valores de cada dia estão na planilha (Excel).`}${g.temOc ? '  Ocorrências (qtd.): acréscimo ou desconto do Agilizone, sem data, já no total.' : ''}${g.temPago ? '  Já pago: acerto do Agilizone, descontado.' : ''}${g.temResumo ? '  Resumo (soma das taxas): verde = bate com os dias.' : ''}`, L, y);
-    y += 10;
+    doc.font('Helvetica').fontSize(7.5).fillColor(COR.cinza).text(`Valores conforme o Agilizone.${mostraDias ? '' : `  Período de ${g.dias.length} dias: os valores de cada dia estão na planilha (Excel).`}${g.temOc ? '  Ocorrências (qtd.): acréscimo ou desconto do Agilizone, sem data, já no total.' : ''}${g.temPago ? '  Já pago: acerto do Agilizone, descontado.' : ''}${g.temResumo ? '  Resumo (soma das taxas): verde = bate com os dias. Diferença = valor dos pedidos - Resumo.' : ''}`, L, y, { width: W });
+    y = doc.y + 4;
+    // Justificativa obrigatória da loja quando pedidos e Resumo diferem.
+    if (f.justificativa) {
+      const txt = limpa(f.justificativa);
+      doc.font('Helvetica').fontSize(8.5);
+      const h = doc.heightOfString(txt, { width: W - 20 }) + 24;
+      if (y + h > FIM) novaPagina();
+      doc.roundedRect(L, y, W, h, 5).fillAndStroke(COR.laranjaSoft, '#F6CFB7');
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor(COR.laranjaEsc).text('JUSTIFICATIVA DA LOJA PARA A DIFERENÇA COM O RESUMO', L + 10, y + 7, { width: W - 20, characterSpacing: 0.6 });
+      doc.font('Helvetica').fontSize(8.5).fillColor(COR.preto).text(txt, L + 10, y + 18, { width: W - 20 });
+      y += h + 6;
+    }
 
     // ---- assinaturas
     if (y + 32 > FIM) novaPagina();

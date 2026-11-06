@@ -14,7 +14,7 @@ Sistema web que substitui a planilha de pagamento dos entregadores. Ele lê o re
    - **Diferença com o Resumo**: a linha fica marcada e a conferência mostra "Revisar diferença". Dá para enviar assim, mas a **justificativa é obrigatória** (mínimo 10 caracteres); ela fica no histórico, vai no e-mail e aparece no topo da tela do financeiro. O valor a pagar segue o Relatório de Pedidos.
    - **PIX**: vem do Resumo. Se faltar, o despachante digita na própria tela do fechamento; sem PIX o envio fica bloqueado.
    - Tela, aprovação, PDF e Excel usam o mesmo cálculo (o Excel traz também Resumo e diferença).
-4. **Enviar para aprovação**: o fechamento vai para a fila do financeiro e sai um e-mail com o PDF e a planilha. O e-mail do financeiro é obrigatório, e antes de enviar um popup mostra para quem vai (e a justificativa, se houver) para o despachante reconfirmar. Se o servidor de e-mail falhar, o fechamento entra na fila mesmo assim e a tela mostra que o e-mail não saiu. "Reenviar e-mail" só manda o e-mail de novo, sem reabrir nem duplicar o fechamento.
+4. **Enviar para aprovação**: o fechamento vai para a fila do financeiro e sai um e-mail com o PDF e a planilha. O e-mail do financeiro é obrigatório, e antes de enviar um popup mostra para quem vai (e a justificativa, se houver) para o despachante reconfirmar. O e-mail sai primeiro: se falhar (ou se não houver servidor de e-mail configurado), **nada é enviado**, o fechamento continua com a loja e o despachante pode baixar o PDF e o Excel na mesma tela. O PDF traz Resumo, diferença e justificativa. "Reenviar e-mail" só manda o e-mail de novo, sem reabrir nem duplicar o fechamento.
 5. **Financeiro, em "Para aprovar"**: aprova todos, ou marca quem devolver (cada um com motivo). Aprovar **não é pagar**.
    - **Devolução**: os devolvidos saem do fechamento e vão para um fechamento novo, ligado ao original, para a loja corrigir. No popup o financeiro escolhe o que fazer com os não devolvidos: **aprovar o pagamento deles** agora ou **deixar aguardando aprovação** no fechamento original. Se todos forem devolvidos, o fechamento inteiro volta à loja. O despachante vê motivo e pessoas em Pendências, com o botão "Corrigir devolução".
    - Cada decisão confere a versão: uma tela desatualizada não aprova nem devolve.
@@ -34,7 +34,7 @@ Regras:
 - Mudanças de PIX e ações nos fechamentos ficam no histórico.
 
 ## E-mail (Google Workspace)
-Em **Configurações** (login da TI) há o passo a passo. Resumo: numa conta do domínio (ex.: `tecnologia@grupofornopaulista.com`), ative a verificação em duas etapas, crie uma **senha de app** em myaccount.google.com/apppasswords e preencha servidor `smtp.gmail.com`, porta `587`, usuário e senha de app. Depois use **Enviar teste**. Sem servidor configurado, os e-mails ficam salvos em `data/emails/` e não saem.
+Em **Configurações** (login da TI) há o passo a passo. Resumo: numa conta do domínio (ex.: `tecnologia@grupofornopaulista.com`), ative a verificação em duas etapas, crie uma **senha de app** em myaccount.google.com/apppasswords e preencha servidor `smtp.gmail.com`, porta `587`, usuário e senha de app. Depois use **Enviar teste**. Sem servidor configurado, os e-mails ficam salvos em `data/emails/`, não saem e o envio ao financeiro fica bloqueado.
 
 ## Rodar
 Requer Node 22.13 ou mais novo.
@@ -50,7 +50,7 @@ Variáveis: `PORT` (padrão 3080), `HOST`, `DATA_DIR` (banco SQLite e evidência
 
 As configurações de e-mail ficam na tela **Configurações**. As variáveis `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`, `EMAIL_PARA` e `APP_URL` servem só como valor inicial quando a tela ainda não foi preenchida.
 
-Para testar mexendo no código: `npm run dev` (reinicia sozinho a cada alteração).
+Para testar mexendo no código: `npm run dev` (reinicia sozinho a cada alteração). Sem servidor de e-mail, use `EMAIL_SO_ARQUIVO=1` para o e-mail salvo em `data/emails/` contar como enviado (só desenvolvimento e testes; nunca em produção).
 
 Testes: `npm test`
 

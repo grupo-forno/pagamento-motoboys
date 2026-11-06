@@ -61,14 +61,14 @@ function page(req, o, corpo) {
   // Sucesso de ação pontual: aviso temporário. Erro: fica na página (ou junto ao campo, quando a tela trata).
   const flash = html`${q.ok ? html`<div class="toast" role="status">${icone('ok')}<span>${q.ok}</span><button type="button" class="icon-btn" data-fecha-toast aria-label="Fechar aviso">${icone('erro', 'sm')}</button></div>` : ''}${q.erro && !o.erroNoCampo ? html`<div class="alert bad" role="alert">${icone('erro')}<div>${q.erro}</div></div>` : ''}`;
   const desp = u?.perfil === 'despachante';
-  const emFech = desp ? p === '/' || (p.startsWith('/fechamentos') && o.trilha?.[0]?.[0] !== 'Histórico') : p === '/' || p.startsWith('/fechamentos');
+  const emFech = p === '/' || p.startsWith('/fechamentos');
   return html`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#df6d2a">
 <title>${o.titulo} · Entregadores Forno Paulista</title>
 <link rel="icon" type="image/png" href="/marca/favicon.png"><link rel="apple-touch-icon" href="/marca/apple-touch-icon.png"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>${new Raw(CSS)}</style><link rel="stylesheet" href="/marca/marca.css?v=${versao('/marca/marca.css')}">${o.css ? html`<link rel="stylesheet" href="${o.css}?v=${versao(o.css)}">` : ''}</head>
 ${u ? html`<body class="${o.largura || ''}"><a class="pular" href="#conteudo">Pular para o conteúdo</a><div class="app"><aside class="side" id="menu-lateral"><div class="side-top">${marca}<button type="button" class="icon-btn recolher" data-recolher aria-label="Recolher ou expandir o menu" title="Recolher/expandir menu">${icone('painel')}</button></div>
-<nav class="tabs" aria-label="Menu">${desp ? html`${aba('/', 'pin', 'Pendências', emFech)}${aba('/historico', 'historico', 'Histórico', p === '/historico' || (p.startsWith('/fechamentos') && !emFech))}`
+<nav class="tabs" aria-label="Menu">${desp ? aba('/', 'pin', 'Pendências', emFech)
     : html`${aba('/', 'caixa', 'Fechamentos', emFech)}${decideFin(u) ? aba('/pagar', 'carteira', 'Pagamentos', p.startsWith('/pagar')) : ''}`}
 ${u.perfil === 'admin' ? html`${aba('/usuarios', 'capacete', 'Usuários', p.startsWith('/usuarios'))}${aba('/config', 'ajustes', 'Configurações', p.startsWith('/config'))}` : ''}</nav>
 <div class="side-arte" aria-hidden="true"></div><div class="side-user"><div class="who">${avatar(u.nome)}<div class="tx"><b>${u.nome}</b><small>${PERFIS[u.perfil]}${u.loja ? ` · ${lojaCurta(u.loja)}` : ''}</small></div></div>
@@ -320,7 +320,7 @@ function pendenciasDespachante(req, res) {
   const sAnd = secao('h-and', 'Em andamento', 'Fechamentos importados que ainda não foram enviados ao financeiro.', andamento.map((f) => linhaF(f, 'Continuar revisão', atrasadoF(f) ? html`<span class="badge bad">Atrasado: falta enviar</span>` : html`<span class="badge warn">Falta enviar</span>`)));
   const sDev = secao('h-dev', 'Devolvidos pelo financeiro', 'Corrija o que o financeiro pediu e envie de novo.', devolvidos.map((f) => linhaF(f, 'Corrigir fechamento', html`<span class="badge bad">Devolvido para correção</span>`)));
   const sEnv = secao('h-env', 'Enviados ao financeiro', 'Aguardando a aprovação. Não dá para editar enquanto isso.', enviados.map((f) => linhaF(f)));
-  const sApr = secao('h-apr', 'Aprovados', 'Os mais recentes. Aprovado não quer dizer pago: o pagamento é feito fora do sistema.', aprovados.map((f) => linhaF(f)), html`<p class="outro"><a href="/historico">Ver todos no Histórico</a></p>`);
+  const sApr = secao('h-apr', 'Aprovados', 'Os mais recentes. Aprovado não quer dizer pago: o pagamento é feito fora do sistema.', aprovados.map((f) => linhaF(f)));
   const sPre = secao('h-pre', semImportar.length ? 'Pagamentos para importar' : 'Próximo pagamento', semImportar.length ? 'Ainda sem fechamento importado. No fim, o próximo da agenda.' : 'Importe quando o período terminar.', previstos.map(linhaP));
   const nada = !andamento.length && !devolvidos.length && !semImportar.length;
   const nAtr = semImportar.filter((p) => p.situacao === 'atrasado').length, nPer = ag.filter((p) => !p.f).length, temEsq = andamento.length || devolvidos.length;
@@ -558,6 +558,7 @@ ${blocoConferencia({ f, g, itens, decide, edita: false, modo: 'fin', decisoes, h
 
 // Histórico: consulta com um filtro de situação e um de mês.
 app.get('/historico', (req, res) => {
+  if (req.user.perfil === 'despachante') return res.redirect('/'); // o despachante trabalha só pelas Pendências
   const u = req.user, todos = fechamentosDe(u);
   const SIT = { '': 'Todos', rascunho: 'Falta enviar', enviado: 'Aguardando aprovação', pago: 'Aprovados', arquivado: 'Arquivados' };
   const s = req.query.s in SIT ? req.query.s : '';

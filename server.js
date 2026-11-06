@@ -96,7 +96,7 @@ app.get('/login', (req, res) => {
 <button type="button" class="icon-btn" data-mostra-senha="senha" aria-pressed="false" aria-label="Mostrar senha">Mostrar</button></div>
 ${erro ? html`<p class="erro-campo" id="erro-login" role="alert">${icone('erro', 'sm')} ${erro}</p>` : ''}</div>
 <button class="btn btn-pri btn-lg btn-block">Entrar</button>
-<p class="mut small rodape">Esqueceu a senha? Fale com a TI.</p></form>`));
+<p class="mut small rodape">Esqueceu a senha? Peça uma nova ao suporte.</p></form>`));
 });
 app.post('/login', (req, res) => {
   const login = String(req.body.login || '').trim().toLowerCase(), chave = `${login}|${req.ip}`;
@@ -690,7 +690,7 @@ function importar(req, res) {
     db.prepare('INSERT INTO lojas (nome, calendario) VALUES (?, ?)').run(loja, AG.PADRAO);
     l = db.prepare('SELECT * FROM lojas WHERE nome = ?').get(loja);
   }
-  if (!l) throw falha(`A loja "${loja}" não está cadastrada. Peça para a TI cadastrar em Configurações (o nome tem que ser igual ao do Agilizone).`);
+  if (!l) throw falha(`A loja "${loja}" não está cadastrada. Peça ao suporte para cadastrar em Configurações (o nome tem que ser igual ao do Agilizone).`);
   if (req.user.perfil === 'despachante' && req.user.loja_id !== l.id) throw falha(`Este arquivo é da loja "${loja}", que não é a sua.`, 403);
   const comMotoboy = pedidos.filter((p) => p.entregador), semMotoboy = pedidos.length - comMotoboy.length;
   if (!comMotoboy.length) throw falha('O arquivo não tem nenhum pedido com entregador atrelado.');
@@ -1450,12 +1450,12 @@ setTimeout(verificarAlertas, 15e3).unref();
 
 // ---------- Erros ----------
 const telaErro = (req, titulo, msg) => page(req, titulo, html`<div class="card empty" style="max-width:560px;margin:0 auto"><div class="hico warn">${icone('alerta', 'lg')}</div><h2>${msg}</h2>
-<p>Se precisar de ajuda, fale com a TI.</p><div class="row" style="display:flex;gap:8px;justify-content:center"><a class="btn btn-sec" href="javascript:history.back()">${icone('voltar')} Voltar</a><a class="btn btn-pri" href="/">Ir para o início</a></div></div>`);
+<p>Se precisar de ajuda, fale com o suporte.</p><div class="row" style="display:flex;gap:8px;justify-content:center"><a class="btn btn-sec" href="javascript:history.back()">${icone('voltar')} Voltar</a><a class="btn btn-pri" href="/">Ir para o início</a></div></div>`);
 app.use((req, res) => res.status(404).send(telaErro(req, 'Página não encontrada', 'Página não encontrada.')));
 app.use((err, req, res, next) => {
   if (err.volta) return volta(res, err.volta, 'erro', err.message); // recusa de decisão: volta para a tela com o motivo
   const grande = err instanceof multer.MulterError || err.type === 'entity.too.large';
-  const msg = err.publico ? err.message : grande ? 'Arquivo ou texto grande demais, ou arquivos demais.' : 'Erro inesperado. Avise a TI.';
+  const msg = err.publico ? err.message : grande ? 'Arquivo ou texto grande demais, ou arquivos demais.' : 'Erro inesperado. Avise o suporte.';
   if (!err.publico && !grande) console.error(err);
   res.status(err.status || (err.publico || grande ? 400 : 500)).send(telaErro(req, 'Não foi possível concluir', msg));
 });

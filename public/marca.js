@@ -54,3 +54,11 @@ addEventListener('offline', rede); addEventListener('online', rede); rede();
 
 // Fila: no celular os filtros começam recolhidos, a menos que haja filtro ativo.
 document.querySelectorAll('.filtros-det').forEach((d) => { if (matchMedia('(max-width:760px)').matches && d.dataset.ativos !== '1') d.open = false; });
+
+// Popups (data-abre abre, data-fecha fecha) e clique fora para fechar.
+document.addEventListener('click', (e) => {
+  const a = e.target.closest && e.target.closest('[data-abre]');
+  if (a) { const d = document.getElementById(a.dataset.abre); if (d && !d.open) { d.showModal(); const p = d.querySelector('input:not([type=hidden]),select,a,button'); if (p) p.focus(); } return; }
+  const f = e.target.closest && e.target.closest('[data-fecha]'); if (f) { const d = f.closest('dialog'); if (d) d.close(); return; }
+  if (e.target instanceof HTMLDialogElement && e.target.classList.contains('dlg-per')) e.target.close();
+});

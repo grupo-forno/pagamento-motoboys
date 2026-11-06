@@ -417,3 +417,29 @@ body.auth .erro-pag{grid-template-columns:1fr;margin:0}
 .hoje-l li{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--pri-bd);border-radius:12px;padding:14px 18px}
 .hoje-l b{display:block;font-size:18px}.hoje-l span{color:var(--tx-2);font-size:14px}
 @media(max-width:760px){.hoje-dest{grid-template-columns:1fr;padding:16px}.hoje-ico{width:52px;height:52px}.hoje-l li .btn{width:100%}}
+
+/* Fila: a linha de período segue o mesmo molde da linha de lojas (mesmo recuo, rótulo e separador) */
+.fila .fila-lojas{border-bottom:0;padding-bottom:4px}
+.fila .per-resumo{margin:0;padding:6px 16px 12px;border-bottom:1px solid var(--bd)}
+.fila .per-faixa{margin-left:6px}
+.per-barra .rot,.lojas-pills .rot,.fila-lojas .rot{min-width:58px}
+
+/* Datas livres do período (De / Até) */
+.per-datas{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0}
+.per-datas label{font-size:13px;font-weight:600;color:var(--tx-2)}
+.per-datas input[type=date]{width:auto;height:34px;padding:0 10px;font-size:14px;border-radius:99px}
+.per-datas.on input[type=date]{border-color:var(--brand);background:var(--pri-soft)}
+
+/* Período: um botão e um resumo; tudo o mais fica no popup */
+.per-resumo{display:flex;align-items:center;gap:10px 14px;flex-wrap:wrap;margin:0 0 16px}
+.per-atual{font-size:14px;color:var(--tx-2)}.per-atual b{color:var(--tx)}
+.per-limpar{font-size:13px;font-weight:600}
+.dlg-per{max-width:560px}
+.dlg-per h2{font-size:20px;margin-bottom:4px}
+.per-sub{font-size:13px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--tx-2);margin:18px 0 8px}.per-sub label{font-weight:700}
+.dlg-per .per-atalhos{margin:0;flex-wrap:wrap}
+.dlg-per select{width:100%}
+.dlg-per .per-datas{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}.dlg-per .per-datas .field{margin:0;flex:1 1 150px}
+.dlg-per .per-datas input[type=date]{width:100%;height:40px;border-radius:8px;padding:0 10px}
+.dlg-per .per-datas.on input[type=date]{border-color:var(--brand);background:var(--pri-soft)}
+.dlg-per .hint::first-letter{text-transform:uppercase}

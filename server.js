@@ -282,6 +282,25 @@ const fechamentosDe = (u) => db.prepare(`SELECT f.*, l.nome loja, u.nome autor,
     return { ...f, enviou: f.enviado_por && db.prepare('SELECT nome FROM usuarios WHERE id = ?').get(f.enviado_por)?.nome, total: g.total, n: g.linhas.filter((l) => l.total > 0).length, nAprov: ap.length, aprovado: ap.reduce((t, l) => t + l.total, 0) }; });
 const motivoDevolucao = (f) => db.prepare("SELECT l.acao, l.quando, u.nome FROM log l LEFT JOIN usuarios u ON u.id = l.usuario_id WHERE ref = ? AND acao LIKE 'Devolveu%' ORDER BY l.id DESC").get(`f:${f.id}`);
 
+// Período de exibição: o padrão é a semana (segunda a domingo). O que exige ação nunca é escondido; o resto pode ser ampliado.
+function periodoSel(q, hoje) {
+  const ultimo = (ym) => new Date(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7), 0)).toISOString().slice(0, 10);
+  const dow = (new Date(hoje + 'T12:00:00Z').getUTCDay() + 6) % 7, sem0 = AG.soma(hoje, -dow), ym = hoje.slice(0, 7);
+  const R = { semana: [sem0, AG.soma(sem0, 6)], mes: [ym + '-01', ultimo(ym)], ano: [hoje.slice(0, 4) + '-01-01', hoje.slice(0, 4) + '-12-31'], tudo: ['0000-01-01', '9999-12-31'] };
+  const mes = /^\d{4}-(0[1-9]|1[0-2])$/.test(q.mes || '') ? q.mes : '', tipo = mes ? 'outro' : ['semana', 'mes', 'ano', 'tudo'].includes(q.per) ? q.per : 'semana';
+  const [ini, fim] = mes ? [mes + '-01', ultimo(mes)] : R[tipo];
+  return { tipo, mes, ini, fim, R, param: mes || tipo === 'semana' ? '' : tipo, dentro: (d) => !!d && d >= ini && d <= fim };
+}
+function barraPeriodo(per, datas, href, nota) {
+  const n = (r) => datas.filter((d) => d >= r[0] && d <= r[1]).length, dm = (d) => dataFmt(d).slice(0, 5);
+  const meses = [...new Set(datas.map((d) => d.slice(0, 7)))].sort().reverse();
+  const nomeMes = (m) => new Date(m + '-15T12:00:00Z').toLocaleDateString('pt-BR', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+  return html`<nav class="pills per-barra" aria-label="Período mostrado"><span class="rot">Período:</span>
+${[['semana', 'Esta semana'], ['mes', 'Este mês'], ['ano', 'Este ano'], ['tudo', 'Tudo']].map(([k, t]) => html`<a href="${href({ per: k, mes: '' })}" class="${!per.mes && per.tipo === k ? 'on' : ''}" ${!per.mes && per.tipo === k ? new Raw('aria-current="true"') : ''}>${t}<span class="c">${n(per.R[k])}</span></a>`)}
+<label class="sr" for="per-mes">Outro mês</label><select id="per-mes" onchange="if(this.value)location=this.value"><option value="">Outro mês…</option>${meses.map((m) => html`<option value="${href({ per: '', mes: m })}" ${per.mes === m ? 'selected' : ''}>${nomeMes(m)}</option>`)}</select>
+<span class="per-faixa">${per.tipo === 'tudo' ? 'Todos os períodos' : `${dm(per.ini)} a ${dm(per.fim)}`}${nota ? ` · ${nota}` : ''}</span></nav>`;
+}
+
 // Despachante: a página inicial responde "o que preciso fazer agora?".
 function pendenciasDespachante(req, res) {
   const u = req.user, hoje = agora().data, amanha = AG.soma(hoje, 1);
@@ -292,14 +311,19 @@ function pendenciasDespachante(req, res) {
   // Seções na ordem do trabalho: o que está nas mãos da loja primeiro, depois o que está com o financeiro.
   const andamento = ativos.filter((f) => f.status === 'rascunho' && !f.devolvido).sort(porPag);
   const devolvidos = ativos.filter((f) => f.status === 'rascunho' && f.devolvido).sort(porPag).map((f) => ({ ...f, motivo: motivoDevolucao(f) }));
-  const enviados = ativos.filter((f) => f.status === 'enviado').sort(porPag);
-  const aprovados = ativos.filter((f) => f.status === 'pago').sort((a, b) => porPag(b, a)).slice(0, 5);
+  // Em andamento e devolvidos aparecem sempre. Enviados e aprovados mostram a semana e podem ser ampliados.
+  const per = periodoSel(req.query, hoje), dataF = (f) => f.pagamento || f.data_fim;
+  const todosEnv = ativos.filter((f) => f.status === 'enviado').sort(porPag), todosApr = ativos.filter((f) => f.status === 'pago').sort((a, b) => porPag(b, a));
+  const enviados = todosEnv.filter((f) => per.dentro(dataF(f))), aprovados = todosApr.filter((f) => per.dentro(dataF(f)));
+  const infoDatas = [...todosEnv, ...todosApr].map(dataF);
+  const hrefPer = (o) => { const p = new URLSearchParams(); if (o.per && o.per !== 'semana') p.set('per', o.per); if (o.mes) p.set('mes', o.mes); return p.size ? `/?${p}` : '/'; };
   // Previstos: os atrasados e o de hoje ainda sem importar, e só o próximo futuro (não a agenda inteira).
   const semImportar = ag.filter((p) => !p.f && ['atrasado', 'hoje'].includes(p.situacao)).sort(porPag);
   const proximo = ag.filter((p) => !p.f && p.situacao === 'futuro').sort(porPag)[0];
-  const previstos = [...semImportar, ...(proximo ? [proximo] : [])];
+  const hojeP = semImportar.filter((p) => p.situacao === 'hoje'), atrasadosL = semImportar.filter((p) => p.situacao === 'atrasado');
+  const previstos = [...atrasadosL, ...(proximo ? [proximo] : [])];
   const periodoP = (p) => `${dataFmt(p.ini)} a ${dataFmt(p.fim)}`;
-  let primeiro = true; // só a primeira ação da tela é laranja
+  let primeiro = !hojeP.length; // só a primeira ação da tela é laranja (com importação de hoje, ela é a ação principal)
   const botao = (href, txt) => { const c = primeiro ? 'btn-pri' : 'btn-sec'; primeiro = false; return html`<a class="btn ${c} btn-sm" href="${href}">${txt}</a>`; };
   const pagCel = (pag) => html`<td class="nw"><b>${pag ? diaLongo(pag) : '—'}</b></td>`;
   const linhaF = (f, acao, sit) => html`<tr data-href="/fechamentos/${f.id}">${pagCel(f.pagamento)}<td class="nw">${periodo(f)}</td><td>${sit || selo(f)}${f.motivo ? html`<p class="quote">${f.motivo.acao.replace(/^Devolveu para correção: /, '')}</p>` : ''}</td><td class="n b">${brl(f.total)}</td>
@@ -320,17 +344,21 @@ function pendenciasDespachante(req, res) {
   const sAnd = secao('h-and', 'Em andamento', 'Fechamentos importados que ainda não foram enviados ao financeiro.', andamento.map((f) => linhaF(f, 'Continuar revisão', atrasadoF(f) ? html`<span class="badge bad">Atrasado: falta enviar</span>` : html`<span class="badge warn">Falta enviar</span>`)));
   const sDev = secao('h-dev', 'Devolvidos pelo financeiro', 'Corrija o que o financeiro pediu e envie de novo.', devolvidos.map((f) => linhaF(f, 'Corrigir fechamento', html`<span class="badge bad">Devolvido para correção</span>`)));
   const sEnv = secao('h-env', 'Enviados ao financeiro', 'Aguardando a aprovação. Não dá para editar enquanto isso.', enviados.map((f) => linhaF(f)));
-  const sApr = secao('h-apr', 'Aprovados', 'Os mais recentes. Aprovado não quer dizer pago: o pagamento é feito fora do sistema.', aprovados.map((f) => linhaF(f)));
-  const sPre = secao('h-pre', semImportar.length ? 'Pagamentos para importar' : 'Próximo pagamento', semImportar.length ? 'Ainda sem fechamento importado. No fim, o próximo da agenda.' : 'Importe quando o período terminar.', previstos.map(linhaP));
+  const sApr = secao('h-apr', 'Aprovados', 'Aprovado não quer dizer pago: o pagamento é feito fora do sistema.', aprovados.map((f) => linhaF(f)));
+  const sPre = secao('h-pre', atrasadosL.length ? 'Pagamentos para importar' : 'Próximo pagamento', atrasadosL.length ? 'Ainda sem fechamento importado. No fim, o próximo da agenda.' : 'Importe quando o período terminar.', previstos.map(linhaP));
+  const destaqueHoje = hojeP.length ? html`<section class="hoje-dest" aria-labelledby="h-hoje"><span class="hoje-ico">${icone('moto', 'lg')}</span><div class="hoje-t"><p class="eyebrow">Prioridade de hoje</p><h2 id="h-hoje">Importar hoje</h2><p>${hojeP.length === 1 ? 'O pagamento de hoje ainda não teve os arquivos importados.' : `${hojeP.length} pagamentos de hoje ainda não tiveram os arquivos importados.`}</p></div>
+<ul class="hoje-l">${hojeP.map((p) => html`<li><div><b>${diaLongo(p.pagamento)}</b><span>${periodoP(p)} · filtro no Agilizone</span></div><a class="btn btn-pri btn-lg" href="/fechamentos/novo?p=${p.pagamento}">${icone('subir')} Importar arquivos</a></li>`)}</ul></section>` : '';
   const nada = !andamento.length && !devolvidos.length && !semImportar.length;
   const nAtr = semImportar.filter((p) => p.situacao === 'atrasado').length, nPer = ag.filter((p) => !p.f).length, temEsq = andamento.length || devolvidos.length;
   const painel = html`<aside class="painel-pend ${semImportar.length ? '' : 'pp-ok'}" aria-labelledby="h-painel"><h2 id="h-painel">Pagamentos para importar</h2>
 <div class="pp-corpo"><b class="pp-num">${nAtr || semImportar.length}</b><div class="pp-txt"><b>${nAtr ? `pagamento${nAtr > 1 ? 's' : ''} atrasado${nAtr > 1 ? 's' : ''}` : semImportar.length ? 'para importar hoje' : 'nada atrasado'}</b><span>${nPer} período${nPer === 1 ? '' : 's'} na agenda</span></div></div>
 <a class="pp-ver" href="#h-pre">Ver períodos</a></aside>`;
   res.send(page(req, { titulo: 'Pendências', acoes: html`<a class="btn btn-pri" href="/fechamentos/novo">${icone('subir', 'sm')} Importar arquivos</a>` }, html`
+${destaqueHoje}
 ${nada ? html`<div class="faixa ok">${icone('check')}<p><b>Nada pendente agora.</b>${proximo ? ` Próximo pagamento: ${diaLongo(proximo.pagamento)}${proximo.pagamento === amanha ? ' (amanhã)' : ''}.` : ''}</p></div>` : ''}
 <section class="requer" aria-labelledby="h-req"><h2 class="requer-t" id="h-req">Requer atenção</h2><div class="requer-g ${temEsq ? '' : 'so-painel'}">${temEsq ? html`<div>${sAnd}${sDev}</div>` : ''}${painel}</div></section>
-${sEnv}${sApr}${sPre}`));
+${infoDatas.length ? html`${barraPeriodo(per, infoDatas, hrefPer, 'vale para enviados e aprovados; o que precisa de ação aparece sempre')}${!enviados.length && !aprovados.length ? html`<div class="faixa ok">${icone('check')}<p>Nenhum fechamento enviado ou aprovado neste período. Escolha outro período acima.</p></div>` : ''}` : ''}
+${sEnv}${sPre}${sApr}`));
 }
 
 // ---------- Financeiro: fila e conferência ----------
@@ -366,15 +394,15 @@ function filaFinanceiro(req, res) {
   const loja = lojas.some((l) => l.id === Number(q.loja)) ? Number(q.loja) : 0;
   const data = (x) => (/^\d{4}-\d{2}-\d{2}$/.test(x || '') ? x : '');
   const de = data(q.de), ate = data(q.ate), busca = String(q.q || '').trim().slice(0, 60), termo = semAcento(busca.replace(/^#/, ''));
-  const env = (f) => (f.enviado_em || '').slice(0, 10);
-  const filtrados = todos.filter((f) => (!loja || f.loja_id === loja) && (!de || env(f) >= de) && (!ate || env(f) <= ate)
+  const env = (f) => (f.enviado_em || '').slice(0, 10), per = periodoSel(q, hoje), dataF = (f) => f.pagamento || f.data_fim;
+  const filtrados = todos.filter((f) => (!loja || f.loja_id === loja) && (!de || env(f) >= de) && (!ate || env(f) <= ate) && (f.status !== 'pago' || f.arquivado_em || per.dentro(dataF(f)))
     && (!termo || semAcento(`${f.id} ${f.loja} ${periodo(f)} ${f.enviou || ''} ${f.autor || ''}`).includes(termo)));
   const daAba = (k) => filtrados.filter((f) => k === 'todos' || (!f.arquivado_em && abaFin(f) === k));
   const aba = q.aba in FIN_ABAS ? q.aba : 'aguardando', pendente = ['aguardando', 'parcial'].includes(aba);
   // Pendentes: os mais antigos primeiro, para nada ficar esquecido. Os demais: os mais recentes primeiro.
   const lista = daAba(aba).sort((a, b) => (pendente ? (a.enviado_em || '').localeCompare(b.enviado_em || '') : (b.enviado_em || '').localeCompare(a.enviado_em || '')) || b.id - a.id);
   const POR = 20, pags = Math.max(1, Math.ceil(lista.length / POR)), pag = Math.min(pags, Math.max(1, Math.trunc(Number(q.p)) || 1));
-  const qs = (mud = {}) => { const p = new URLSearchParams(), v = { aba, loja: loja || '', de, ate, q: busca, p: pag, ...mud };
+  const qs = (mud = {}) => { const p = new URLSearchParams(), v = { aba, loja: loja || '', de, ate, q: busca, p: pag, per: per.param, mes: per.mes, ...mud };
     for (const [k, x] of Object.entries(v)) if (x && !(k === 'aba' && x === 'aguardando') && !(k === 'p' && x === 1)) p.set(k, x);
     return p.size ? `/?${p}` : '/'; };
   const aqui = qs(), filtrando = !!(loja || de || ate || busca), limpar = aba === 'aguardando' ? '/' : `/?aba=${aba}`;
@@ -393,8 +421,9 @@ function filaFinanceiro(req, res) {
 <div><dt>Já aprovado</dt><dd>${brl(ativos.reduce((t, f) => t + f.aprovado, 0))}</dd><dd>${filtrando ? 'todas as situações, nos filtros atuais' : 'todas as situações e lojas'}</dd></div></dl>
 <section class="card fila" aria-labelledby="h-fila"><header class="fila-cab"><h2 id="h-fila">Fechamentos recebidos</h2><span class="mut small">${pl(lista.length, 'resultado', 'resultados')} em “${FIN_ABAS[aba]}”</span></header>
 ${lojas.length > 1 ? html`<nav class="pills fila-lojas" aria-label="Filtrar por loja"><span class="rot">Loja</span><a href="${qs({ loja: '', p: 1 })}" class="${loja ? '' : 'on'}" ${loja ? '' : new Raw('aria-current="true"')}>Todas</a>${lojas.map((l) => html`<a href="${qs({ loja: l.id, p: 1 })}" class="${l.id === loja ? 'on' : ''}" ${l.id === loja ? new Raw('aria-current="true"') : ''}>${lojaCurta(l.nome)}</a>`)}</nav>` : ''}
+${todos.some((f) => f.status === 'pago' && !f.arquivado_em) ? barraPeriodo(per, todos.filter((f) => f.status === 'pago' && !f.arquivado_em && (!loja || f.loja_id === loja)).map(dataF), (o) => qs({ per: o.per === 'semana' ? '' : o.per, mes: o.mes, p: 1 }), 'vale para os aprovados; o que aguarda análise aparece sempre') : ''}
 <nav class="seg fila-abas" aria-label="Situação">${Object.entries(FIN_ABAS).map(([k, t]) => html`<a href="${qs({ aba: k, p: 1 })}" class="${aba === k ? 'on' : ''}" ${aba === k ? new Raw('aria-current="page"') : ''}>${t}<span class="c">${daAba(k).length}</span></a>`)}</nav>
-<details class="filtros-det" open data-ativos="${filtrando ? 1 : 0}"><summary class="filtros-sum">${icone('ajustes', 'sm')} Filtros${filtrando ? ' (ativos)' : ''}</summary><form method="get" action="/" class="filtros" role="search" aria-label="Filtrar fechamentos">${aba !== 'aguardando' ? html`<input type="hidden" name="aba" value="${aba}">` : ''}
+<details class="filtros-det" open data-ativos="${filtrando ? 1 : 0}"><summary class="filtros-sum">${icone('ajustes', 'sm')} Filtros${filtrando ? ' (ativos)' : ''}</summary><form method="get" action="/" class="filtros" role="search" aria-label="Filtrar fechamentos">${aba !== 'aguardando' ? html`<input type="hidden" name="aba" value="${aba}">` : ''}${per.param ? html`<input type="hidden" name="per" value="${per.param}">` : ''}${per.mes ? html`<input type="hidden" name="mes" value="${per.mes}">` : ''}
 ${loja ? html`<input type="hidden" name="loja" value="${loja}">` : ''}
 <div class="field"><label for="f-de">Enviado de</label><input id="f-de" type="date" name="de" value="${de}"></div>
 <div class="field"><label for="f-ate">Enviado até</label><input id="f-ate" type="date" name="ate" value="${ate}"></div>
@@ -1237,18 +1266,18 @@ app.get('/pagar', soPagar, (req, res) => {
   const u = req.user, q = req.query, hoje = agora().data, dm = (d) => dataFmt(d).slice(0, 5);
   const lojas = db.prepare('SELECT * FROM lojas ORDER BY nome').all().filter((l) => !u.loja_id || l.id === u.loja_id);
   const loja = lojas.some((l) => l.id === Number(q.loja)) ? Number(q.loja) : 0;
-  const aba = ['naopagos', 'vencidos', 'pagos'].includes(q.aba) ? q.aba : 'naopagos';
+  const aba = ['naopagos', 'vencidos', 'pagos'].includes(q.aba) ? q.aba : 'naopagos', per = periodoSel(q, hoje);
   // Filtro de datas: pagamento previsto (não pagos e vencidos) ou dia em que foi pago (aba Pagos).
-  const dt = (x) => (/^d{4}-d{2}-d{2}$/.test(x || '') ? x : ''), de = dt(q.de), ate = dt(q.ate), filtrando = !!(de || ate);
+  const dt = (x) => (/^\d{4}-\d{2}-\d{2}$/.test(x || '') ? x : ''), de = dt(q.de), ate = dt(q.ate), filtrando = !!(de || ate);
   const todos = fechamentosDe(u).filter((f) => !f.arquivado_em && f.versao > 0), daLoja = todos.filter((f) => !loja || f.loja_id === loja);
   const aprovados = daLoja.filter((f) => f.status === 'pago'), nao = aprovados.filter((f) => !f.pago_em), pagos = aprovados.filter((f) => f.pago_em);
   const prev = (f) => f.pagamento || f.data_fim, atraso = (f) => Math.round((Date.parse(hoje) - Date.parse(prev(f))) / 864e5);
   const venc = nao.filter((f) => prev(f) < hoje);
   const soma = (xs) => xs.reduce((t, f) => t + f.total, 0);
   const emAnalise = daLoja.filter((f) => f.status === 'enviado');
-  const dia = (f) => (aba === 'pagos' ? (f.pago_em || '').slice(0, 10) : prev(f)), noPeriodo = (f) => (!de || dia(f) >= de) && (!ate || dia(f) <= ate), pagosF = pagos.filter(noPeriodo);
+  const dia = (f) => (aba === 'pagos' ? (f.pago_em || '').slice(0, 10) : prev(f)), noPeriodo = (f) => (!de || dia(f) >= de) && (!ate || dia(f) <= ate), pagosF = pagos.filter(noPeriodo).filter((f) => per.dentro((f.pago_em || '').slice(0, 10)));
   const lista = (aba === 'pagos' ? pagosF : (aba === 'vencidos' ? venc : nao).filter(noPeriodo)).sort((a, b) => prev(a).localeCompare(prev(b)) || a.id - b.id);
-  const qs = (m = {}) => { const p = new URLSearchParams(Object.entries({ aba: aba === 'naopagos' ? '' : aba, loja: loja || '', de, ate, ...m }).filter(([, x]) => x)); return p.size ? `/pagar?${p}` : '/pagar'; };
+  const qs = (m = {}) => { const p = new URLSearchParams(Object.entries({ aba: aba === 'naopagos' ? '' : aba, loja: loja || '', de, ate, per: aba === 'pagos' ? per.param : '', mes: aba === 'pagos' ? per.mes : '', ...m }).filter(([, x]) => x)); return p.size ? `/pagar?${p}` : '/pagar'; };
   const aqui = qs(), nomes = new Map(db.prepare('SELECT id, nome FROM usuarios').all().map((x) => [x.id, x.nome]));
   const abas = [['naopagos', 'Não pagos', nao.length], ['vencidos', 'Vencidos', venc.length], ['pagos', 'Pagos', pagos.length]];
   const linhaF = (f, comCx) => html`<tr data-href="/fechamentos/${f.id}">${comCx ? html`<td class="c-chk"><input type="checkbox" name="sel" value="${f.id}:${f.total}" data-v="${f.total}" aria-label="Selecionar fechamento #${f.id}"></td>` : ''}
@@ -1266,12 +1295,13 @@ app.get('/pagar', soPagar, (req, res) => {
 <div class="card stat"><span class="hico ok">${icone('check')}</span><div><div class="v">${brl(soma(pagos))}</div><div class="l">Pago · ${pagos.length} fechamento(s)</div></div></div></div>
 ${lojas.length > 1 ? html`<nav class="pills lojas-pills" aria-label="Filtrar por loja"><span class="rot">Loja:</span><a href="${qs({ loja: '' })}" class="${loja ? '' : 'on'}">Todas</a>${lojas.map((l) => html`<a href="${qs({ loja: l.id })}" class="${l.id === loja ? 'on' : ''}">${lojaCurta(l.nome)}</a>`)}</nav>` : ''}
 <div class="card"><nav class="seg" style="padding:0 20px;margin:0" aria-label="Situação do pagamento">${abas.map(([k, t, n]) => html`<a href="${qs({ aba: k === 'naopagos' ? '' : k })}" class="${aba === k ? 'on' : ''}" ${aba === k ? new Raw('aria-current="page"') : ''}>${t}<span class="c">${n}</span></a>`)}</nav>
-<form method="get" action="/pagar" class="filtros" role="search" aria-label="Filtrar por data">${aba !== 'naopagos' ? html`<input type="hidden" name="aba" value="${aba}">` : ''}${loja ? html`<input type="hidden" name="loja" value="${loja}">` : ''}
+<form method="get" action="/pagar" class="filtros" role="search" aria-label="Filtrar por data">${aba !== 'naopagos' ? html`<input type="hidden" name="aba" value="${aba}">` : ''}${aba === 'pagos' && per.param ? html`<input type="hidden" name="per" value="${per.param}">` : ''}${aba === 'pagos' && per.mes ? html`<input type="hidden" name="mes" value="${per.mes}">` : ''}${loja ? html`<input type="hidden" name="loja" value="${loja}">` : ''}
 <div class="field"><label for="p-de">${aba === 'pagos' ? 'Pago de' : 'Pagamento previsto de'}</label><input id="p-de" type="date" name="de" value="${de}"></div><div class="field"><label for="p-ate">${aba === 'pagos' ? 'Pago até' : 'Pagamento previsto até'}</label><input id="p-ate" type="date" name="ate" value="${ate}"></div>
 <div class="filtros-b"><button class="btn btn-sec">${icone('busca', 'sm')} Filtrar</button>${filtrando ? html`<a class="btn btn-ghost" href="${qs({ de: '', ate: '' })}">Limpar datas</a>` : ''}</div>${filtrando ? html`<p class="mut small filtros-r">${pl(lista.length, 'fechamento', 'fechamentos')} no período.</p>` : ''}</form>
+${aba === 'pagos' && pagos.length ? html`<div style="padding:14px 20px 0">${barraPeriodo(per, pagos.map((f) => f.pago_em.slice(0, 10)), (o) => qs({ per: o.per === 'semana' ? '' : o.per, mes: o.mes }))}</div>` : ''}
 ${aba === 'pagos' ? (gruposPagos.length ? html`${gruposPagos.map((g) => html`<section class="lote" aria-label="Pagamento de ${quando(g.em)}"><div class="lote-h"><div><b>${g.lote ? `Lote #${g.lote}` : 'Pagamento'}</b> · pago em ${quando(g.em)}${g.por ? ` por ${g.por}` : ''}<div class="mut small">${g.fs.length} fechamento${g.fs.length > 1 ? 's' : ''} · ${brl(soma(g.fs))}</div></div>
 ${g.lote ? html`<form method="post" action="/pagar/desfazer" onsubmit="return confirm('Desfazer o pagamento deste lote? Os fechamentos voltam para Não pagos.')"><input type="hidden" name="lote" value="${g.lote}"><input type="hidden" name="volta" value="${aqui}"><button class="btn btn-ghost btn-sm">${icone('desfazer', 'sm')} Desfazer</button></form>` : ''}</div>
-<div class="tw"><table class="tab-pg">${cab(false)}<tbody>${g.fs.map((f) => linhaF(f, false))}</tbody></table></div></section>`)}` : html`<p class="vazio-p">${filtrando ? 'Nenhum fechamento pago neste período.' : 'Nenhum fechamento pago ainda.'}</p>`)
+<div class="tw"><table class="tab-pg">${cab(false)}<tbody>${g.fs.map((f) => linhaF(f, false))}</tbody></table></div></section>`)}` : html`<p class="vazio-p">${filtrando || pagos.length ? 'Nenhum fechamento pago neste período. Escolha outro período acima.' : 'Nenhum fechamento pago ainda.'}</p>`)
   : html`<form method="post" action="/pagar" data-pagar data-carregando="Registrando o pagamento…"><input type="hidden" name="volta" value="${aqui}">
 <p class="hint" style="padding:14px 20px 0">Marque dois ou mais fechamentos para pagá-los juntos. Só entram fechamentos totalmente aprovados.</p>
 <div class="tw"><table class="tab-pg">${cab(true)}<tbody>${lista.map((f) => linhaF(f, true))}${lista.length ? '' : html`<tr><td colspan="8" class="mut" style="text-align:center;padding:32px">${filtrando ? 'Nenhum fechamento neste período.' : aba === 'vencidos' ? 'Nenhum fechamento vencido. Tudo em dia.' : 'Nenhum fechamento aprovado esperando pagamento.'}</td></tr>`}</tbody>

@@ -402,3 +402,18 @@ body.auth .erro-pag{grid-template-columns:1fr;margin:0}
 
 .erro-arte::before{content:"";position:absolute;inset:0;background:url(/marca/percurso-fino.svg) left bottom/130% auto no-repeat;opacity:.3}
 .erro-arte>*{position:relative}
+
+/* Escolha de período (semana, mês, ano, tudo, outro mês) */
+.per-barra{margin:0 0 16px;align-items:center}
+.per-barra select{height:34px;width:auto;min-width:0;border-radius:99px;padding:0 30px 0 14px;font-weight:600;font-size:14px;background-color:var(--surface)}
+.per-faixa{font-size:13px;color:var(--mut);margin-left:4px}
+
+/* Destaque do que é para importar hoje: sempre no topo das Pendências */
+.hoje-dest{display:grid;grid-template-columns:auto minmax(0,1fr);gap:14px 20px;align-items:center;background:var(--pri-soft);border:2px solid var(--brand);border-radius:14px;padding:20px 24px;margin:0 0 24px;box-shadow:0 10px 26px -14px rgba(239,118,45,.65)}
+.hoje-ico{width:64px;height:64px;border-radius:16px;background:var(--carvao);color:var(--brand);display:grid;place-items:center}.hoje-ico .ico{width:38px;height:38px;stroke-width:1.7}
+.hoje-t .eyebrow{color:var(--pri);font-size:12px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;margin-bottom:2px}
+.hoje-t h2{font-size:26px;font-weight:800;letter-spacing:-.02em}.hoje-t p:last-child{color:var(--tx-2);margin-top:2px}
+.hoje-l{grid-column:1/-1;list-style:none;margin:0;padding:0;display:grid;gap:10px}
+.hoje-l li{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--pri-bd);border-radius:12px;padding:14px 18px}
+.hoje-l b{display:block;font-size:18px}.hoje-l span{color:var(--tx-2);font-size:14px}
+@media(max-width:760px){.hoje-dest{grid-template-columns:1fr;padding:16px}.hoje-ico{width:52px;height:52px}.hoje-l li .btn{width:100%}}

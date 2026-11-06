@@ -1,0 +1,13 @@
+/* Identidade visual: logo do entregador (scooter com o sol do Grupo Forno) e grafismos */
+.brand{flex-direction:row!important;align-items:center!important;gap:10px}
+.brand .logo-h{height:34px;width:auto;display:block!important}
+.marca-t{display:block;line-height:1.15}.marca-t b{display:block;font-size:16px;color:var(--tx)}.marca-t small{display:block;margin-top:1px}
+@media(max-width:1100px){.side .marca-t{display:none!important}}
+
+/* Tela de entrada: grafismo em um lado, formulário no outro */
+body.auth{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);padding:0;place-items:stretch;background:#fff}
+.auth-arte{background:#df6d2a url(/marca/grafismo-padrao.webp) center/cover no-repeat;min-height:100vh}
+body.auth .auth-box{align-self:center;justify-self:center;padding:32px 20px}
+body.auth .logo-v{width:150px;height:auto;margin:0 auto 10px}
+.auth-t{font-family:Archivo,Inter,sans-serif;font-stretch:125%;font-size:26px;font-weight:800;margin:0 0 2px;letter-spacing:-.01em}
+@media(max-width:900px){body.auth{grid-template-columns:1fr}.auth-arte{min-height:110px;order:-1}body.auth .auth-box{padding:24px 16px 40px}}

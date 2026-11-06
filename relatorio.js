@@ -10,7 +10,7 @@ const diaFmt = (d) => `${d.slice(8, 10)}/${d.slice(5, 7)} ${SEMANA[new Date(d + 
 const dataFmt = (d) => d.split('-').reverse().join('/');
 
 // PDF da solicitação de pagamento, na identidade do Grupo Forno (A4 paisagem).
-const LOGO = path.join(__dirname, 'public', 'grupo-forno.jpg');
+const LOGO = path.join(__dirname, 'public', 'logo.png');
 const COR = { laranja: '#DF6D2A', laranjaEsc: '#B8501A', laranjaSoft: '#FDF1EA', preto: '#140A08', cinza: '#6B6360', linha: '#E7E2DF', zebra: '#FAF8F7', verde: '#15803D', vermelho: '#B91C1C' };
 const STATUS_PDF = { rascunho: 'Ainda não enviado ao financeiro', enviado: 'Aguardando aprovação do financeiro', pago: 'Aprovado pelo financeiro' };
 const NOMES_DIA = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];

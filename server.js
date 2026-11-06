@@ -54,16 +54,16 @@ function page(req, o, corpo) {
   const u = req.user, p = req.path, qq = req.query || {};
   const q = { ok: qq.ok && qq.k === assina('ok', qq.ok) ? qq.ok : '', erro: qq.erro && qq.k === assina('erro', qq.erro) ? qq.erro : '' };
   const aba = (href, ic, txt, on) => html`<a href="${href}" class="${on ? 'on' : ''}" title="${txt}" ${on ? new Raw('aria-current="page"') : ''}>${icone(ic)}<span class="tx">${txt}</span></a>`;
-  const marca = html`<a class="brand" href="/" aria-label="Grupo Forno · Pagamento de entregadores"><img class="logo-h" src="/marca/grupo-forno.jpg" alt="Grupo Forno"><span class="logo-m">${new Raw(SOL)}</span><small>Pagamento de entregadores</small></a>`;
+  const marca = html`<a class="brand" href="/" aria-label="Grupo Forno · Pagamento de entregadores"><img class="logo-h" src="/marca/logo.png" alt=""><span class="marca-t"><b>Entregadores</b><small>Grupo Forno</small></span></a>`;
   // Sucesso de ação pontual: aviso temporário. Erro: fica na página (ou junto ao campo, quando a tela trata).
   const flash = html`${q.ok ? html`<div class="toast" role="status">${icone('ok')}<span>${q.ok}</span><button type="button" class="icon-btn" data-fecha-toast aria-label="Fechar aviso">${icone('erro', 'sm')}</button></div>` : ''}${q.erro && !o.erroNoCampo ? html`<div class="alert bad" role="alert">${icone('erro')}<div>${q.erro}</div></div>` : ''}`;
   const desp = u?.perfil === 'despachante';
   const emFech = desp ? p === '/' || (p.startsWith('/fechamentos') && o.trilha?.[0]?.[0] !== 'Histórico') : p === '/' || p.startsWith('/fechamentos');
   return html`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#df6d2a">
 <title>${o.titulo} · Entregadores Forno Paulista</title>
-<link rel="icon" href="data:,"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="icon" type="image/png" href="/marca/favicon.png"><link rel="apple-touch-icon" href="/marca/apple-touch-icon.png"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<style>${new Raw(CSS)}</style>${o.css ? html`<link rel="stylesheet" href="${o.css}?v=${versao(o.css)}">` : ''}</head>
+<style>${new Raw(CSS)}</style><link rel="stylesheet" href="/marca/marca.css?v=${versao('/marca/marca.css')}">${o.css ? html`<link rel="stylesheet" href="${o.css}?v=${versao(o.css)}">` : ''}</head>
 ${u ? html`<body class="${o.largura || ''}"><a class="pular" href="#conteudo">Pular para o conteúdo</a><div class="app"><aside class="side" id="menu-lateral"><div class="side-top">${marca}<button type="button" class="icon-btn recolher" data-recolher aria-label="Recolher ou expandir o menu" title="Recolher/expandir menu">${icone('painel')}</button></div>
 <nav class="tabs" aria-label="Menu">${desp ? html`${aba('/', 'lista', 'Pendências', emFech)}${aba('/historico', 'historico', 'Histórico', p === '/historico' || (p.startsWith('/fechamentos') && !emFech))}`
     : html`${aba('/', 'lista', 'Fechamentos', emFech)}${decideFin(u) ? aba('/pagar', 'carteira', 'A pagar', p.startsWith('/pagar')) : ''}`}
@@ -77,7 +77,7 @@ ${u.perfil === 'admin' ? html`${aba('/usuarios', 'escudo', 'Usuários', p.starts
 <main class="wrap" id="conteudo">
 <div class="ph"><div><div class="ph-t"><h1>${o.titulo}</h1>${o.selo || ''}</div>${o.sub ? html`<p class="sub">${o.sub}</p>` : ''}</div>${o.acoes ? html`<div class="ph-actions">${o.acoes}</div>` : ''}</div>
 ${flash}${corpo}</main></div></div>`
-    : html`<body class="auth"><main class="auth-box"><img class="logo-v" src="/marca/grupo-forno-vertical.jpg" alt="Grupo Forno"><p class="auth-sub">Pagamento de entregadores</p>${flash}${corpo}</main>`}
+    : html`<body class="auth"><div class="auth-arte" aria-hidden="true"></div><main class="auth-box"><img class="logo-v" src="/marca/logo.png" alt="Grupo Forno"><h2 class="auth-t">Entregadores</h2><p class="auth-sub">Grupo Forno · Pagamento</p>${flash}${corpo}</main>`}
 <script>${new Raw(JS)}</script>${o.js ? html`<script src="${o.js}?v=${versao(o.js)}" defer></script>` : ''}</body></html>`.s;
 }
 const SEGREDO_MSG = crypto.randomBytes(16);

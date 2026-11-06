@@ -14,18 +14,21 @@ const app = express();
 app.set('trust proxy', 1);
 // Cabeçalhos de segurança: sem iframe, sem adivinhar tipo de arquivo, HSTS quando em HTTPS.
 app.use((req, res, next) => {
+  if (!req.path.startsWith('/marca')) res.set('Cache-Control', 'no-store'); // telas internas não ficam no cache do navegador
   res.set({ 'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin' });
   if (process.env.COOKIE_SECURE === '1') res.set('Strict-Transport-Security', 'max-age=15552000');
   next();
 });
 app.use(express.urlencoded({ extended: false }));
-app.use('/marca', express.static(path.join(__dirname, 'public'), { maxAge: '7d' })); // logos do Grupo Forno
+app.get('/favicon.ico', (req, res) => res.redirect(301, '/marca/favicon.png'));
+app.get('/robots.txt', (req, res) => res.type('text/plain').send('User-agent: *\nDisallow: /\n'));
+app.use('/marca', express.static(path.join(__dirname, 'public'), { maxAge: '1h' })); // logos do Grupo Forno
 
 const PERFIS = { admin: 'TI / Admin', gestao: 'Gestão', financeiro: 'Financeiro', despachante: 'Despachante' };
 const STATUS = { rascunho: 'Falta enviar', enviado: 'Aguardando aprovação', pago: 'Aprovado' }; // 'pago' no banco = aprovado pelo financeiro (não quer dizer pago)
 // Situação mostrada ao usuário (texto sempre presente; a cor só reforça).
 const filhoDe = (id) => db.prepare('SELECT id FROM fechamentos WHERE origem_id = ? ORDER BY id DESC').get(id)?.id;
-const situacaoF = (f, devolvido) => f.arquivado_em ? ['nodot', 'Arquivado'] : devolvido && f.status === 'rascunho' ? ['bad', f.origem_id ? 'Devolvido · parte já aprovada' : 'Devolvido para correção']
+const situacaoF = (f, devolvido) => f.arquivado_em ? ['nodot', 'Arquivado'] : f.pago_em ? ['ok', 'Pago'] : devolvido && f.status === 'rascunho' ? ['bad', f.origem_id ? 'Devolvido · parte já aprovada' : 'Devolvido para correção']
   : f.status === 'pago' && filhoDe(f.id) ? ['ok', 'Aprovado em parte']
   : [{ rascunho: 'warn', enviado: 'info', pago: 'ok' }[f.status], STATUS[f.status]];
 const selo = (f, devolvido) => { const [c, t] = situacaoF(f, devolvido); return html`<span class="badge ${c}">${t}</span>`; };
@@ -65,20 +68,20 @@ function page(req, o, corpo) {
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>${new Raw(CSS)}</style><link rel="stylesheet" href="/marca/marca.css?v=${versao('/marca/marca.css')}">${o.css ? html`<link rel="stylesheet" href="${o.css}?v=${versao(o.css)}">` : ''}</head>
 ${u ? html`<body class="${o.largura || ''}"><a class="pular" href="#conteudo">Pular para o conteúdo</a><div class="app"><aside class="side" id="menu-lateral"><div class="side-top">${marca}<button type="button" class="icon-btn recolher" data-recolher aria-label="Recolher ou expandir o menu" title="Recolher/expandir menu">${icone('painel')}</button></div>
-<nav class="tabs" aria-label="Menu">${desp ? html`${aba('/', 'lista', 'Pendências', emFech)}${aba('/historico', 'historico', 'Histórico', p === '/historico' || (p.startsWith('/fechamentos') && !emFech))}`
-    : html`${aba('/', 'lista', 'Fechamentos', emFech)}${decideFin(u) ? aba('/pagar', 'carteira', 'A pagar', p.startsWith('/pagar')) : ''}`}
-${u.perfil === 'admin' ? html`${aba('/usuarios', 'escudo', 'Usuários', p.startsWith('/usuarios'))}${aba('/config', 'ajustes', 'Configurações', p.startsWith('/config'))}` : ''}</nav>
-<div class="side-user"><div class="who">${avatar(u.nome)}<div class="tx"><b>${u.nome}</b><small>${PERFIS[u.perfil]}${u.loja ? ` · ${lojaCurta(u.loja)}` : ''}</small></div></div>
+<nav class="tabs" aria-label="Menu">${desp ? html`${aba('/', 'pin', 'Pendências', emFech)}${aba('/historico', 'historico', 'Histórico', p === '/historico' || (p.startsWith('/fechamentos') && !emFech))}`
+    : html`${aba('/', 'caixa', 'Fechamentos', emFech)}${decideFin(u) ? aba('/pagar', 'carteira', 'Pagamentos', p.startsWith('/pagar')) : ''}`}
+${u.perfil === 'admin' ? html`${aba('/usuarios', 'capacete', 'Usuários', p.startsWith('/usuarios'))}${aba('/config', 'ajustes', 'Configurações', p.startsWith('/config'))}` : ''}</nav>
+<div class="side-arte" aria-hidden="true"></div><div class="side-user"><div class="who">${avatar(u.nome)}<div class="tx"><b>${u.nome}</b><small>${PERFIS[u.perfil]}${u.loja ? ` · ${lojaCurta(u.loja)}` : ''}</small></div></div>
 <form method="post" action="/logout"><button title="Sair do sistema">${icone('sair', 'sm')}<span class="tx">Sair</span></button></form></div></aside>
 <div class="veu" data-fecha-menu aria-hidden="true"></div>
 <div class="main"><header class="top"><div class="top-in"><button type="button" class="icon-btn abre-menu" data-abre-menu aria-label="Abrir menu" aria-controls="menu-lateral">${icone('menu')}</button>
 <nav class="crumbs" aria-label="Caminho"><a href="/" aria-label="Início">${icone('casa', 'sm')}</a>${(o.trilha?.length ? o.trilha : [[o.titulo]]).map(([t, h]) => html`${icone('chevron', 'sm')}${h ? html`<a href="${h}">${t}</a>` : html`<span aria-current="page">${t}</span>`}`)}</nav>
 <span class="sp"></span>${u.loja ? html`<span class="loja-tag" title="${u.loja}">${icone('loja', 'sm')} ${lojaCurta(u.loja)}</span>` : ''}</div></header>
 <main class="wrap" id="conteudo">
-<div class="ph"><div><div class="ph-t"><h1>${o.titulo}</h1>${o.selo || ''}</div>${o.sub ? html`<p class="sub">${o.sub}</p>` : ''}</div>${o.acoes ? html`<div class="ph-actions">${o.acoes}</div>` : ''}</div>
+${o.semCabecalho ? '' : html`<div class="ph ${(o.compacto ?? o.largura === 'larga') ? 'compacto' : ''}"><div>${!(o.compacto ?? o.largura === 'larga') && o.eyebrow !== false ? html`<div class="eyebrow">${o.eyebrow || 'Pagamentos de entregadores'}</div>` : ''}<div class="ph-t"><h1>${o.titulo}</h1>${o.selo || ''}</div>${o.sub ? html`<p class="sub">${o.sub}</p>` : ''}</div>${o.acoes ? html`<div class="ph-actions">${o.acoes}</div>` : ''}</div>`}
 ${flash}${corpo}</main></div></div>`
     : html`<body class="auth"><div class="auth-arte" aria-hidden="true"></div><main class="auth-box"><img class="logo-v" src="/marca/logo.png" alt="Grupo Forno"><h2 class="auth-t">Entregadores</h2><p class="auth-sub">Grupo Forno · Pagamento</p>${flash}${corpo}</main>`}
-<script>${new Raw(JS)}</script>${o.js ? html`<script src="${o.js}?v=${versao(o.js)}" defer></script>` : ''}</body></html>`.s;
+<script>${new Raw(JS)}</script><script src="/marca/marca.js?v=${versao('/marca/marca.js')}" defer></script>${o.js ? html`<script src="${o.js}?v=${versao(o.js)}" defer></script>` : ''}</body></html>`.s;
 }
 const SEGREDO_MSG = crypto.randomBytes(16);
 const assina = (chave, msg) => crypto.createHmac('sha256', SEGREDO_MSG).update(`${chave}:${msg}`).digest('hex').slice(0, 16);
@@ -119,7 +122,7 @@ app.post('/login', (req, res) => {
 app.use((req, res, next) => {
   const sid = /(?:^|;\s*)sid=([a-f0-9]{64})/.exec(req.headers.cookie || '')?.[1];
   if (sid) req.user = db.prepare('SELECT u.*, l.nome loja FROM sessoes s JOIN usuarios u ON u.id = s.usuario_id LEFT JOIN lojas l ON l.id = u.loja_id WHERE s.token = ? AND s.expira > ? AND u.ativo = 1 AND u.perfil <> \'motoboy\'').get(sid, Date.now());
-  if (!req.user) return res.redirect('/login');
+  if (!req.user) return sid ? volta(res, '/login', 'erro', 'Sua sessão expirou. Entre de novo.') : res.redirect('/login');
   req.sid = sid;
   next();
 });
@@ -304,8 +307,15 @@ function pendenciasDespachante(req, res) {
   const linhaP = (p) => { const sit = p.situacao === 'atrasado' ? ['bad', 'Atrasado: falta importar'] : p.situacao === 'hoje' ? ['warn', 'Importar hoje'] : ['', p.pagamento === amanha ? 'Amanhã: importe quando o período terminar' : 'Período em andamento'];
     return html`<tr>${pagCel(p.pagamento)}<td class="nw">${periodoP(p)}</td><td><span class="badge ${sit[0] || 'nodot'}">${sit[1]}</span></td><td class="n mut">—</td>
 <td class="n">${p.situacao === 'futuro' ? '' : botao(`/fechamentos/novo?p=${p.pagamento}`, 'Importar arquivos')}</td></tr>`; };
-  const secao = (id, titulo, dica, linhas, rodape) => linhas.length ? html`<section class="sec-p" aria-labelledby="${id}"><div class="sec-h"><h2 id="${id}">${titulo} <span class="c">${linhas.length}</span></h2>${dica ? html`<p>${dica}</p>` : ''}</div>
-<div class="tw card"><table class="tab-p"><thead><tr><th scope="col">Pagamento previsto</th><th scope="col">Período</th><th scope="col">Situação</th><th scope="col" class="n">Total</th><th scope="col"><span class="sr">Ação</span></th></tr></thead><tbody>${linhas}</tbody></table></div>${rodape || ''}</section>` : '';
+  // Com mais de 6 linhas, a seção vira uma sanfona (fechada), independente das outras.
+  const secao = (id, titulo, dica, linhas, rodape) => {
+    if (!linhas.length) return '';
+    const cab = html`<h2 id="${id}">${titulo} <span class="c">${linhas.length}</span></h2>${dica ? html`<p>${dica}</p>` : ''}`;
+    const tabela = html`<div class="tw card"><table class="tab-p"><thead><tr><th scope="col">Pagamento previsto</th><th scope="col">Período</th><th scope="col">Situação</th><th scope="col" class="n">Total</th><th scope="col"><span class="sr">Ação</span></th></tr></thead><tbody>${linhas}</tbody></table></div>`;
+    return linhas.length > 6
+      ? html`<section class="sec-p"><details class="sanfona"><summary class="sec-h">${cab}${icone('chevron', 'chev')}</summary>${tabela}</details>${rodape || ''}</section>`
+      : html`<section class="sec-p" aria-labelledby="${id}"><div class="sec-h">${cab}</div>${tabela}${rodape || ''}</section>`;
+  };
   // As seções são montadas em ordem para o primeiro botão laranja cair na primeira ação da tela.
   const sAnd = secao('h-and', 'Em andamento', 'Fechamentos importados que ainda não foram enviados ao financeiro.', andamento.map((f) => linhaF(f, 'Continuar revisão', atrasadoF(f) ? html`<span class="badge bad">Atrasado: falta enviar</span>` : html`<span class="badge warn">Falta enviar</span>`)));
   const sDev = secao('h-dev', 'Devolvidos pelo financeiro', 'Corrija o que o financeiro pediu e envie de novo.', devolvidos.map((f) => linhaF(f, 'Corrigir fechamento', html`<span class="badge bad">Devolvido para correção</span>`)));
@@ -313,10 +323,14 @@ function pendenciasDespachante(req, res) {
   const sApr = secao('h-apr', 'Aprovados', 'Os mais recentes. Aprovado não quer dizer pago: o pagamento é feito fora do sistema.', aprovados.map((f) => linhaF(f)), html`<p class="outro"><a href="/historico">Ver todos no Histórico</a></p>`);
   const sPre = secao('h-pre', semImportar.length ? 'Pagamentos para importar' : 'Próximo pagamento', semImportar.length ? 'Ainda sem fechamento importado. No fim, o próximo da agenda.' : 'Importe quando o período terminar.', previstos.map(linhaP));
   const nada = !andamento.length && !devolvidos.length && !semImportar.length;
-  res.send(page(req, { titulo: 'Pendências', acoes: html`<a class="btn btn-sec" href="/fechamentos/novo">${icone('subir', 'sm')} Importar arquivos</a>` }, html`
+  const nAtr = semImportar.filter((p) => p.situacao === 'atrasado').length, nPer = ag.filter((p) => !p.f).length, temEsq = andamento.length || devolvidos.length;
+  const painel = html`<aside class="painel-pend ${semImportar.length ? '' : 'pp-ok'}" aria-labelledby="h-painel"><h2 id="h-painel">Pagamentos para importar</h2>
+<div class="pp-corpo"><b class="pp-num">${nAtr || semImportar.length}</b><div class="pp-txt"><b>${nAtr ? `pagamento${nAtr > 1 ? 's' : ''} atrasado${nAtr > 1 ? 's' : ''}` : semImportar.length ? 'para importar hoje' : 'nada atrasado'}</b><span>${nPer} período${nPer === 1 ? '' : 's'} na agenda</span></div></div>
+<a class="pp-ver" href="#h-pre">Ver períodos</a></aside>`;
+  res.send(page(req, { titulo: 'Pendências', acoes: html`<a class="btn btn-pri" href="/fechamentos/novo">${icone('subir', 'sm')} Importar arquivos</a>` }, html`
 ${nada ? html`<div class="faixa ok">${icone('check')}<p><b>Nada pendente agora.</b>${proximo ? ` Próximo pagamento: ${diaLongo(proximo.pagamento)}${proximo.pagamento === amanha ? ' (amanhã)' : ''}.` : ''}</p></div>` : ''}
-${semImportar.some((p) => p.situacao === 'atrasado') ? html`<div class="faixa bad">${icone('alerta')}<p><b>${semImportar.filter((p) => p.situacao === 'atrasado').length} pagamento(s) atrasado(s) sem importar.</b> <a href="#h-pre">Ver pagamentos para importar</a></p></div>` : ''}
-${sAnd}${sDev}${sEnv}${sApr}${sPre}`));
+<section class="requer" aria-labelledby="h-req"><h2 class="requer-t" id="h-req">Requer atenção</h2><div class="requer-g ${temEsq ? '' : 'so-painel'}">${temEsq ? html`<div>${sAnd}${sDev}</div>` : ''}${painel}</div></section>
+${sEnv}${sApr}${sPre}`));
 }
 
 // ---------- Financeiro: fila e conferência ----------
@@ -325,7 +339,7 @@ const abaFin = (f) => (f.status === 'pago' ? 'aprovados' : f.status === 'rascunh
 const SELO_FIN = { aguardando: ['info', 'Aguardando análise'], parcial: ['warn', 'Parcialmente aprovado'], devolvidos: ['bad', 'Devolvido à loja'], aprovados: ['ok', 'Aprovado'] };
 const vinculo = (f) => { const filho = filhoDe(f.id);
   return html`${f.origem_id ? html`<div class="alert info">${icone('link')}<div><b>Restante do fechamento #${f.origem_id}</b>Os entregadores aprovados ficaram fechados no <a href="/fechamentos/${f.origem_id}">fechamento #${f.origem_id}</a>. Aqui estão só os que não foram aprovados.</div></div>` : ''}${filho ? html`<div class="alert info">${icone('link')}<div><b>Aprovado em parte</b>Aqui ficaram só os entregadores aprovados. Os demais foram devolvidos à loja no <a href="/fechamentos/${filho}">fechamento #${filho}</a>.</div></div>` : ''}`; };
-const seloFin = (f) => { const [c, t] = f.arquivado_em ? ['nodot', 'Arquivado pela loja'] : f.status === 'pago' && filhoDe(f.id) ? ['ok', 'Aprovado em parte'] : f.status === 'rascunho' && f.origem_id ? ['bad', 'Devolvido · parte já aprovada'] : SELO_FIN[abaFin(f)]; return html`<span class="badge ${c}">${t}</span>`; };
+const seloFin = (f) => { const [c, t] = f.arquivado_em ? ['nodot', 'Arquivado pela loja'] : f.pago_em ? ['ok', 'Pago'] : f.status === 'pago' && filhoDe(f.id) ? ['ok', 'Aprovado em parte'] : f.status === 'rascunho' && f.origem_id ? ['bad', 'Devolvido · parte já aprovada'] : SELO_FIN[abaFin(f)]; return html`<span class="badge ${c}">${t}</span>`; };
 // Volta à fila com os mesmos filtros e página (só aceita endereço da própria fila).
 const voltaFila = (v) => (typeof v === 'string' && /^\/(\?[\w=&%.+-]*)?$/.test(v) ? v : '/');
 const detalheFin = (f, v) => `/fechamentos/${f.id}${voltaFila(v) === '/' ? '' : `?volta=${encodeURIComponent(voltaFila(v))}`}`;
@@ -366,37 +380,39 @@ function filaFinanceiro(req, res) {
   const aqui = qs(), filtrando = !!(loja || de || ate || busca), limpar = aba === 'aguardando' ? '/' : `/?aba=${aba}`;
   const link = (f) => detalheFin(f, aqui);
   const ativos = filtrados.filter((f) => !f.arquivado_em), emAnalise = ativos.filter((f) => f.status === 'enviado');
+  const nDev = daAba('devolvidos').length, nParc = emAnalise.filter((f) => abaFin(f) === 'parcial').length;
   const antigo = emAnalise.map((f) => f.enviado_em).filter(Boolean).sort()[0];
   const dias = antigo ? Math.round((Date.parse(hoje) - Date.parse(antigo.slice(0, 10))) / 864e5) : 0;
   const ag = agenda(lojas, AG.soma(hoje, -7), AG.soma(hoje, 7)).filter((p) => p.pagamento >= hoje || p.situacao !== 'enviado');
   const VAZIO = { aguardando: 'Nada aguardando análise. Quando uma loja enviar, aparece aqui.', parcial: 'Nenhum fechamento parcialmente aprovado.', devolvidos: 'Nenhum fechamento devolvido aguardando correção da loja.', aprovados: 'Nenhum fechamento aprovado ainda.', todos: 'Nenhuma solicitação recebida ainda.' };
-  res.send(page(req, { titulo: 'Fila do financeiro', sub: 'Solicitações de pagamento enviadas pelas lojas. Confira, aprove por entregador ou devolva para correção.' }, html`
+  res.send(page(req, { titulo: 'Fila do financeiro', eyebrow: 'Financeiro', largura: 'larga fila-pg', compacto: true, sub: 'Confira cada fechamento, aprove por entregador ou devolva para correção.' }, html`
 <dl class="resumo" aria-label="Indicadores${filtrando ? ' (com os filtros atuais)' : ''}">
-<div class="destaque"><dt>Aguardando sua análise</dt><dd>${brl(emAnalise.reduce((t, f) => t + f.total - f.aprovado, 0))}</dd><dd>${emAnalise.length} fechamento(s)</dd></div>
-<div><dt>Envio pendente mais antigo</dt><dd>${antigo ? dataFmt(antigo.slice(0, 10)) : '—'}</dd><dd class="${dias > 2 ? 'bad-t' : ''}">${antigo ? (dias ? `há ${dias} dia(s)` : 'hoje') : 'nada pendente'}</dd></div>
-<div><dt>Devolvidos à loja</dt><dd>${daAba('devolvidos').length}</dd><dd>aguardando correção</dd></div>
-<div><dt>Já aprovado</dt><dd>${brl(ativos.reduce((t, f) => t + f.aprovado, 0))}</dd><dd>${filtrando ? 'nos filtros atuais' : 'em todos os fechamentos'}</dd></div></dl>
-<section class="card fila" aria-label="Fechamentos recebidos">
+<div class="destaque"><dt>Aguardando sua análise</dt><dd>${brl(emAnalise.reduce((t, f) => t + f.total - f.aprovado, 0))}</dd><dd>${pl(emAnalise.length, 'fechamento', 'fechamentos')}${nParc ? ` · incl. ${pl(nParc, 'parcialmente aprovado', 'parcialmente aprovados')}` : ''}</dd></div>
+<div><dt>Envio pendente mais antigo</dt><dd>${antigo ? dataFmt(antigo.slice(0, 10)) : '—'}</dd><dd class="${dias > 2 ? 'bad-t' : ''}">${antigo ? (dias ? `há ${pl(dias, 'dia', 'dias')}` : 'enviado hoje') : 'nada pendente'}</dd></div>
+<div class="${nDev ? 'atenc' : 'zero'}"><dt>Devolvidos à loja</dt><dd>${nDev}</dd><dd>${nDev ? 'aguardando correção da loja' : 'nenhum aguardando correção'}</dd></div>
+<div><dt>Já aprovado</dt><dd>${brl(ativos.reduce((t, f) => t + f.aprovado, 0))}</dd><dd>${filtrando ? 'todas as situações, nos filtros atuais' : 'todas as situações e lojas'}</dd></div></dl>
+<section class="card fila" aria-labelledby="h-fila"><header class="fila-cab"><h2 id="h-fila">Fechamentos recebidos</h2><span class="mut small">${pl(lista.length, 'resultado', 'resultados')} em “${FIN_ABAS[aba]}”</span></header>
+${lojas.length > 1 ? html`<nav class="pills fila-lojas" aria-label="Filtrar por loja"><span class="rot">Loja</span><a href="${qs({ loja: '', p: 1 })}" class="${loja ? '' : 'on'}" ${loja ? '' : new Raw('aria-current="true"')}>Todas</a>${lojas.map((l) => html`<a href="${qs({ loja: l.id, p: 1 })}" class="${l.id === loja ? 'on' : ''}" ${l.id === loja ? new Raw('aria-current="true"') : ''}>${lojaCurta(l.nome)}</a>`)}</nav>` : ''}
 <nav class="seg fila-abas" aria-label="Situação">${Object.entries(FIN_ABAS).map(([k, t]) => html`<a href="${qs({ aba: k, p: 1 })}" class="${aba === k ? 'on' : ''}" ${aba === k ? new Raw('aria-current="page"') : ''}>${t}<span class="c">${daAba(k).length}</span></a>`)}</nav>
-<form method="get" action="/" class="filtros" role="search" aria-label="Filtrar fechamentos">${aba !== 'aguardando' ? html`<input type="hidden" name="aba" value="${aba}">` : ''}
-${lojas.length > 1 ? html`<div class="field"><label for="f-loja">Loja</label><select id="f-loja" name="loja"><option value="">Todas as lojas</option>${lojas.map((l) => html`<option value="${l.id}" ${l.id === loja ? 'selected' : ''}>${l.nome}</option>`)}</select></div>` : ''}
+<details class="filtros-det" open data-ativos="${filtrando ? 1 : 0}"><summary class="filtros-sum">${icone('ajustes', 'sm')} Filtros${filtrando ? ' (ativos)' : ''}</summary><form method="get" action="/" class="filtros" role="search" aria-label="Filtrar fechamentos">${aba !== 'aguardando' ? html`<input type="hidden" name="aba" value="${aba}">` : ''}
+${loja ? html`<input type="hidden" name="loja" value="${loja}">` : ''}
 <div class="field"><label for="f-de">Enviado de</label><input id="f-de" type="date" name="de" value="${de}"></div>
 <div class="field"><label for="f-ate">Enviado até</label><input id="f-ate" type="date" name="ate" value="${ate}"></div>
 <div class="field grow"><label for="f-q">Buscar</label><input id="f-q" type="search" name="q" value="${busca}" placeholder="Código, loja, período ou quem enviou"></div>
-<div class="filtros-b"><button class="btn btn-sec">${icone('busca', 'sm')} Filtrar</button>${filtrando ? html`<a class="btn btn-ghost" href="${limpar}">Limpar filtros</a>` : ''}</div></form>
+<div class="filtros-b"><button class="btn btn-sec">${icone('busca', 'sm')} Filtrar</button>${filtrando ? html`<a class="btn btn-ghost" href="${limpar}">Limpar filtros</a>` : ''}</div></form></details>
 ${lista.length ? html`<div class="tw"><table class="tab-fila"><thead><tr><th scope="col">Código</th><th scope="col">Loja</th><th scope="col">Período</th><th scope="col" class="opc">Recebido</th><th scope="col">Situação</th><th scope="col" class="n opc qtd">Entregadores</th><th scope="col" class="n">Total solicitado</th><th scope="col"><span class="sr">Ação</span></th></tr></thead><tbody>
 ${lista.slice((pag - 1) * POR, pag * POR).map((f) => { const pend = !f.arquivado_em && f.status === 'enviado';
-    return html`<tr data-href="${link(f)}"><td><b>#${f.id}</b> <span class="mut small" title="Versão ${f.versao}">v${f.versao}</span></td><td>${lojaCurta(f.loja)}</td>
+    return html`<tr data-href="${link(f)}"><td><b>#${f.id}</b><span class="ver" title="Versão ${f.versao}">v${f.versao}</span></td><td>${lojaCurta(f.loja)}</td>
 <td><span class="nw">${dataFmt(f.data_ini)} a</span> <span class="nw">${dataFmt(f.data_fim)}</span>${f.pagamento ? html`<div class="mut small nw">pagamento ${diaLongo(f.pagamento)}</div>` : ''}</td>
-<td class="opc"><span class="nw">${f.enviado_em ? quando(f.enviado_em) : '—'}</span>${f.enviou ? html`<div class="mut small">por ${f.enviou}</div>` : ''}</td>
+<td class="opc">${f.enviado_em ? quando(f.enviado_em) : '—'}${f.enviou ? html`<div class="mut small">por ${f.enviou}</div>` : ''}</td>
 <td>${seloFin(f)}${abaFin(f) === 'parcial' && !f.arquivado_em ? html`<div class="mut small">${f.nAprov} de ${f.n} aprovados · ${brl(f.aprovado)}</div>` : ''}</td>
 <td class="n opc qtd">${f.n}</td><td class="n b">${brl(f.total)}</td>
-<td class="n">${pend ? html`<a class="btn btn-pri btn-sm" href="${link(f)}">Conferir</a>` : html`<a class="btn btn-sec btn-sm" href="${link(f)}" aria-label="Abrir fechamento #${f.id}">Abrir</a>`}</td></tr>`; })}</tbody></table></div>
+<td class="n">${pend ? html`<a class="btn btn-pri btn-sm" href="${link(f)}">Conferir</a>` : html`<a class="btn btn-ghost btn-sm" href="${link(f)}" aria-label="Abrir fechamento #${f.id}">Abrir</a>`}</td></tr>`; })}</tbody></table></div>
 ${pags > 1 ? html`<nav class="pag" aria-label="Paginação"><span class="mut small">${(pag - 1) * POR + 1}–${Math.min(pag * POR, lista.length)} de ${lista.length}</span>
 ${pag > 1 ? html`<a class="btn btn-sec btn-sm" href="${qs({ p: pag - 1 })}" rel="prev">${icone('voltar', 'sm')} Anterior</a>` : ''}<span class="small">Página ${pag} de ${pags}</span>${pag < pags ? html`<a class="btn btn-sec btn-sm" href="${qs({ p: pag + 1 })}" rel="next">Próxima ${icone('chevron', 'sm')}</a>` : ''}</nav>` : ''}`
     : html`<p class="vazio-p">${filtrando ? html`Nenhum fechamento em "${FIN_ABAS[aba]}" com estes filtros. <a href="${limpar}">Limpar filtros</a>` : VAZIO[aba]}</p>`}
 </section>
-<details class="fold sec-agenda"><summary>${icone('chevron', 'chev')} Agenda de pagamentos das lojas</summary>${cardAgenda(u, ag)}</details>`));
+<details class="fold sec-agenda card"><summary>${icone('chevron', 'chev')} Agenda de pagamentos das lojas</summary>${cardAgenda(u, ag)}</details>`));
 }
 
 // Bloco da tela de conferência (Resumo, Por dia, Histórico e detalhe). Financeiro: decide. Despachante: edita nome e PIX.
@@ -408,9 +424,9 @@ function blocoConferencia(o) {
   const filtro = modo === 'desp'
     ? [['todos', 'Todos', itens.length], ['semp', 'Falta PIX', itens.filter((i) => !i.pix && i.total > 0).length], ['oc', 'Com ajuste', itens.filter((i) => i.oc || i.qtdOc || i.pago).length], ['dif', 'Difere do Resumo', itens.filter((i) => g.temResumo && !i.noResumo && i.bruto !== (i.resumo || 0)).length]]
     : [['todos', 'Todos', itens.length], ['pendente', 'Aguardando', itens.filter(ehPend).filter((i) => i.sit !== 'semvalor').length], ['bloqueado', 'Bloqueados', nBloq], ['aprovado', 'Aprovados', nAprov], ['devolvido', 'Devolvidos', conta(ehDev)], ['oc', 'Com ajuste', itens.filter((i) => i.oc || i.qtdOc || i.pago).length]];
-  const detalheSit = (i) => (i.sit === 'aprovado' ? (i.aprovacao ? (() => { const q = quando(i.aprovacao.aprovado_em); return `${i.aprovacao.por || '—'} · ${q.slice(0, 5)} ${q.slice(-5)}${i.aprovacao.pago_em ? ` · pago em ${quando(i.aprovacao.pago_em).slice(0, 5)}` : ''}`; })() : '')
+  const detalheSit = (i) => (i.sit === 'aprovado' ? (i.aprovacao ? (() => { const q = quando(i.aprovacao.aprovado_em); return `${i.aprovacao.por || '—'} · ${q.slice(0, 5)} ${q.slice(-5)}`; })() : '')
     : i.sit === 'devolvido' ? `Motivo: ${i.dev.motivo}`
-    : i.sit === 'bloqueado' ? `Não pode ser aprovado: ${i.bloq}.${i.alterado ? ' Também mudou depois de aprovado.' : ''}`
+    : i.sit === 'bloqueado' ? `Não pode ser aprovado: ${i.bloq}. Será devolvido à loja.${i.alterado ? ' Também mudou depois de aprovado.' : ''}`
     : i.sit === 'alterado' ? `Aprovado antes com ${brl(i.aprovacao.valor)} (PIX ${i.aprovacao.pix}); a loja mudou. Confira de novo.`
     : i.dev ? `Corrigido pela loja após devolução (versão ${i.dev.versao})` : '');
   const temAj = (i) => !!(i.oc || i.qtdOc || i.pago);
@@ -423,7 +439,6 @@ function blocoConferencia(o) {
       if (i.sit === 'bloqueado') return ['bad', i.bloq === 'sem chave PIX' ? 'Falta chave PIX' : 'Atenção'];
       if (i.sit === 'aguardando') return difDe(i) ? ['warn', 'Confira a diferença'] : ['ok', 'Pronto'];
     }
-    if (i.sit === 'aprovado' && i.aprovacao?.pago_em) return ['ok', 'Pago'];
     return SIT_ITEM[i.sit];
   };
   const detSit = (i) => (modo === 'desp' && f.status === 'rascunho' ? (i.sit === 'bloqueado' ? (i.bloq === 'sem chave PIX' ? 'Informe a chave PIX (botão Editar).' : `Atenção: ${i.bloq}.`) : '') : modo === 'desp' && i.sit === 'aprovado' ? '' : detalheSit(i));
@@ -438,7 +453,7 @@ function blocoConferencia(o) {
   const linhaResumo = (i) => {
     const [cor, txt] = sitDe(i), pode = podeSelDe(i), d = difDe(i), aj = i.oc - i.pago;
     return html`<tr class="${temAj(i) ? 'tem-oc' : ''}" data-id="${i.id}" data-q="${semAcento(i.nome)}" data-sit="${grupoDe(i)}" data-base="${i.bruto}" data-aj="${aj}" data-valor="${i.total}" ${i.bloq ? new Raw('data-bloq="1"') : ''}>
-${decide ? html`<td class="c-sel">${pode ? html`<label class="alvo"><input type="checkbox" name="m" value="${i.id}" aria-label="Selecionar ${i.nome}, ${brl(i.total)}"></label>` : ''}</td>` : ''}
+${decide ? html`<td class="c-sel">${pode ? html`<label class="alvo"><input type="checkbox" name="m" value="${i.id}" aria-label="Marcar ${i.nome} para devolver, ${brl(i.total)}"></label>` : ''}</td>` : ''}
 <th scope="row" class="c-nome"><button type="button" class="nm" data-det="${i.id}" title="Ver detalhes de ${i.nome}"><span>${i.nome}</span></button>
 ${i.pix ? html`<div class="pix-sub"><span class="rot-pix">PIX</span><span>${i.pix}</span><button type="button" class="icon-btn" data-copiar="${i.pix}" title="Copiar chave PIX" aria-label="Copiar chave PIX de ${i.nome}">${icone('copiar', 'sm')}</button>${i.avisoPix ? html`<span class="pix-av" title="${i.avisoPix}">${icone('alerta', 'sm')}<span class="pix-av-t">${i.avisoPix.startsWith('Mesma') ? 'PIX repetido' : 'PIX fora do padrão'}</span></span>` : ''}</div>` : ''}
 ${i.obs ? html`<div class="obs-sub" title="Observação do despachante">${icone('balao', 'sm')} ${i.obs}</div>` : ''}
@@ -447,7 +462,7 @@ ${i.obs ? html`<div class="obs-sub" title="Observação do despachante">${icone(
 <td class="n c-aj">${temAj(i) ? html`<b class="${aj < 0 ? 'bad-t' : ''}">${aj > 0 ? '+' : ''}${brl(aj)}</b><small>${[i.oc || i.qtdOc ? `${i.qtdOc} ocorrência(s)` : '', i.pago ? `já pago ${brl(i.pago)}` : ''].filter(Boolean).join(' · ')}</small>` : html`<span class="mut">–<span class="sr">sem ajustes</span></span>`}</td>
 <td class="n c-tot"><b>${brl(i.total)}</b></td>
 <td class="c-sit"><span class="badge ${cor}">${txt}</span>${detSit(i) ? html`<span class="sit-d" id="sit-${i.id}">${detSit(i)}</span>` : ''}</td>
-${decide || edita ? html`<td class="n c-acoes"><div class="acoes-c">${edita ? html`<a class="btn btn-ghost btn-xs" href="/fechamentos/${f.id}/motoboy/${i.id}" aria-label="Editar nome e PIX de ${i.nome}">${icone('lapis', 'sm')} Editar</a>` : ''}${pode ? html`<button type="button" class="btn btn-ok btn-xs" data-linha="aprovar" data-id="${i.id}" aria-label="Aprovar ${i.nome}" ${i.bloq ? new Raw('disabled') : ''}>Aprovar</button><button type="button" class="btn btn-sec btn-xs so-largo" data-linha="devolver" data-id="${i.id}" aria-label="Devolver ${i.nome}">Devolver</button>` : ''}</div></td>` : ''}</tr>`;
+${decide || edita ? html`<td class="n c-acoes"><div class="acoes-c">${edita ? html`<a class="btn btn-ghost btn-xs" href="/fechamentos/${f.id}/motoboy/${i.id}" aria-label="Editar nome e PIX de ${i.nome}">${icone('lapis', 'sm')} Editar</a>` : ''}${decide ? html`<button type="button" class="btn btn-ghost btn-xs" data-det="${i.id}" aria-label="Ver detalhes de ${i.nome}">Detalhes</button>` : ''}</div></td>` : ''}</tr>`;
   };
   const linhaDia = (i) => html`<tr data-q="${semAcento(i.nome)}" data-sit="${grupoDe(i)}">
 <th scope="row" class="c-nome"><button type="button" class="nm" data-det="${i.id}" title="Ver detalhes de ${i.nome}"><span>${i.nome}</span></button></th>
@@ -463,25 +478,26 @@ ${g.dias.map((d, k) => { const c = i.dias[d]; return html`<td class="n dcol" dat
 <button type="button" class="btn btn-sec fc-filtros" id="fc-filtros-btn" aria-expanded="false" aria-controls="fc-seg" ${new Raw(filtro.filter(([k, , n]) => k === 'todos' || (n && n < itens.length)).length < 2 ? 'data-sem-filtros' : '')}>${icone('ajustes', 'sm')} Filtros <span class="c" data-fc-nfiltros>0</span></button>
 <div class="seg fc-seg" id="fc-seg" role="group" aria-label="Mostrar por situação" ${new Raw(filtro.filter(([k, , n]) => k === 'todos' || (n && n < itens.length)).length < 2 ? 'hidden' : '')}><span class="fc-seg-rot">Mostrar:</span>${filtro.filter(([k, , n]) => k === 'todos' || (n && n < itens.length)).map(([k, t, n]) => html`<button type="button" data-f="${k}" class="${k === 'todos' ? 'on' : ''}" aria-pressed="${k === 'todos'}">${t}<span class="c">${n}</span></button>`)}</div>
 </div>
-<form id="dec" method="post" action="/fechamentos/${f.id}/aprovar" data-aprovar="/fechamentos/${f.id}/aprovar" data-devolver="/fechamentos/${f.id}/devolver">
-<input type="hidden" name="versao" value="${f.versao}"><input type="hidden" name="volta" value="${voltar}"><input type="hidden" name="uma" value="">
+<form id="dec" method="post" action="/fechamentos/${f.id}/decidir" data-carregando="Registrando a decisão…">
+<input type="hidden" name="versao" value="${f.versao}"><input type="hidden" name="volta" value="${voltar}">
 <section class="card painel" id="conf" role="tabpanel" aria-labelledby="t-conf">
 <div class="tw fc-tw"><table class="fc-t ${decide ? 'com-sel' : ''}" id="fc-resumo"><caption class="sr">Resumo por entregador</caption>
-<thead><tr>${decide ? html`<th scope="col" class="c-sel"><label class="alvo" title="Selecionar todos os entregadores da lista"><input type="checkbox" id="sel-todos" aria-label="Selecionar todos os entregadores da lista"><span class="sel-txt">Selecionar todos</span></label></th>` : ''}<th scope="col" class="c-nome">Entregador</th><th scope="col" class="n c-base">Valor base</th><th scope="col" class="n c-aj" title="Ocorrências do Agilizone (acréscimo ou desconto, sem data) e valor já pago no Agilizone">Ajustes</th><th scope="col" class="n c-tot">Total do fechamento</th><th scope="col" class="c-sit">Situação</th>${decide || edita ? html`<th scope="col" class="n c-acoes">Ações</th>` : ''}</tr></thead>
+<thead><tr>${decide ? html`<th scope="col" class="c-sel"><label class="alvo" title="Marcar todos os entregadores da lista para devolver"><input type="checkbox" id="sel-todos" aria-label="Marcar todos os entregadores da lista para devolver"><span class="sel-txt">Marcar para devolver</span></label></th>` : ''}<th scope="col" class="c-nome">Entregador</th><th scope="col" class="n c-base">Valor base</th><th scope="col" class="n c-aj" title="Ocorrências do Agilizone (acréscimo ou desconto, sem data) e valor já pago no Agilizone">Ajustes</th><th scope="col" class="n c-tot">Total do fechamento</th><th scope="col" class="c-sit">Situação</th>${decide || edita ? html`<th scope="col" class="n c-acoes">Ações</th>` : ''}</tr></thead>
 <tbody>${itens.map(linhaResumo)}</tbody>
 <tfoot><tr class="tot">${decide ? html`<td class="c-sel"></td>` : ''}<th scope="row" class="c-nome"><span data-esc>Total do fechamento</span><small data-esc-n></small></th><td class="n c-base" data-t="base">${brl(g.linhas.reduce((t, l) => t + l.bruto, 0))}</td><td class="n c-aj" data-t="aj">${brl(g.totOc - g.totPago)}</td><td class="n c-tot" data-t="tot">${brl(g.total)}</td><td class="c-sit"></td>${decide || edita ? html`<td class="c-acoes"></td>` : ''}</tr></tfoot></table></div>
 <p class="fc-vazio" data-vazio hidden>Nenhum entregador com esta busca ou filtro. <button type="button" class="btn btn-sec btn-sm" data-limpar-filtros>Limpar busca e filtros</button></p>
 <details class="fin-legenda"><summary>Como ler esta tabela</summary><p>Valor base: Relatório de Pedidos do Agilizone. Ajustes: ocorrências do Agilizone (acréscimo ou desconto, sem data) e o que já foi pago lá; já estão no total. "Difere do Resumo": a soma dos dias não bate com o Resumo de entregas do Agilizone.${decide ? ' A caixa no cabeçalho da tabela seleciona todos os entregadores da lista; com busca ou filtro, só os que aparecem.' : ''}</p></details>
-${decide ? html`<div class="barra" role="region" aria-label="Decisão sobre os selecionados"><div class="barra-in">
-<div><span class="mut small" data-sel-n aria-live="polite">Nenhum entregador selecionado</span><b data-sel-v>${brl(0)}</b></div>
+${decide ? html`<div class="barra" role="region" aria-label="Decisão sobre o fechamento"><div class="barra-in">
+<div><span class="mut small" data-sel-n aria-live="polite">Nenhum entregador marcado para devolver</span><b data-sel-v>${brl(0)}</b></div>
 <span class="small bad-t" data-sel-bloq hidden></span>
-<button type="button" class="btn btn-ghost" data-limpar>Limpar</button>
-<button type="button" class="btn btn-sec" data-dec="devolver">${icone('desfazer', 'sm')} Devolver selecionados</button>
-<button type="button" class="btn btn-ok" data-dec="aprovar">${icone('check', 'sm')} Aprovar selecionados</button></div></div>
-<dialog id="dlg-dec" class="dlg" aria-labelledby="dlg-dec-t" aria-describedby="dlg-dec-r"><h2 id="dlg-dec-t">Confirmar decisão</h2><p id="dlg-dec-r"></p><ul class="dlg-l" data-dlg-lista></ul>
-<div class="field" data-dlg-motivo hidden style="margin-top:12px"><label for="motivo">Motivo da devolução <span class="req" aria-hidden="true">*</span></label><textarea id="motivo" name="motivo" minlength="5" maxlength="2000" aria-describedby="dica-motivo"></textarea>
-<p class="hint" id="dica-motivo">O aviso aparece na tela inicial de ${avisados.length ? avisados.map((a) => a.nome).join(', ') : 'ninguém: a loja não tem despachante cadastrado'}. Entregadores já aprovados continuam aprovados.</p></div>
-<div class="acoes-f"><button class="btn btn-ok" data-dlg-ok>Confirmar</button><button type="button" class="btn btn-ghost" data-dlg-cancela>Cancelar</button></div></dialog>` : ''}
+<button type="button" class="btn btn-ghost" data-limpar>Limpar marcação</button>
+<button type="button" class="btn btn-sec" data-dec="devolver">${icone('desfazer', 'sm')} <span data-rot-dev>Devolver</span></button>
+<button type="button" class="btn btn-ok" data-dec="aprovar">${icone('check', 'sm')} <span data-rot-apr>Aprovar todos</span></button></div></div>
+<dialog id="dlg-dec" class="dlg dlg-dec" aria-labelledby="dlg-dec-t" aria-describedby="dlg-dec-r"><h2 id="dlg-dec-t">Confirmar decisão</h2><p id="dlg-dec-r"></p>
+<div class="dec-aviso" data-dec-aviso hidden>${icone('info')}<p></p></div>
+<ul class="dec-lista" data-dlg-lista hidden></ul>
+<p class="hint" data-dlg-hint hidden>O aviso aparece na tela inicial de ${avisados.length ? avisados.map((a) => a.nome).join(', ') : 'ninguém: a loja não tem despachante cadastrado'}.</p>
+<div class="acoes-f"><button type="button" class="btn btn-ghost" data-dlg-cancela>Cancelar</button><button type="button" class="btn btn-ghost" data-dlg-volta hidden>Voltar</button><button type="button" class="btn btn-pri" data-dlg-prox hidden>Continuar</button><button class="btn btn-ok" data-dlg-ok hidden>Confirmar</button></div></dialog>` : ''}
 </section>
 <section class="card painel" id="pordia" role="tabpanel" aria-labelledby="t-dia" hidden>
 <div class="dia-ctrl">${semanas > 1 ? html`<div class="seg dia-sem" role="group" aria-label="Semana">${Array.from({ length: semanas }, (_, k) => { const a = g.dias[k * 7], b = g.dias[Math.min(g.dias.length, k * 7 + 7) - 1]; return html`<button type="button" data-sem="${k}" class="${k === 0 ? 'on' : ''}" aria-pressed="${k === 0}">${diaFmt(a).slice(0, 5)} a ${diaFmt(b).slice(0, 5)}</button>`; })}</div>` : ''}
@@ -501,7 +517,7 @@ ${decisoes.map((d) => html`<tr><td>${quando(d.quando)}</td><td><span class="badg
 <div class="card-b"><h3 class="sec-t">Linha do tempo</h3><ul class="timeline">${hist.map((h) => html`<li>${h.acao}<small>${quando(h.quando)} · ${h.nome || 'Sistema'}</small></li>`)}</ul></div></section></div>
 <script type="application/json" id="fc-dados">${json}</script>
 <details class="fold fc-mais"><summary>Dados do envio</summary><dl class="fc-mais-dl"><div><dt>Enviado por</dt><dd>${f.enviou || f.autor || '—'}</dd></div><div><dt>Enviado em</dt><dd>${f.enviado_em ? quando(f.enviado_em) : '—'}</dd></div><div><dt>Versão</dt><dd>${f.versao}</dd></div><div><dt>Arquivo importado</dt><dd>${nomeArq(f.arquivo) || '—'}</dd></div></dl></details>
-<dialog id="dlg-det" class="dlg sheet" aria-labelledby="det-t"><div class="sheet-h"><div><h2 id="det-t"></h2><span class="badge" id="det-sit"></span></div><button type="button" class="icon-btn alvo-ic" data-det-fecha aria-label="Fechar detalhe">${icone('erro')}</button></div>
+<dialog id="dlg-det" class="dlg sheet" aria-labelledby="det-t"><div class="sheet-h"><div><div class="eyebrow">Detalhe do entregador</div><h2 id="det-t"></h2><span class="badge" id="det-sit"></span></div><button type="button" class="icon-btn alvo-ic" data-det-fecha aria-label="Fechar detalhe">${icone('erro')}</button></div>
 <div class="sheet-b" id="det-corpo"></div><div class="sheet-f" id="det-acoes"></div></dialog>`;
 }
 
@@ -555,8 +571,8 @@ app.get('/historico', (req, res) => {
   res.send(page(req, { titulo: 'Histórico' }, html`
 <div class="ferramentas"><nav class="seg" aria-label="Situação">${Object.entries(SIT).map(([k, t]) => html`<a href="${qs(k)}" class="${s === k ? 'on' : ''}" ${s === k ? new Raw('aria-current="page"') : ''}>${t}<span class="c">${daSit(k).length}</span></a>`)}</nav>
 <form method="get" action="/historico">${s ? html`<input type="hidden" name="s" value="${s}">` : ''}<label class="sr" for="mes">Mês</label><select id="mes" name="m" onchange="this.form.submit()"><option value="">Todos os meses</option>${meses.map((x) => html`<option value="${x}" ${x === m ? 'selected' : ''}>${nomeMes(x)}</option>`)}</select><noscript><button class="btn btn-sec btn-sm">Filtrar</button></noscript></form></div>
-<div class="tw card"><table><thead><tr><th scope="col">Pagamento previsto</th><th scope="col">Período</th>${veTudo(u) ? html`<th scope="col">Loja</th>` : ''}<th scope="col">Situação</th><th scope="col" class="n">Total</th><th scope="col"><span class="sr">Ação</span></th></tr></thead><tbody>
-${lista.map((f) => html`<tr data-href="/fechamentos/${f.id}"><td><b>${f.pagamento ? diaLongo(f.pagamento) : '—'}</b><span class="mut small"> ${f.pagamento ? dataFmt(f.pagamento).slice(6) : ''}</span></td><td>${periodo(f)}</td>${veTudo(u) ? html`<td>${f.loja}</td>` : ''}<td>${selo(f, f.devolvido)}</td><td class="n">${brl(f.total)}</td><td class="n"><a class="btn btn-ghost btn-sm" href="/fechamentos/${f.id}">Abrir</a></td></tr>`)}
+<div class="tw card"><table class="tab-hist"><thead><tr><th scope="col">Pagamento previsto</th><th scope="col">Período</th>${veTudo(u) ? html`<th scope="col">Loja</th>` : ''}<th scope="col">Situação</th><th scope="col" class="n">Total</th><th scope="col"><span class="sr">Ação</span></th></tr></thead><tbody>
+${lista.map((f) => html`<tr data-href="/fechamentos/${f.id}"><td class="c-pag"><b>${f.pagamento ? diaLongo(f.pagamento) : '—'}</b><span class="mut small"> ${f.pagamento ? dataFmt(f.pagamento).slice(6) : ''}</span></td><td class="c-per">${periodo(f)}</td>${veTudo(u) ? html`<td class="c-loja">${f.loja}</td>` : ''}<td class="c-sit">${selo(f, f.devolvido)}</td><td class="n c-tot">${brl(f.total)}</td><td class="n c-acao"><a class="btn btn-ghost btn-sm" href="/fechamentos/${f.id}">Abrir</a></td></tr>`)}
 ${lista.length ? '' : html`<tr><td colspan="6" class="vazio-p">Nenhum fechamento ${s ? `com a situação "${SIT[s].toLowerCase()}"` : ''}${m ? ` em ${nomeMes(m)}` : ''}.</td></tr>`}</tbody></table></div>`));
 });
 
@@ -607,7 +623,7 @@ ${u.perfil === 'despachante' ? '' : html`<div class="ferramentas" style="padding
 ${lista.map((f) => html`<tr data-href="/fechamentos/${f.id}"><td><b>${f.pagamento ? diaLongo(f.pagamento) : '—'}</b></td><td>${f.loja}</td><td>${periodo(f)}<div class="mut small">por ${f.autor}</div></td><td>${f.arquivado_em ? html`<span class="badge nodot">Arquivado em ${dataFmt(f.arquivado_em.slice(0, 10))}</span>` : f.devolvido && f.status === 'rascunho' ? html`<span class="badge bad">Devolvido para correção</span>` : badgeStatus(f.status)}</td>
 <td class="n">${f.n}</td><td class="n b">${brl(f.total)}</td><td class="n"><a class="btn btn-ghost btn-sm" href="/fechamentos/${f.id}">Abrir ${icone('chevron', 'sm')}</a></td></tr>`)}
 ${lista.length ? '' : html`<tr><td colspan="7" class="mut" style="text-align:center;padding:32px">Nenhum fechamento nesta situação.</td></tr>`}</tbody></table></div></div>`
-    : html`<div class="card empty"><div class="hico pri">${icone('lista', 'lg')}</div><h2>Nenhum fechamento ainda</h2>
+    : html`<div class="card empty"><div class="hico pri">${icone('moto', 'lg')}</div><h2>Nenhum fechamento ainda</h2>
 <p>${editaMotoboy(u) ? 'No dia do pagamento, exporte os dois arquivos do Agilizone e importe aqui. O sistema calcula quanto cada entregador recebe por dia.' : 'Quando as lojas enviarem as solicitações de pagamento, elas aparecem aqui.'}</p>
 ${editaMotoboy(u) ? html`<div style="max-width:820px;margin:0 auto 20px">${COMO_EXPORTAR}</div><a class="btn btn-pri btn-lg" href="/fechamentos/novo">${icone('subir')} Importar primeiro relatório</a>` : ''}</div>`}
 ${cardAgenda(u, itens)}
@@ -626,16 +642,16 @@ app.get('/fechamentos/novo', so((r) => editaMotoboy(r.user)), (req, res) => {
   const erro = req.query.erro && req.query.k === assina('erro', req.query.erro) ? req.query.erro : '', campo = req.query.campo === 'resumo' ? 'resumo' : 'arquivo', modoDia = req.query.modo === 'dia';
   const erroDe = (c) => (erro && campo === c ? html`<p class="erro-campo" id="erro-${c}" role="alert">${icone('erro', 'sm')} ${erro}</p>` : '');
   const upload = (n, name, accept, titulo, ext) => html`<li class="upload"><span class="num" aria-hidden="true">${n}</span><div class="field">
-<label for="f-${name}">${titulo} <span class="mut">(${ext})</span></label>
+<label for="f-${name}">${titulo} <span class="chip-ext">${ext.replace('.', '').toUpperCase()}</span></label>
 <label class="drop ${erro && campo === name ? 'erro' : ''}">${icone('subir')}<b class="drop-t">Escolher arquivo</b><span class="fname" aria-live="polite"></span>
 <input id="f-${name}" type="file" name="${name}" accept="${accept}" required ${new Raw(erro && campo === name ? `aria-invalid="true" aria-describedby="erro-${name}"` : '')}></label>${erroDe(name)}</div></li>`;
-  res.send(page(req, { titulo: 'Importar arquivos', trilha: [[inicio(u), '/'], ['Importar arquivos']], erroNoCampo: true, sub: 'Envie os arquivos exportados do Agilizone: os dois, ou só o Resumo se for pagar 1 dia. O sistema confere tudo e mostra o fechamento para você revisar antes de enviar ao financeiro.' }, html`<div class="split imp"><div class="stack">
+  res.send(page(req, { titulo: 'Importar arquivos', eyebrow: 'Fechamento de entregadores', trilha: [[inicio(u), '/'], ['Importar arquivos']], erroNoCampo: true, sub: 'Envie os arquivos do Agilizone para conferir o fechamento antes de enviar ao financeiro.' }, html`<div class="split imp"><div class="stack">
 ${p ? html`<section class="contexto" aria-label="Período a importar">
 <div><span class="mut small">${p.situacao === 'atrasado' ? 'Envio atrasado · pagamento previsto' : p.situacao === 'futuro' ? 'Próximo pagamento previsto' : 'Pagamento previsto'}</span><b>${diaLongo(p.pagamento)}</b>${lojas.length > 1 ? html`<span class="small">${p.loja.nome}</span>` : ''}</div>
 <div class="filtro"><span class="mut small">Filtro no Agilizone</span><dl><div><dt>Data inicial</dt><dd>${dataFmt(p.ini)} 06:00</dd></div><div><dt>Data final</dt><dd>${dataFmt(AG.soma(p.fim, 1))} 06:00</dd></div></dl></div>
 ${opcoes.length > 1 ? html`<nav class="outros" aria-label="Outros períodos pendentes"><span class="mut small">Outro período pendente:</span>${opcoes.filter((x) => x !== p).map((x) => html`<a href="/fechamentos/novo?p=${x.pagamento}&l=${x.loja.id}">${diaLongo(x.pagamento)}${lojas.length > 1 ? ` · ${lojaCurta(x.loja.nome)}` : ''}</a>`)}</nav>` : ''}
 </section>` : ''}
-<form method="post" enctype="multipart/form-data" class="card importar" data-modo><div class="card-b">
+<form method="post" enctype="multipart/form-data" class="card importar" data-modo data-carregando="Lendo os arquivos…"><div class="card-b">
 <fieldset class="modo"><legend>O que você vai pagar?</legend><div class="modo-op">
 <label><input type="radio" name="modo" value="periodo" ${modoDia ? '' : new Raw('checked')}><span><b>Vários dias</b><small>Relatório de Pedidos + Resumo: mostra o valor de cada dia</small></span></label>
 <label><input type="radio" name="modo" value="dia" ${modoDia ? new Raw('checked') : ''}><span><b>Só 1 dia</b><small>Só o Resumo de entregas</small></span></label></div></fieldset>
@@ -1069,50 +1085,95 @@ app.post('/fechamentos/:fid/aprovar', so((r) => decideFin(r.user)), (req, res) =
     return { url, n: sel.length, total, faltam, loja: f.loja };
   });
   volta(res, r.url, 'ok', r.faltam ? `${r.n} aprovado(s), ${brl(r.total)}. Faltam ${r.faltam} entregador(es).`
-    : `Solicitação de ${r.loja} aprovada por completo. Ele já aparece em A pagar; marque como pago lá depois de pagar.`);
+    : `Solicitação de ${r.loja} aprovada por completo. Ele já aparece em Pagamentos; marque como pago lá depois de pagar.`);
 });
 
 // Quem recebe o aviso de devolução: quem importou e os despachantes da loja.
 const avisadosDevolucao = (f) => db.prepare("SELECT nome FROM usuarios WHERE ativo = 1 AND (id = ? OR (perfil = 'despachante' AND loja_id = ?)) ORDER BY nome").all(f.criado_por, f.loja_id);
+
+// Devolve entregadores à loja: grava o motivo de cada um, separa os já aprovados (se houver) e reabre o restante como rascunho.
+function devolveLote(f, user, devSel, motivos, avisados) {
+  const itens = itensFin(f, grade(f)), para = avisados.map((a) => a.nome).join(', ');
+  const ins = db.prepare('INSERT INTO devolucoes (fechamento_id, motoboy_id, versao, valor, pix, motivo, devolvido_por, para) VALUES (?,?,?,?,?,?,?,?)');
+  for (const i of devSel) ins.run(f.id, i.id, f.versao, i.total, i.pix, motivos.get(i.id), user.id, para);
+  const total = devSel.reduce((t, i) => t + i.total, 0), iguais = new Set(devSel.map((i) => motivos.get(i.id))).size === 1;
+  const texto = iguais ? motivos.get(devSel[0].id) : devSel.map((i) => `• ${i.nome}: ${motivos.get(i.id)}`).join('\n');
+  const quais = `${devSel.map((i) => `${i.nome} ${brl(i.total)}`).join('; ')}. Avisados: ${para || 'ninguém cadastrado'}`;
+  // Aprovado em parte: os aprovados ficam fechados aqui e os não aprovados vão para um novo fechamento devolvido à loja.
+  const aprovados = itens.filter((i) => i.sit === 'aprovado'), resto = itens.filter((i) => i.sit !== 'aprovado').map((i) => i.id);
+  let alvo = f;
+  if (aprovados.length) {
+    const novo = Number(db.prepare(`INSERT INTO fechamentos (loja_id, data_ini, data_fim, status, criado_por, criado_em, arquivo, pagamento, versao, enviado_em, enviado_por, origem_id, so_resumo)
+      SELECT loja_id, data_ini, data_fim, 'rascunho', criado_por, criado_em, arquivo, pagamento, versao, enviado_em, enviado_por, id, so_resumo FROM fechamentos WHERE id = ?`).run(f.id).lastInsertRowid);
+    const lista = resto.map(Number).join(',') || '0';
+    for (const t of ['pedidos', 'resumo', 'edicoes', 'envio_pix'])
+      db.prepare(`UPDATE ${t} SET fechamento_id = ? WHERE fechamento_id = ? AND motoboy_id IN (${lista})`).run(novo, f.id);
+    db.prepare(`INSERT INTO devolucoes (fechamento_id, motoboy_id, versao, valor, pix, motivo, devolvido_por, devolvido_em, para)
+      SELECT ?, motoboy_id, versao, valor, pix, motivo, devolvido_por, devolvido_em, para FROM devolucoes WHERE fechamento_id = ? AND versao = ?`).run(novo, f.id, f.versao);
+    db.prepare("UPDATE fechamentos SET status = 'pago' WHERE id = ?").run(f.id);
+    const valorAp = aprovados.reduce((t, i) => t + i.total, 0);
+    log(user.id, `f:${f.id}`, `Devolveu ${resto.length} entregador(es) não aprovado(s) para o fechamento #${novo}: ${texto}`);
+    log(user.id, `f:${f.id}`, `Aprovou a solicitação de pagamento em parte: ${aprovados.length} entregador(es), ${brl(valorAp)}`);
+    log(user.id, `f:${novo}`, `Criado a partir do fechamento #${f.id}: entregadores não aprovados (os aprovados, ${brl(valorAp)}, ficaram no #${f.id})`);
+    alvo = carregaF(novo);
+  }
+  db.prepare("UPDATE fechamentos SET status = 'rascunho' WHERE id = ?").run(alvo.id);
+  // Descongela o PIX que veio do Agilizone (pode mudar se o Resumo for anexado de novo); o digitado continua.
+  db.prepare('DELETE FROM envio_pix WHERE fechamento_id = ?1 AND motoboy_id IN (SELECT motoboy_id FROM resumo WHERE fechamento_id = ?1 AND pix IS NOT NULL)').run(alvo.id);
+  log(user.id, `f:${alvo.id}`, `Devolveu para correção: ${texto}`);
+  log(user.id, `f:${alvo.id}`, `Entregadores devolvidos (versão ${f.versao}, ${brl(total)}): ${quais}`);
+  return { alvo, separado: alvo.id !== f.id, total };
+}
 
 app.post('/fechamentos/:fid/devolver', so((r) => decideFin(r.user)), async (req, res) => {
   const motivo = String(req.body.motivo || '').trim().slice(0, 2000);
   if (motivo.length < 5) recusa('Escreva o motivo da devolução (mínimo 5 caracteres). Nada foi alterado.', detalheFin(req.f, req.body.volta));
   const avisados = avisadosDevolucao(req.f);
   const r = tx(() => {
-    const { f, url, sel, total, itens } = decisao(req);
+    const { f, url, sel } = decisao(req);
     const apr = sel.filter((i) => i.sit === 'aprovado');
     if (apr.length) recusa(`${nomes(apr)} já foi aprovado e não pode ser devolvido. Nada foi alterado.`, url);
-    const ins = db.prepare('INSERT INTO devolucoes (fechamento_id, motoboy_id, versao, valor, pix, motivo, devolvido_por, para) VALUES (?,?,?,?,?,?,?,?)');
-    for (const i of sel) ins.run(f.id, i.id, f.versao, i.total, i.pix, motivo, req.user.id, avisados.map((a) => a.nome).join(', '));
-    const quais = `${sel.map((i) => `${i.nome} ${brl(i.total)}`).join('; ')}. Avisados: ${avisados.map((a) => a.nome).join(', ') || 'ninguém cadastrado'}`;
-    // Aprovado em parte: os aprovados ficam fechados aqui e os não aprovados vão para um novo fechamento devolvido à loja.
-    const aprovados = itens.filter((i) => i.sit === 'aprovado'), resto = itens.filter((i) => i.sit !== 'aprovado').map((i) => i.id);
-    let alvo = f;
-    if (aprovados.length) {
-      const novo = Number(db.prepare(`INSERT INTO fechamentos (loja_id, data_ini, data_fim, status, criado_por, criado_em, arquivo, pagamento, versao, enviado_em, enviado_por, origem_id)
-        SELECT loja_id, data_ini, data_fim, 'rascunho', criado_por, criado_em, arquivo, pagamento, versao, enviado_em, enviado_por, id FROM fechamentos WHERE id = ?`).run(f.id).lastInsertRowid);
-      const lista = resto.map(Number).join(',') || '0';
-      for (const t of ['pedidos', 'resumo', 'edicoes', 'envio_pix'])
-        db.prepare(`UPDATE ${t} SET fechamento_id = ? WHERE fechamento_id = ? AND motoboy_id IN (${lista})`).run(novo, f.id);
-      db.prepare(`INSERT INTO devolucoes (fechamento_id, motoboy_id, versao, valor, pix, motivo, devolvido_por, devolvido_em, para)
-        SELECT ?, motoboy_id, versao, valor, pix, motivo, devolvido_por, devolvido_em, para FROM devolucoes WHERE fechamento_id = ? AND versao = ?`).run(novo, f.id, f.versao);
-      db.prepare("UPDATE fechamentos SET status = 'pago' WHERE id = ?").run(f.id);
-      const valorAp = aprovados.reduce((t, i) => t + i.total, 0);
-      log(req.user.id, `f:${f.id}`, `Devolveu ${resto.length} entregador(es) não aprovado(s) para o fechamento #${novo}: ${motivo}`);
-      log(req.user.id, `f:${f.id}`, `Aprovou a solicitação de pagamento em parte: ${aprovados.length} entregador(es), ${brl(valorAp)}`);
-      log(req.user.id, `f:${novo}`, `Criado a partir do fechamento #${f.id}: entregadores não aprovados (os aprovados, ${brl(valorAp)}, ficaram no #${f.id})`);
-      alvo = carregaF(novo);
-    }
-    db.prepare("UPDATE fechamentos SET status = 'rascunho' WHERE id = ?").run(alvo.id);
-    // Descongela o PIX que veio do Agilizone (pode mudar se o Resumo for anexado de novo); o digitado continua.
-    db.prepare('DELETE FROM envio_pix WHERE fechamento_id = ?1 AND motoboy_id IN (SELECT motoboy_id FROM resumo WHERE fechamento_id = ?1 AND pix IS NOT NULL)').run(alvo.id);
-    log(req.user.id, `f:${alvo.id}`, `Devolveu para correção: ${motivo}`);
-    log(req.user.id, `f:${alvo.id}`, `Entregadores devolvidos (versão ${f.versao}, ${brl(total)}): ${quais}`);
-    return { f: alvo, url: alvo.id === f.id ? url : detalheFin(alvo, req.body.volta), sel, total, separado: alvo.id !== f.id, origem: f };
+    const out = devolveLote(f, req.user, sel, new Map(sel.map((i) => [i.id, motivo])), avisados);
+    return { f: out.alvo, url: out.separado ? detalheFin(out.alvo, req.body.volta) : url, sel, total: out.total, separado: out.separado, origem: f };
   });
   const sep = r.separado ? ` Os aprovados ficaram fechados no #${r.origem.id}; os não aprovados estão neste novo fechamento #${r.f.id}.` : '';
   volta(res, r.url, 'ok', `Devolvido à loja (${r.sel.length} entregador(es), ${brl(r.total)}). O despachante vê o aviso e o motivo ao entrar no sistema.` + sep);
+});
+
+// Decisão única do financeiro: ele marca quem devolver (cada um com o seu motivo) e todos os demais são aprovados juntos.
+app.post('/fechamentos/:fid/decidir', so((r) => decideFin(r.user)), (req, res) => {
+  const avisados = avisadosDevolucao(req.f);
+  const r = tx(() => {
+    const url = detalheFin(req.f, req.body.volta), f = carregaF(req.f.id);
+    if (f.status !== 'enviado' || String(f.versao) !== String(req.body.versao))
+      recusa(`Este fechamento mudou desde que você abriu a tela (${f.status === 'enviado' ? `a loja reenviou: agora é a versão ${f.versao}` : f.status === 'pago' ? 'já foi aprovado' : 'já foi devolvido à loja'}). Nada foi alterado. Confira e decida de novo.`, url);
+    const itens = itensFin(f, grade(f)), ids = [...new Set([].concat(req.body.dev ?? []).map(Number).filter(Boolean))];
+    const devSel = itens.filter((i) => ids.includes(i.id));
+    if (devSel.length !== ids.length) recusa('Há entregador marcado que não está neste fechamento. Nada foi alterado.', url);
+    const nao = devSel.filter((i) => ['aprovado', 'semvalor'].includes(i.sit));
+    if (nao.length) recusa(`${nomes(nao)} não pode ser devolvido (já aprovado ou sem valor). Nada foi alterado.`, url);
+    const motivos = new Map(devSel.map((i) => [i.id, String(req.body[`motivo_${i.id}`] || '').trim().slice(0, 2000)]));
+    const sem = devSel.filter((i) => motivos.get(i.id).length < 5);
+    if (sem.length) recusa(`Escreva o motivo da devolução de ${nomes(sem)} (mínimo 5 caracteres). Nada foi alterado.`, url);
+    // Todos os outros com valor a pagar são aprovados; quem não pode ser aprovado (sem PIX) precisa estar na lista de devoluções.
+    const aprovar = itens.filter((i) => !ids.includes(i.id) && i.total > 0 && ['aguardando', 'alterado', 'bloqueado'].includes(i.sit));
+    const bloq = aprovar.filter((i) => i.bloq);
+    if (bloq.length) recusa(`Não dá para aprovar ${bloq.map((i) => `${i.nome} (${i.bloq})`).join('; ')}: marque para devolver. Nada foi alterado.`, url);
+    const ins = db.prepare(`INSERT INTO aprovacoes (fechamento_id, motoboy_id, aprovado_por, valor, pix, versao) VALUES (?,?,?,?,?,?)
+      ON CONFLICT (fechamento_id, motoboy_id) DO UPDATE SET aprovado_por = excluded.aprovado_por, aprovado_em = datetime('now','localtime'), valor = excluded.valor, pix = excluded.pix, versao = excluded.versao`);
+    for (const i of aprovar) ins.run(f.id, i.id, req.user.id, i.total, i.pix, f.versao);
+    const totApr = aprovar.reduce((t, i) => t + i.total, 0);
+    if (aprovar.length) log(req.user.id, `f:${f.id}`, `Aprovou ${aprovar.length} entregador(es) da versão ${f.versao}${devSel.length ? ' (os não marcados para devolver)' : ''}, total ${brl(totApr)}: ${aprovar.map((i) => `${i.nome} ${brl(i.total)} (PIX ${i.pix})`).join('; ')}`);
+    if (!devSel.length) {
+      if (!grade(f).linhas.some((l) => l.total > 0 && !l.aprovado)) { db.prepare("UPDATE fechamentos SET status = 'pago' WHERE id = ?").run(f.id); log(req.user.id, `f:${f.id}`, 'Aprovou a solicitação de pagamento (todos os entregadores)'); }
+      return { url, aprovou: true, nApr: aprovar.length, totApr, loja: f.loja };
+    }
+    const out = devolveLote(f, req.user, devSel, motivos, avisados);
+    return { url: out.separado ? detalheFin(out.alvo, req.body.volta) : url, nDev: devSel.length, totDev: out.total, nApr: aprovar.length, totApr, separado: out.separado, origem: f, novo: out.alvo };
+  });
+  if (r.aprovou) return volta(res, r.url, 'ok', `Solicitação de ${r.loja} aprovada por completo (${r.nApr} entregador(es), ${brl(r.totApr)}). Ela já aparece em Pagamentos.`);
+  const sep = r.separado ? ` Os aprovados ficaram fechados no #${r.origem.id}; os devolvidos estão no novo fechamento #${r.novo.id}.` : ' Nenhum entregador foi aprovado: o fechamento inteiro voltou à loja.';
+  volta(res, r.url, 'ok', `${r.nDev} devolvido(s) à loja (${brl(r.totDev)})${r.nApr ? ` e ${r.nApr} aprovado(s) automaticamente (${brl(r.totApr)})` : ''}.${sep}`);
 });
 
 // Arquivar (no lugar de excluir): sai da lista, deixa de ser válido e libera os pedidos para outro fechamento. Nada é apagado.
@@ -1166,82 +1227,85 @@ app.get('/fechamentos/:fid/xlsx', (req, res) => {
   res.send(xlsxFechamento(f, grade(f)));
 });
 
-// ---------- A pagar (financeiro): aprovados ainda não pagos, somados por entregador e por loja ----------
+// ---------- Pagamentos (financeiro): fechamentos aprovados, pagos um a um ou juntos em um lote ----------
 const soPagar = so((r) => decideFin(r.user));
+const pl = (n, um, mais) => `${n} ${n === 1 ? um : mais}`;
 const urlPagar = (v) => (typeof v === 'string' && /^\/pagar(\?[\w=&%.+-]*)?$/.test(v) ? v : '/pagar');
-const SQL_APROV = `SELECT a.fechamento_id fid, a.motoboy_id mid, a.valor, a.pix, a.pago_em, f.loja_id, l.nome loja, f.data_ini, f.data_fim, COALESCE(e.nome, m.nome) nome, e.obs, up.nome pagou
-  FROM aprovacoes a JOIN fechamentos f ON f.id = a.fechamento_id JOIN lojas l ON l.id = f.loja_id JOIN motoboys m ON m.id = a.motoboy_id
-  LEFT JOIN edicoes e ON e.fechamento_id = a.fechamento_id AND e.motoboy_id = a.motoboy_id LEFT JOIN usuarios up ON up.id = a.pago_por
-  WHERE a.valor <> 0 AND f.arquivado_em IS NULL AND f.versao > 0 AND (? = 0 OR f.loja_id = ?)`;
 
 app.get('/pagar', soPagar, (req, res) => {
-  const u = req.user, q = req.query, soma = (xs, k = 'valor') => xs.reduce((t, x) => t + x[k], 0), dm = (d) => dataFmt(d).slice(0, 5);
+  const u = req.user, q = req.query, hoje = agora().data, dm = (d) => dataFmt(d).slice(0, 5);
   const lojas = db.prepare('SELECT * FROM lojas ORDER BY nome').all().filter((l) => !u.loja_id || l.id === u.loja_id);
-  const loja = lojas.some((l) => l.id === Number(q.loja)) ? Number(q.loja) : 0, ate = /^\d{4}-\d{2}-\d{2}$/.test(q.ate || '') ? q.ate : '', pagos = q.aba === 'pagos';
-  const todas = db.prepare(SQL_APROV).all(u.loja_id ? 1 : 0, u.loja_id ?? 0), abertas = todas.filter((a) => !a.pago_em), feitos = todas.filter((a) => a.pago_em);
-  const daLoja = (xs) => xs.filter((a) => !loja || a.loja_id === loja);
-  const qs = (m = {}) => { const p = new URLSearchParams(Object.entries({ aba: pagos ? 'pagos' : '', loja: loja || '', ate, ...m }).filter(([, x]) => x)); return p.size ? `/pagar?${p}` : '/pagar'; };
-  const aqui = qs();
-  // Previsão: o que já está aprovado (a pagar) e o que ainda espera aprovação, por loja.
-  const aguard = new Map();
-  for (const f of fechamentosDe(u)) if (f.status === 'enviado' && !f.arquivado_em) aguard.set(f.loja_id, (aguard.get(f.loja_id) || 0) + f.total - f.aprovado);
-  const porLoja = lojas.map((l) => { const x = abertas.filter((a) => a.loja_id === l.id); return { l, valor: soma(x), n: new Set(x.map((a) => a.mid)).size, aguard: aguard.get(l.id) || 0 }; }).filter((r) => r.valor || r.aguard);
-  const grupos = new Map();
-  for (const a of daLoja(abertas).filter((x) => !ate || x.data_fim <= ate)) { const k = `${a.loja_id}|${a.mid}`; grupos.set(k, [...(grupos.get(k) || []), a]); }
-  const linhas = [...grupos.values()].map((xs) => { xs.sort((a, b) => a.data_fim.localeCompare(b.data_fim)); const ult = xs[xs.length - 1];
-    return { loja: ult.loja, nome: ult.nome, pix: ult.pix, pixMudou: new Set(xs.map((a) => a.pix)).size > 1, ini: xs[0].data_ini, fim: ult.data_fim, n: xs.length, valor: soma(xs), obs: [...new Set(xs.map((a) => a.obs).filter(Boolean))], sel: xs.map((a) => `${a.fid}:${a.mid}:${a.valor}`).join(',') }; })
-    .sort((a, b) => a.loja.localeCompare(b.loja) || a.nome.localeCompare(b.nome, 'pt-BR'));
-  const lista = daLoja(feitos).sort((a, b) => b.pago_em.localeCompare(a.pago_em)).slice(0, 200);
-  const obsH = (xs) => xs.map((o) => html`<div class="obs-sub">${icone('balao', 'sm')} ${o}</div>`);
-  res.send(page(req, { titulo: 'A pagar', sub: 'Valores já aprovados e ainda não pagos, somados por entregador. Depois de pagar, marque como pago.', css: '/marca/admin.css', js: '/marca/pagar.js', largura: 'larga' }, html`
-<div class="stats"><div class="card stat"><span class="hico ok">${icone('carteira')}</span><div><div class="v">${brl(soma(abertas))}</div><div class="l">Aprovado, a pagar · ${new Set(abertas.map((a) => `${a.loja_id}|${a.mid}`)).size} entregador(es)</div></div></div>
-<div class="card stat"><span class="hico info">${icone('relogio')}</span><div><div class="v">${brl([...aguard.values()].reduce((t, x) => t + x, 0))}</div><div class="l">Ainda aguardando aprovação (previsto)</div></div></div></div>
-${porLoja.length ? html`<section class="card" style="margin-bottom:20px" aria-labelledby="prev-t"><div class="card-h"><div class="t"><h2 id="prev-t">Previsão por loja</h2><p>Clique em uma loja para ver só os entregadores dela.</p></div></div><div class="tw"><table><thead><tr><th scope="col">Loja</th><th scope="col" class="n">A pagar (aprovado)</th><th scope="col" class="n">Entregadores</th><th scope="col" class="n">Aguardando aprovação</th><th scope="col"><span class="sr">Ação</span></th></tr></thead><tbody>
-${porLoja.map((r) => html`<tr><td><b>${r.l.nome}</b></td><td class="n b">${brl(r.valor)}</td><td class="n">${r.n}</td><td class="n mut">${r.aguard ? brl(r.aguard) : '—'}</td><td class="n"><a class="btn btn-ghost btn-sm" href="${qs({ loja: r.l.id, aba: '' })}">Ver ${icone('chevron', 'sm')}</a></td></tr>`)}</tbody></table></div></section>` : ''}
-<div class="card"><div class="card-h"><div class="t"><h2>${pagos ? 'Pagamentos já feitos' : 'Entregadores a pagar'}</h2><p>${pagos ? 'Os 200 mais recentes. Se marcou errado, use Desfazer.' : 'Marque quem você vai pagar agora e confirme no fim da tela.'}</p></div></div>
-<nav class="seg" style="padding:0 20px;margin:0" aria-label="Situação"><a href="${qs({ aba: '' })}" class="${pagos ? '' : 'on'}">A pagar<span class="c">${linhas.length}</span></a><a href="${qs({ aba: 'pagos' })}" class="${pagos ? 'on' : ''}">Pagos<span class="c">${daLoja(feitos).length}</span></a></nav>
-<form method="get" action="/pagar" class="ferramentas" style="padding-top:14px">${pagos ? html`<input type="hidden" name="aba" value="pagos">` : ''}
-<label class="sr" for="f-loja">Loja</label><select id="f-loja" name="loja" onchange="this.form.submit()"><option value="">Todas as lojas</option>${lojas.map((l) => html`<option value="${l.id}" ${l.id === loja ? 'selected' : ''}>${l.nome}</option>`)}</select>
-${pagos ? '' : html`<label for="f-ate" class="small mut">Somar até o dia</label><input id="f-ate" type="date" name="ate" value="${ate}" style="width:auto;height:38px"><button class="btn btn-sec btn-sm">Filtrar</button>`}
-${loja || ate ? html`<a class="btn btn-ghost btn-sm" href="${pagos ? '/pagar?aba=pagos' : '/pagar'}">Limpar filtros</a>` : ''}</form>
-${pagos ? html`<div class="tw"><table><thead><tr><th scope="col">Entregador</th><th scope="col">Loja</th><th scope="col">Período</th><th scope="col" class="n">Valor</th><th scope="col">Pago em</th><th scope="col"><span class="sr">Ação</span></th></tr></thead><tbody>
-${lista.map((a) => html`<tr><td><b>${a.nome}</b><div class="mut small">PIX ${a.pix}</div>${obsH(a.obs ? [a.obs] : [])}</td><td>${lojaCurta(a.loja)}</td><td>${dm(a.data_ini)} a ${dm(a.data_fim)}</td><td class="n b">${brl(a.valor)}</td><td>${quando(a.pago_em)}<div class="mut small">por ${a.pagou || '—'}</div></td>
-<td class="n"><form method="post" action="/pagar/desfazer" onsubmit="return confirm('Desfazer o pagamento de ${a.nome.replace(/['"\\<>&]/g, '')}? Ele volta para a lista A pagar.')"><input type="hidden" name="par" value="${a.fid}:${a.mid}"><input type="hidden" name="volta" value="${aqui}"><button class="btn btn-ghost btn-sm">${icone('desfazer', 'sm')} Desfazer</button></form></td></tr>`)}
-${lista.length ? '' : html`<tr><td colspan="6" class="mut" style="text-align:center;padding:32px">Nenhum pagamento marcado ainda.</td></tr>`}</tbody></table></div>`
-  : html`<form method="post" action="/pagar" data-pagar><input type="hidden" name="volta" value="${aqui}"><div class="tw"><table><thead><tr><th scope="col" style="width:44px"><input type="checkbox" data-todos aria-label="Selecionar todos"></th><th scope="col">Entregador</th><th scope="col">Loja</th><th scope="col">Período</th><th scope="col" class="n">Valor acumulado</th></tr></thead><tbody>
-${linhas.map((l) => html`<tr><td><input type="checkbox" name="sel" value="${l.sel}" data-v="${l.valor}" aria-label="Selecionar ${l.nome}"></td><td><b>${l.nome}</b><div class="mut small">PIX ${l.pix}${l.pixMudou ? html` <span class="badge warn nodot">PIX mudou entre os dias</span>` : ''}</div>${obsH(l.obs)}</td><td>${lojaCurta(l.loja)}</td><td>${dm(l.ini)} a ${dm(l.fim)}<div class="mut small">${l.n} fechamento(s)</div></td><td class="n b">${brl(l.valor)}</td></tr>`)}
-${linhas.length ? '' : html`<tr><td colspan="5" class="mut" style="text-align:center;padding:32px">Nada aprovado para pagar${loja || ate ? ' com esses filtros' : ''}. Aprove os fechamentos enviados pelas lojas.</td></tr>`}</tbody>
-${linhas.length ? html`<tfoot><tr><th colspan="4" scope="row">Total na tela</th><td class="n b">${brl(soma(linhas))}</td></tr></tfoot>` : ''}</table></div>
-${linhas.length ? html`<div class="barra" role="region" aria-label="Marcar como pago"><div class="barra-in"><div><span class="mut small">Selecionados: <b id="sel-n">0</b></span><b id="sel-total">R$ 0,00</b></div><button class="btn btn-pri btn-lg" data-pagar-btn disabled>${icone('check')} Marcar como pago</button></div></div>` : ''}</form>`}</div>`));
+  const loja = lojas.some((l) => l.id === Number(q.loja)) ? Number(q.loja) : 0;
+  const aba = ['naopagos', 'vencidos', 'pagos'].includes(q.aba) ? q.aba : 'naopagos';
+  // Filtro de datas: pagamento previsto (não pagos e vencidos) ou dia em que foi pago (aba Pagos).
+  const dt = (x) => (/^d{4}-d{2}-d{2}$/.test(x || '') ? x : ''), de = dt(q.de), ate = dt(q.ate), filtrando = !!(de || ate);
+  const todos = fechamentosDe(u).filter((f) => !f.arquivado_em && f.versao > 0), daLoja = todos.filter((f) => !loja || f.loja_id === loja);
+  const aprovados = daLoja.filter((f) => f.status === 'pago'), nao = aprovados.filter((f) => !f.pago_em), pagos = aprovados.filter((f) => f.pago_em);
+  const prev = (f) => f.pagamento || f.data_fim, atraso = (f) => Math.round((Date.parse(hoje) - Date.parse(prev(f))) / 864e5);
+  const venc = nao.filter((f) => prev(f) < hoje);
+  const soma = (xs) => xs.reduce((t, f) => t + f.total, 0);
+  const emAnalise = daLoja.filter((f) => f.status === 'enviado');
+  const dia = (f) => (aba === 'pagos' ? (f.pago_em || '').slice(0, 10) : prev(f)), noPeriodo = (f) => (!de || dia(f) >= de) && (!ate || dia(f) <= ate), pagosF = pagos.filter(noPeriodo);
+  const lista = (aba === 'pagos' ? pagosF : (aba === 'vencidos' ? venc : nao).filter(noPeriodo)).sort((a, b) => prev(a).localeCompare(prev(b)) || a.id - b.id);
+  const qs = (m = {}) => { const p = new URLSearchParams(Object.entries({ aba: aba === 'naopagos' ? '' : aba, loja: loja || '', de, ate, ...m }).filter(([, x]) => x)); return p.size ? `/pagar?${p}` : '/pagar'; };
+  const aqui = qs(), nomes = new Map(db.prepare('SELECT id, nome FROM usuarios').all().map((x) => [x.id, x.nome]));
+  const abas = [['naopagos', 'Não pagos', nao.length], ['vencidos', 'Vencidos', venc.length], ['pagos', 'Pagos', pagos.length]];
+  const linhaF = (f, comCx) => html`<tr data-href="/fechamentos/${f.id}">${comCx ? html`<td class="c-chk"><input type="checkbox" name="sel" value="${f.id}:${f.total}" data-v="${f.total}" aria-label="Selecionar fechamento #${f.id}"></td>` : ''}
+<td class="c-fech"><b>#${f.id}</b></td><td class="c-loja">${lojaCurta(f.loja)}</td><td class="nw c-per">${dm(f.data_ini)} a ${dm(f.data_fim)}</td>
+<td class="nw c-pag">${f.pagamento ? diaLongo(f.pagamento) : '—'}${!f.pago_em && prev(f) < hoje ? html` <span class="badge bad">Vencido há ${atraso(f)} dia${atraso(f) === 1 ? '' : 's'}</span>` : ''}</td>
+<td class="n c-ent">${f.n} entregador${f.n === 1 ? '' : 'es'}</td><td class="n b c-tot">${brl(f.total)}</td><td class="n c-acao"><a class="btn btn-ghost btn-sm" href="/fechamentos/${f.id}">Abrir</a></td></tr>`;
+  const cab = (cx) => html`<thead><tr>${cx ? html`<th scope="col" style="width:44px"><input type="checkbox" data-todos aria-label="Selecionar todos"></th>` : ''}<th scope="col">Fechamento</th><th scope="col">Loja</th><th scope="col">Período</th><th scope="col">Pagamento previsto</th><th scope="col" class="n">Entregadores</th><th scope="col" class="n">Total</th><th scope="col"><span class="sr">Ação</span></th></tr></thead>`;
+  const lotes = new Map();
+  for (const f of pagosF) { const k = f.lote || `u${f.id}`; if (!lotes.has(k)) lotes.set(k, []); lotes.get(k).push(f); }
+  const gruposPagos = [...lotes.entries()].map(([k, fs]) => ({ k, fs, em: fs[0].pago_em, por: nomes.get(fs[0].pago_por), lote: fs[0].lote })).sort((a, b) => b.em.localeCompare(a.em));
+  res.send(page(req, { titulo: 'Pagamentos', eyebrow: 'Financeiro', sub: 'Fechamentos aprovados. Marque um ou vários para pagar juntos, em um só lote.', css: '/marca/admin.css', js: '/marca/pagar.js', largura: 'larga', compacto: false }, html`
+<div class="stats"><div class="card stat"><span class="hico bad">${icone('alerta')}</span><div><div class="v">${brl(soma(venc))}</div><div class="l">${venc.length} fechamento(s) vencido(s)</div></div></div>
+<div class="card stat"><span class="hico ok">${icone('carteira')}</span><div><div class="v">${brl(soma(nao))}</div><div class="l">Aprovado e não pago · ${nao.length} fechamento(s)</div></div></div>
+<div class="card stat"><span class="hico info">${icone('relogio')}</span><div><div class="v">${brl(emAnalise.reduce((t, f) => t + f.total - f.aprovado, 0))}</div><div class="l">Aguardando aprovação · ${emAnalise.length} fechamento(s)</div></div></div>
+<div class="card stat"><span class="hico ok">${icone('check')}</span><div><div class="v">${brl(soma(pagos))}</div><div class="l">Pago · ${pagos.length} fechamento(s)</div></div></div></div>
+${lojas.length > 1 ? html`<nav class="pills lojas-pills" aria-label="Filtrar por loja"><span class="rot">Loja:</span><a href="${qs({ loja: '' })}" class="${loja ? '' : 'on'}">Todas</a>${lojas.map((l) => html`<a href="${qs({ loja: l.id })}" class="${l.id === loja ? 'on' : ''}">${lojaCurta(l.nome)}</a>`)}</nav>` : ''}
+<div class="card"><nav class="seg" style="padding:0 20px;margin:0" aria-label="Situação do pagamento">${abas.map(([k, t, n]) => html`<a href="${qs({ aba: k === 'naopagos' ? '' : k })}" class="${aba === k ? 'on' : ''}" ${aba === k ? new Raw('aria-current="page"') : ''}>${t}<span class="c">${n}</span></a>`)}</nav>
+<form method="get" action="/pagar" class="filtros" role="search" aria-label="Filtrar por data">${aba !== 'naopagos' ? html`<input type="hidden" name="aba" value="${aba}">` : ''}${loja ? html`<input type="hidden" name="loja" value="${loja}">` : ''}
+<div class="field"><label for="p-de">${aba === 'pagos' ? 'Pago de' : 'Pagamento previsto de'}</label><input id="p-de" type="date" name="de" value="${de}"></div><div class="field"><label for="p-ate">${aba === 'pagos' ? 'Pago até' : 'Pagamento previsto até'}</label><input id="p-ate" type="date" name="ate" value="${ate}"></div>
+<div class="filtros-b"><button class="btn btn-sec">${icone('busca', 'sm')} Filtrar</button>${filtrando ? html`<a class="btn btn-ghost" href="${qs({ de: '', ate: '' })}">Limpar datas</a>` : ''}</div>${filtrando ? html`<p class="mut small filtros-r">${pl(lista.length, 'fechamento', 'fechamentos')} no período.</p>` : ''}</form>
+${aba === 'pagos' ? (gruposPagos.length ? html`${gruposPagos.map((g) => html`<section class="lote" aria-label="Pagamento de ${quando(g.em)}"><div class="lote-h"><div><b>${g.lote ? `Lote #${g.lote}` : 'Pagamento'}</b> · pago em ${quando(g.em)}${g.por ? ` por ${g.por}` : ''}<div class="mut small">${g.fs.length} fechamento${g.fs.length > 1 ? 's' : ''} · ${brl(soma(g.fs))}</div></div>
+${g.lote ? html`<form method="post" action="/pagar/desfazer" onsubmit="return confirm('Desfazer o pagamento deste lote? Os fechamentos voltam para Não pagos.')"><input type="hidden" name="lote" value="${g.lote}"><input type="hidden" name="volta" value="${aqui}"><button class="btn btn-ghost btn-sm">${icone('desfazer', 'sm')} Desfazer</button></form>` : ''}</div>
+<div class="tw"><table class="tab-pg">${cab(false)}<tbody>${g.fs.map((f) => linhaF(f, false))}</tbody></table></div></section>`)}` : html`<p class="vazio-p">${filtrando ? 'Nenhum fechamento pago neste período.' : 'Nenhum fechamento pago ainda.'}</p>`)
+  : html`<form method="post" action="/pagar" data-pagar data-carregando="Registrando o pagamento…"><input type="hidden" name="volta" value="${aqui}">
+<p class="hint" style="padding:14px 20px 0">Marque dois ou mais fechamentos para pagá-los juntos. Só entram fechamentos totalmente aprovados.</p>
+<div class="tw"><table class="tab-pg">${cab(true)}<tbody>${lista.map((f) => linhaF(f, true))}${lista.length ? '' : html`<tr><td colspan="8" class="mut" style="text-align:center;padding:32px">${filtrando ? 'Nenhum fechamento neste período.' : aba === 'vencidos' ? 'Nenhum fechamento vencido. Tudo em dia.' : 'Nenhum fechamento aprovado esperando pagamento.'}</td></tr>`}</tbody>
+${lista.length ? html`<tfoot><tr><th colspan="6" scope="row">Total na tela</th><td class="n b">${brl(soma(lista))}</td><td></td></tr></tfoot>` : ''}</table></div>
+${lista.length ? html`<div class="barra" role="region" aria-label="Marcar como pagos"><div class="barra-in"><div><span class="mut small" id="sel-rot" aria-live="polite">Nenhum fechamento selecionado</span><b id="sel-total">R$ 0,00</b></div><button type="button" class="btn btn-ghost" data-limpar>Limpar</button><button class="btn btn-pri btn-lg" data-pagar-btn disabled>${icone('check')} Marcar como pagos</button></div></div>` : ''}</form>`}</div>`));
 });
 
 app.post('/pagar', soPagar, (req, res) => {
   const u = req.user, url = urlPagar(req.body.volta);
-  const trios = [].concat(req.body.sel ?? []).flatMap((s) => String(s).split(',')).map((s) => s.split(':').map(Number)).filter((t) => t.length === 3 && t.every(Number.isInteger));
-  if (!trios.length) recusa('Selecione pelo menos um entregador.', url);
+  const pares = [].concat(req.body.sel ?? []).map((s) => String(s).split(':').map(Number)).filter((t) => t.length === 2 && t.every(Number.isInteger));
+  if (!pares.length || new Set(pares.map((p) => p[0])).size !== pares.length) recusa('Selecione pelo menos um fechamento.', url);
   const r = tx(() => {
-    let total = 0; const porF = new Map();
-    for (const [fid, mid, valor] of trios) {
-      const a = db.prepare('SELECT a.valor, a.pago_em, f.loja_id FROM aprovacoes a JOIN fechamentos f ON f.id = a.fechamento_id WHERE a.fechamento_id = ? AND a.motoboy_id = ?').get(fid, mid);
-      if (!a || (u.loja_id && a.loja_id !== u.loja_id)) recusa('Item não encontrado. Atualize a tela. Nada foi marcado.', url);
-      if (a.pago_em) recusa('Algum item já estava pago. Atualize a tela. Nada foi marcado.', url);
-      if (a.valor !== valor) recusa('Algum valor mudou. Atualize a tela. Nada foi marcado.', url);
-      db.prepare("UPDATE aprovacoes SET pago_em = datetime('now','localtime'), pago_por = ? WHERE fechamento_id = ? AND motoboy_id = ?").run(u.id, fid, mid);
-      total += valor; const x = porF.get(fid) || { n: 0, v: 0 }; x.n++; x.v += valor; porF.set(fid, x);
+    const lote = db.prepare('SELECT COALESCE(MAX(lote), 0) + 1 n FROM fechamentos').get().n;
+    let total = 0;
+    for (const [id, valor] of pares) {
+      const f = carregaF(id);
+      if (!f || !podeVer(u, f) || f.status !== 'pago' || f.arquivado_em) recusa(`O fechamento #${id} não está aprovado para pagar. Atualize a tela. Nada foi marcado.`, url);
+      if (f.pago_em) recusa(`O fechamento #${id} já está pago. Atualize a tela. Nada foi marcado.`, url);
+      const t = grade(f).total;
+      if (t !== valor) recusa(`O valor do fechamento #${id} mudou. Atualize a tela. Nada foi marcado.`, url);
+      db.prepare("UPDATE fechamentos SET pago_em = datetime('now','localtime'), pago_por = ?, lote = ? WHERE id = ?").run(u.id, lote, id);
+      total += t;
+      log(u.id, `f:${id}`, `Marcou como pago (lote #${lote}${pares.length > 1 ? `, junto com mais ${pares.length - 1} fechamento(s)` : ''}): ${brl(t)}`);
     }
-    for (const [fid, x] of porF) log(u.id, `f:${fid}`, `Marcou como pago: ${x.n} entregador(es), ${brl(x.v)}`);
-    return { n: trios.length, total };
+    return { n: pares.length, total, lote };
   });
-  volta(res, url, 'ok', `${r.n} pagamento(s) marcado(s) como pago, ${brl(r.total)}.`);
+  volta(res, url, 'ok', `${r.n} fechamento${r.n > 1 ? 's' : ''} marcado${r.n > 1 ? 's' : ''} como pago${r.n > 1 ? 's' : ''} (lote #${r.lote}), ${brl(r.total)}.`);
 });
 
 app.post('/pagar/desfazer', soPagar, (req, res) => {
-  const u = req.user, url = urlPagar(req.body.volta), [fid, mid] = String(req.body.par || '').split(':').map(Number);
-  const a = db.prepare('SELECT a.pago_em, f.loja_id FROM aprovacoes a JOIN fechamentos f ON f.id = a.fechamento_id WHERE a.fechamento_id = ? AND a.motoboy_id = ?').get(fid, mid);
-  if (!a || !a.pago_em || (u.loja_id && a.loja_id !== u.loja_id)) recusa('Esse pagamento não está marcado como pago.', url);
-  db.prepare('UPDATE aprovacoes SET pago_em = NULL, pago_por = NULL WHERE fechamento_id = ? AND motoboy_id = ?').run(fid, mid);
-  log(u.id, `f:${fid}`, `Desfez o pagamento de ${db.prepare('SELECT nome FROM motoboys WHERE id = ?').get(mid)?.nome || mid}`);
-  volta(res, url, 'ok', 'Pagamento desfeito: voltou para a lista A pagar.');
+  const u = req.user, url = urlPagar(req.body.volta), lote = Number(req.body.lote);
+  const fs = lote ? db.prepare('SELECT id FROM fechamentos WHERE lote = ? AND pago_em IS NOT NULL').all(lote).map((x) => carregaF(x.id)) : [];
+  if (!fs.length || fs.some((f) => !podeVer(u, f))) recusa('Esse lote não está marcado como pago.', url);
+  tx(() => { for (const f of fs) { db.prepare('UPDATE fechamentos SET pago_em = NULL, pago_por = NULL, lote = NULL WHERE id = ?').run(f.id); log(u.id, `f:${f.id}`, `Desfez o pagamento (lote #${lote})`); } });
+  volta(res, url, 'ok', `Pagamento do lote #${lote} desfeito: ${fs.length} fechamento(s) voltaram para Não pagos.`);
 });
 
 // ---------- Usuários (admin) ----------
@@ -1252,7 +1316,7 @@ app.get('/usuarios', soAdmin, (req, res) => {
   const campos = (u = {}, p = '') => html`<div class="field"><label for="${p}nome">Nome <span class="req">*</span></label><input id="${p}nome" name="nome" required value="${u.nome}"></div>
 <div class="fgrid"><div class="field"><label for="${p}perfil">Perfil</label><select id="${p}perfil" name="perfil">${Object.entries(PERFIS).map(([k, v]) => html`<option value="${k}" ${u.perfil === k ? 'selected' : ''}>${v}</option>`)}</select></div>
 <div class="field"><label for="${p}loja">Loja</label><select id="${p}loja" name="loja"><option value="">—</option>${lojas.map((l) => html`<option value="${l.id}" ${u.loja_id === l.id ? 'selected' : ''}>${l.nome}</option>`)}</select><p class="hint">Obrigatória para despachante. No financeiro, vazia = vê todas as lojas.</p></div></div>`;
-  res.send(page(req, { titulo: 'Usuários', sub: 'Quem acessa o sistema: despachantes, financeiro, gestão e TI.', css: '/marca/admin.css', js: '/marca/admin.js',
+  res.send(page(req, { titulo: 'Usuários', eyebrow: 'Administração', sub: 'Quem acessa o sistema: despachantes, financeiro, gestão e TI.', css: '/marca/admin.css', js: '/marca/admin.js',
     acoes: html`<button type="button" class="btn btn-pri" data-abre="dlg-novo">${icone('mais')} Novo usuário</button>` }, html`
 <div class="card"><div class="card-h"><div class="t"><h2>Equipe (${us.length})</h2><p>Clique em uma pessoa para ver e editar o cadastro.</p></div></div>
 <div class="admin-barra"><label class="sr" for="busca-u">Buscar pessoa</label><input id="busca-u" type="search" placeholder="Buscar por nome, login ou e-mail" data-busca=".lista-ed>details" autocomplete="off"></div>
@@ -1350,7 +1414,7 @@ ${ultimosAlertas.length ? html`<details class="fold" style="margin-top:8px"><sum
 <div class="corpo"><form method="post" action="/config/lojas/${l.id}">${calCampos(`l${l.id}`, l.nome, l.calendario || AG.PADRAO)}<button class="btn btn-pri">${icone('check', 'sm')} Salvar loja</button></form></div></details>`)}</div></section>
 <dialog id="dlg-loja" class="dlg" aria-labelledby="loja-t"><form method="post" action="/config/lojas"><h2 id="loja-t">Nova loja</h2>${calCampos('nl', '', AG.PADRAO)}
 <div class="acoes-dlg"><button type="button" class="btn btn-ghost" data-fecha>Cancelar</button><button class="btn btn-pri">${icone('mais')} Adicionar loja</button></div></form></dialog>`;
-  res.send(page(req, { titulo: 'Configurações', sub: 'E-mail da solicitação de pagamento, alertas e lojas. Só a TI vê esta tela.', css: '/marca/admin.css', js: '/marca/admin.js' }, html`${nav}${aba === 'alertas' ? alertas : aba === 'lojas' ? lojasTab : email}`));
+  res.send(page(req, { titulo: 'Configurações', eyebrow: 'Administração', sub: 'E-mail da solicitação de pagamento, alertas e lojas. Só a TI vê esta tela.', css: '/marca/admin.css', js: '/marca/admin.js' }, html`${nav}${aba === 'alertas' ? alertas : aba === 'lojas' ? lojasTab : email}`));
 });
 
 app.post('/config', so((r) => r.user.perfil === 'admin'), (req, res) => {
@@ -1449,15 +1513,21 @@ setInterval(verificarAlertas, 5 * 60e3).unref();
 setTimeout(verificarAlertas, 15e3).unref();
 
 // ---------- Erros ----------
-const telaErro = (req, titulo, msg) => page(req, titulo, html`<div class="card empty" style="max-width:560px;margin:0 auto"><div class="hico warn">${icone('alerta', 'lg')}</div><h2>${msg}</h2>
-<p>Se precisar de ajuda, fale com o suporte.</p><div class="row" style="display:flex;gap:8px;justify-content:center"><a class="btn btn-sec" href="javascript:history.back()">${icone('voltar')} Voltar</a><a class="btn btn-pri" href="/">Ir para o início</a></div></div>`);
-app.use((req, res) => res.status(404).send(telaErro(req, 'Página não encontrada', 'Página não encontrada.')));
+const ERRO_TXT = { 403: ['Acesso negado', 'Seu perfil não tem acesso a esta tela.'], 404: ['Página não encontrada', 'O endereço não existe, foi movido ou o item já não está disponível.'],
+  409: ['Mudou enquanto você olhava', 'Alguém alterou isto antes de você. Recarregue a tela e confira.'], 500: ['Algo deu errado', 'Não foi possível concluir. Tente de novo; se continuar, avise o suporte.'] };
+const telaErro = (req, titulo, msg, codigo = 400) => page(req, { titulo, semCabecalho: true }, html`<section class="erro-pag" aria-labelledby="erro-t">
+<div class="erro-arte" aria-hidden="true"><span class="erro-cod">${codigo >= 400 ? codigo : ''}</span>${icone('moto', 'erro-moto')}<i class="erro-rota"></i></div>
+<div class="erro-txt"><p class="eyebrow">${codigo >= 400 ? `Erro ${codigo}` : 'Aviso'}</p><h1 id="erro-t">${titulo}</h1><p class="erro-msg">${msg || (ERRO_TXT[codigo] || [])[1] || ''}</p>
+<div class="erro-acoes"><a class="btn btn-sec" href="javascript:history.back()">${icone('voltar')} Voltar</a><a class="btn btn-pri" href="/">${icone('casa')} Ir para o início</a></div>
+<p class="hint">Se o problema continuar, fale com o suporte.</p></div></section>`);
+app.use((req, res) => res.status(404).send(telaErro(req, ERRO_TXT[404][0], ERRO_TXT[404][1], 404)));
 app.use((err, req, res, next) => {
   if (err.volta) return volta(res, err.volta, 'erro', err.message); // recusa de decisão: volta para a tela com o motivo
   const grande = err instanceof multer.MulterError || err.type === 'entity.too.large';
   const msg = err.publico ? err.message : grande ? 'Arquivo ou texto grande demais, ou arquivos demais.' : 'Erro inesperado. Avise o suporte.';
   if (!err.publico && !grande) console.error(err);
-  res.status(err.status || (err.publico || grande ? 400 : 500)).send(telaErro(req, 'Não foi possível concluir', msg));
+  const st = err.status || (err.publico || grande ? 400 : 500);
+  res.status(st).send(telaErro(req, (ERRO_TXT[st] || ['Não foi possível concluir'])[0], err.publico || grande ? msg : (ERRO_TXT[st] || [])[1] || msg, st));
 });
 
 const PORT = process.env.PORT || 3080;

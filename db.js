@@ -131,6 +131,8 @@ if (!temColuna('aprovacoes', 'valor')) db.exec('ALTER TABLE aprovacoes ADD COLUM
 
 // Pago de verdade (marcado pelo financeiro) e observação do despachante por entregador.
 if (!temColuna('aprovacoes', 'pago_em')) db.exec('ALTER TABLE aprovacoes ADD COLUMN pago_em TEXT; ALTER TABLE aprovacoes ADD COLUMN pago_por INTEGER;');
+// Pagamento por fechamento: pago_em/pago_por e o lote (fechamentos pagos juntos).
+if (!temColuna('fechamentos', 'pago_em')) db.exec('ALTER TABLE fechamentos ADD COLUMN pago_em TEXT; ALTER TABLE fechamentos ADD COLUMN pago_por INTEGER; ALTER TABLE fechamentos ADD COLUMN lote INTEGER;');
 if (!temColuna('edicoes', 'obs')) db.exec('ALTER TABLE edicoes ADD COLUMN obs TEXT');
 
 for (const nome of ['FORNO PAULISTA DIRCEU', 'FORNO PAULISTA DOM SEVERINO ATIVA', 'FORNO PAULISTA SUL', 'Forno Paulista Centro de Distribuição Leste'])

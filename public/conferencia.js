@@ -102,14 +102,21 @@
   const bar = fm.querySelector('.barra');
   const n = bar && bar.querySelector('[data-sel-n]'), v = bar && bar.querySelector('[data-sel-v]'), bl = bar && bar.querySelector('[data-sel-bloq]');
   const bA = bar && bar.querySelector('[data-dec=aprovar]'), bD = bar && bar.querySelector('[data-dec=devolver]'), bL = bar && bar.querySelector('[data-limpar]');
+  const rotDev = bar && bar.querySelector('[data-rot-dev]'), rotApr = bar && bar.querySelector('[data-rot-apr]');
   function atualiza() {
     if (!bar) return;
-    const s = sel(); let tot = 0, bq = 0;
-    s.forEach((c) => { const r = c.closest('tr'); tot += Number(r.dataset.valor); if (r.dataset.bloq) bq++; });
-    n.textContent = s.length ? s.length + (s.length > 1 ? ' entregadores selecionados' : ' entregador selecionado') + ' · soma' : 'Nenhum entregador selecionado';
+    const s = sel(); let tot = 0;
+    s.forEach((c) => { tot += Number(c.closest('tr').dataset.valor); });
+    const marc = s.map((c) => Number(c.value)), faltaObrig = obrig.filter((i) => marc.indexOf(i.id) < 0), nDev = s.length + faltaObrig.length;
+    n.textContent = s.length ? s.length + (s.length > 1 ? ' entregadores marcados para devolver' : ' entregador marcado para devolver') + ' · soma' : 'Nenhum entregador marcado para devolver';
     v.textContent = brl(tot);
-    bA.disabled = !s.length || bq > 0; bD.disabled = !s.length; bL.disabled = !s.length;
-    bl.hidden = !bq; bl.textContent = bq ? bq + ' selecionado(s) não pode(m) ser aprovado(s): veja a situação na linha.' : '';
+    rotDev.textContent = nDev ? 'Devolver ' + nDev : 'Devolver';
+    rotApr.textContent = 'Aprovar todos · ' + brl(soma(pend));
+    bD.disabled = !nDev; bL.disabled = !s.length;
+    bA.disabled = !pend.length || s.length > 0 || obrig.length > 0;
+    bA.title = s.length ? 'Você marcou entregadores para devolver: use Devolver (os demais são aprovados junto).' : obrig.length ? 'Há entregadores sem chave PIX: devolva-os à loja.' : '';
+    bl.hidden = !obrig.length;
+    bl.textContent = obrig.length ? plural(obrig.length, 'entregador sem chave PIX não pode', 'entregadores sem chave PIX não podem') + ' ser aprovado' + (obrig.length > 1 ? 's' : '') + ': será devolvido à loja.' : '';
     const vc = caixas().filter((c) => !c.closest('tr').classList.contains('fora'));
     if (todos) { todos.disabled = !vc.length; todos.checked = vc.length > 0 && vc.every((c) => c.checked); todos.indeterminate = !todos.checked && vc.some((c) => c.checked); }
   }
@@ -119,31 +126,74 @@
   });
   if (bL) bL.addEventListener('click', () => { caixas().forEach((c) => { c.checked = false; }); atualiza(); });
 
-  // ---- confirmação de aprovar/devolver
-  const dlg = $('dlg-dec'), uma = fm.querySelector('input[type=hidden][name=uma]');
-  let quem = null;
-  function abreDec(a, ids) {
-    quem = document.activeElement;
-    const its = ids.map((id) => porId[id]), tot = its.reduce((s, i) => s + i.total, 0);
-    fm.action = fm.dataset[a];
-    $('dlg-dec-t').textContent = a === 'aprovar' ? 'Aprovar pagamento' : 'Devolver à loja para correção';
-    $('dlg-dec-r').textContent = (a === 'aprovar' ? 'Você vai aprovar ' : 'Você vai devolver ') + ids.length + (ids.length > 1 ? ' entregadores' : ' entregador') + ', total de ' + brl(tot) + '.';
-    const ul = dlg.querySelector('[data-dlg-lista]'); ul.textContent = '';
-    its.forEach((i) => ul.appendChild(el('li', '', i.nome + ' · ' + brl(i.total))));
-    const mo = dlg.querySelector('[data-dlg-motivo]'), ta = mo.querySelector('textarea'), ok = dlg.querySelector('[data-dlg-ok]');
-    mo.hidden = a !== 'devolver'; ta.required = a === 'devolver';
-    ok.textContent = a === 'aprovar' ? 'Aprovar ' + brl(tot) : 'Devolver ' + brl(tot) + ' à loja';
-    ok.className = 'btn ' + (a === 'aprovar' ? 'btn-ok' : 'btn-pri');
-    dlg.showModal(); (a === 'devolver' ? ta : ok).focus();
+  // ---- decisão: aprovar tudo, ou devolver os marcados (cada um com seu motivo) e aprovar automaticamente os demais
+  const dlg = $('dlg-dec');
+  const pend = D.itens.filter((i) => i.pode && i.total > 0), obrig = pend.filter((i) => i.bloq);
+  let quem = null, ids = [];
+  const soma = (l) => l.reduce((s, i) => s + i.total, 0);
+  const plural = (k, um, varios) => k + ' ' + (k === 1 ? um : varios);
+  const marcados = () => sel().map((c) => Number(c.value));
+  const idsDevolver = () => { const s = marcados(); obrig.forEach((i) => { if (s.indexOf(i.id) < 0) s.push(i.id); }); return s; };
+  const limpaCampos = () => { fm.querySelectorAll('input[name=dev]').forEach((x) => x.remove()); };
+  const t = $('dlg-dec-t'), r = $('dlg-dec-r'), av = dlg.querySelector('[data-dec-aviso]'), avp = av.querySelector('p'), ul = dlg.querySelector('[data-dlg-lista]'), hint = dlg.querySelector('[data-dlg-hint]');
+  const bOk = dlg.querySelector('[data-dlg-ok]'), bProx = dlg.querySelector('[data-dlg-prox]'), bVolta = dlg.querySelector('[data-dlg-volta]');
+  const abre = () => { if (!dlg.open) { quem = document.activeElement; dlg.showModal(); } };
+  const autoTxt = () => {
+    const auto = pend.filter((i) => ids.indexOf(i.id) < 0);
+    return auto.length ? (auto.length === 1 ? 'O entregador que você não marcou será aprovado automaticamente' : 'Os ' + auto.length + ' entregadores que você não marcou serão aprovados automaticamente') + ' (' + brl(soma(auto)) + ').'
+      : 'Nenhum entregador será aprovado: o fechamento inteiro volta à loja.';
+  };
+  function vista(p) {
+    r.classList.remove('erro-t');
+    ul.hidden = p !== 1; hint.hidden = p !== 1; bProx.hidden = p !== 1; bVolta.hidden = p !== 2; bOk.hidden = p !== 2;
+    const its = ids.map((id) => porId[id]);
+    if (p === 1) {
+      t.textContent = 'Devolver ' + plural(its.length, 'entregador', 'entregadores') + ' à loja';
+      r.textContent = 'Escreva o motivo de cada devolução. A loja vê o motivo de cada entregador.';
+      avp.textContent = autoTxt();
+    } else {
+      t.textContent = 'Confirmar decisão';
+      r.textContent = 'Você vai devolver ' + plural(its.length, 'entregador', 'entregadores') + ' (' + brl(soma(its)) + ') à loja.';
+      avp.textContent = 'Atenção: ' + autoTxt().replace(/^O /, 'o ').replace(/^Os /, 'os ');
+      bOk.className = 'btn btn-pri'; bOk.textContent = 'Confirmar e devolver';
+      limpaCampos();
+      ids.forEach((id) => { const h = document.createElement('input'); h.type = 'hidden'; h.name = 'dev'; h.value = id; fm.appendChild(h); });
+    }
+  }
+  function passoAprovar() {
+    ids = []; limpaCampos();
+    t.textContent = 'Aprovar o fechamento';
+    r.textContent = 'Você vai aprovar ' + plural(pend.length, 'entregador', 'entregadores') + ', total de ' + brl(soma(pend)) + '. O fechamento fica aprovado e passa para Pagamentos.';
+    av.hidden = true; ul.hidden = true; hint.hidden = true; bProx.hidden = true; bVolta.hidden = true; bOk.hidden = false;
+    bOk.className = 'btn btn-ok'; bOk.textContent = 'Aprovar ' + brl(soma(pend));
+    abre(); bOk.focus();
+  }
+  function passoMotivos() {
+    ids = idsDevolver(); limpaCampos();
+    ul.textContent = '';
+    ids.map((id) => porId[id]).forEach((i) => {
+      const li = el('li', 'dec-item'), h = el('div', 'dec-nome');
+      h.appendChild(el('b', '', i.nome)); h.appendChild(el('span', 'mut', '· ' + brl(i.total)));
+      if (i.bloq) h.appendChild(el('span', 'badge bad', i.bloq));
+      const lb = el('label', '', 'Motivo da devolução'); lb.htmlFor = 'mot-' + i.id; lb.appendChild(el('span', 'req', ' *'));
+      const ta = el('textarea'); ta.id = 'mot-' + i.id; ta.name = 'motivo_' + i.id; ta.required = true; ta.minLength = 5; ta.maxLength = 2000; ta.rows = 2;
+      li.appendChild(h); li.appendChild(lb); li.appendChild(ta); ul.appendChild(li);
+    });
+    av.hidden = false; vista(1); abre();
+    const primeiro = ul.querySelector('textarea'); if (primeiro) primeiro.focus();
+  }
+  function passoConfirma() {
+    const ruim = [].slice.call(ul.querySelectorAll('textarea')).filter((x) => x.value.trim().length < 5);
+    if (ruim.length) { r.textContent = 'Escreva o motivo de cada entregador (mínimo 5 caracteres).'; r.classList.add('erro-t'); ruim[0].focus(); return; }
+    vista(2);
   }
   if (bar) {
-    [bA, bD].forEach((b) => b.addEventListener('click', (e) => { e.preventDefault(); uma.value = ''; abreDec(b.dataset.dec, sel().map((c) => Number(c.value))); }));
-    tR.addEventListener('click', (e) => {
-      const b = e.target.closest('[data-linha]'); if (!b) return;
-      e.preventDefault(); uma.value = b.dataset.id; abreDec(b.dataset.linha, [Number(b.dataset.id)]);
-    });
+    bA.addEventListener('click', (e) => { e.preventDefault(); passoAprovar(); });
+    bD.addEventListener('click', (e) => { e.preventDefault(); passoMotivos(); });
+    bProx.addEventListener('click', passoConfirma);
+    bVolta.addEventListener('click', () => vista(1));
     dlg.querySelector('[data-dlg-cancela]').addEventListener('click', () => dlg.close());
-    dlg.addEventListener('close', () => { uma.value = ''; if (quem) quem.focus(); });
+    dlg.addEventListener('close', () => { limpaCampos(); if (quem) quem.focus(); });
   }
 
   // ---- detalhe do entregador (mesmos dados da tabela)
@@ -156,7 +206,7 @@
     const sit = $('det-sit'); sit.className = 'badge ' + i.sitCor; sit.textContent = i.sitTxt;
     corpo.textContent = '';
     if (i.det) corpo.appendChild(el('p', 'small det-sec', i.det));
-    const sp = el('div', 'det-sec'); sp.appendChild(el('h3', '', 'Chave PIX'));
+    const sp = el('div', 'det-sec det-pixbox'); sp.appendChild(el('h3', '', 'Chave PIX'));
     if (i.pix) {
       const p = el('div', 'det-pix'); p.appendChild(el('span', '', i.pix));
       const cp = el('button', 'btn btn-sec btn-sm', 'Copiar'); cp.type = 'button'; cp.dataset.copiar = i.pix; cp.title = 'Copiar chave PIX'; cp.setAttribute('aria-label', 'Copiar chave PIX de ' + i.nome); p.appendChild(cp); sp.appendChild(p);
@@ -167,26 +217,25 @@
     const dl = el('dl', 'det');
     const lin = (k, val, cls) => { dl.appendChild(el('dt', cls || '', k)); dl.appendChild(el('dd', cls || '', val)); };
     lin('Valor base', brl(i.bruto));
+    if (D.temResumo) {
+      lin('Resumo do Agilizone (soma das taxas)', i.noResumo ? 'não consta' : brl(i.resumo));
+      lin('Conferência dos valores por dia', i.noResumo ? '—' : i.dif === 0 ? 'Valores conferem' : 'Difere ' + sinal(i.dif));
+    }
     if (i.oc || i.qtdOc) lin('Ocorrências do Agilizone (' + i.qtdOc + ')', sinal(i.oc));
     if (i.pago) lin('Já pago no Agilizone', '-' + brl(i.pago));
     lin('Total do fechamento', brl(i.total), 'total');
-    if (D.temResumo) {
-      lin('Resumo do Agilizone (soma das taxas)', i.noResumo ? 'não consta' : brl(i.resumo));
-      lin('Diferença com a soma dos dias', i.noResumo ? '—' : i.dif === 0 ? 'bate' : sinal(i.dif));
-    }
     sv.appendChild(dl); corpo.appendChild(sv);
-    const sd = el('div', 'det-sec'); sd.appendChild(el('h3', '', 'Valores por dia (período completo)'));
+    const sd = el('div', 'det-sec'); sd.appendChild(el('h3', '', 'Valores por dia'));
     const ul = el('ul', 'det-dias'); let vazios = 0;
     D.dias.forEach((x, k) => {
       const c = i.dias[k]; if (!c) { vazios++; return; }
-      const li = el('li'); li.appendChild(el('span', '', x.rot)); const r = el('span', '', brl(c[0])); r.appendChild(el('small', '', ' · ' + c[1] + ' entrega(s)')); li.appendChild(r); ul.appendChild(li);
+      const li = el('li'); li.appendChild(el('span', '', x.rot)); li.appendChild(el('span', '', c[1] + ' entrega' + (c[1] === 1 ? '' : 's'))); li.appendChild(el('span', '', brl(c[0]))); ul.appendChild(li);
     });
     sd.appendChild(ul); if (vazios) sd.appendChild(el('p', 'small mut', vazios + ' dia(s) sem entregas.')); corpo.appendChild(sd);
     acoes.textContent = '';
     if (D.decide && i.pode) {
-      const ap = el('button', 'btn btn-ok', 'Aprovar ' + brl(i.total)); ap.type = 'button'; ap.disabled = !!i.bloq; ap.dataset.dact = 'aprovar'; acoes.appendChild(ap);
-      const dv = el('button', 'btn btn-sec', 'Devolver à loja'); dv.type = 'button'; dv.dataset.dact = 'devolver'; acoes.appendChild(dv);
-      if (i.bloq) acoes.appendChild(el('p', 'small bad-t', 'Não pode ser aprovado: ' + i.bloq + '.'));
+      const cx = tR.querySelector('input[name=m][value="' + i.id + '"]');
+      if (!i.bloq && cx) { const mk = el('button', 'btn ' + (cx.checked ? 'btn-pri' : 'btn-sec'), cx.checked ? 'Desmarcar devolução' : 'Marcar para devolver'); mk.type = 'button'; mk.dataset.dact = 'marcar'; acoes.appendChild(mk); }
     }
     if (D.edit) { const ed = el('a', 'btn btn-sec', 'Editar nome e PIX'); ed.href = D.edit + i.id; acoes.appendChild(ed); }
     const fe = el('button', 'btn btn-ghost', 'Fechar'); fe.type = 'button'; fe.dataset.detFecha = ''; acoes.appendChild(fe);
@@ -201,7 +250,7 @@
   dd.addEventListener('click', (e) => {
     if (e.target.closest('[data-det-fecha]') || e.target === dd) { dd.close(); return; }
     const a = e.target.closest('[data-dact]');
-    if (a && bar) { const id = Number(dd.dataset.id); dd.close(); uma.value = String(id); abreDec(a.dataset.dact, [id]); }
+    if (a && bar) { const cx = tR.querySelector('input[name=m][value="' + dd.dataset.id + '"]'); if (cx) { cx.checked = !cx.checked; cx.dispatchEvent(new Event('change', { bubbles: true })); } dd.close(); }
   });
   dd.addEventListener('close', () => { if (opener && document.contains(opener)) opener.focus(); });
 

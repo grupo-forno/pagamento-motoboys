@@ -57,3 +57,10 @@
 .envio-barra .barra-in{justify-content:flex-end}
 .envio-barra .btn-lg{min-width:260px}
 @media(max-width:640px){.envio-barra .barra-in>div{flex:1 1 100%}.envio-barra .btn{flex:1 1 0;min-width:0}}
+
+/* Resumo do envio: mesmo padrão de blocos dos indicadores (total em carvão primeiro) */
+.envio-strip{display:grid;grid-template-columns:minmax(0,1.5fr) repeat(4,minmax(0,1fr));gap:16px;background:none;border:0;border-radius:0;overflow:visible}
+.envio-strip>div{background:var(--surface-2);border:1px solid var(--bd);border-radius:var(--r);padding:16px 20px;border-bottom:1px solid var(--bd)}
+.envio-strip .envio-total{order:-1;background:var(--carvao);border-color:var(--carvao)}
+.envio-strip .envio-total dt{color:#e6d8ce}.envio-strip .envio-total dd{color:#fff;font-size:30px;font-weight:800}
+@media(max-width:1000px){.envio-strip{grid-template-columns:1fr 1fr;gap:10px}.envio-strip .envio-total{grid-column:1/-1}}

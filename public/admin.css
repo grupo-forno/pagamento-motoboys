@@ -19,12 +19,6 @@
 .perfis-guia{display:grid;gap:12px 24px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));padding:16px 20px;margin:0}
 .perfis-guia dt{font-weight:600}.perfis-guia dd{margin:2px 0 0;color:var(--mut);font-size:13.5px}
 .abas-cfg{margin:0 0 20px}
-.pills{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.pills .rot{font-size:13px;font-weight:600;color:var(--tx-2);margin-right:2px}
-.pills a{display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 14px;border:1px solid var(--bd-2);border-radius:99px;background:var(--surface);color:var(--tx);font-weight:600;font-size:14px;text-decoration:none}
-.pills a .c{background:var(--surface-2);border-radius:99px;padding:0 8px;font-size:12px}
-.pills a.on{background:var(--tx);border-color:var(--tx);color:#fff}.pills a.on .c{background:rgba(255,255,255,.2);color:#fff}
-.pills a:not(.on):hover{background:var(--surface-2)}
 .card-h .sel-loja{min-width:220px}
 .ag-prox{border-top:1px solid var(--bd)}.ag-prox>summary{padding:12px 20px;cursor:pointer;font-weight:600;color:var(--tx-2)}
 .ag-prox>summary:hover{background:var(--surface-2)}
@@ -34,3 +28,6 @@
 @media(max-width:760px){.lista-cab{display:none}.lista-ed>details>summary,.lista-ed.lojas>details>summary{grid-template-columns:minmax(0,1fr) auto}.lista-ed>details>summary>:nth-child(2),.lista-ed>details>summary>:nth-child(3){grid-column:1}}
 
 .obs-sub{display:inline-block;max-width:100%;margin-top:4px;padding:3px 8px;border-radius:6px;background:var(--warn-soft);color:var(--tx-2);font-size:13px;overflow-wrap:anywhere}
+
+.lote{border-top:1px solid var(--bd)}.lote-h{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 20px;background:var(--surface-2)}
+.lojas-pills{margin:0 0 16px}

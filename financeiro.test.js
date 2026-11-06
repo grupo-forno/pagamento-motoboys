@@ -28,6 +28,7 @@ before(async () => {
     }
   }
   srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '0' } });
+  srv.stderr.on('data', (d) => process.stderr.write(d));
   await new Promise((ok, erro) => { srv.stdout.on('data', (d) => String(d).includes('Pagamento Entregadores') && ok()); srv.on('exit', erro); });
 });
 after(async () => { await new Promise((ok) => { srv.on('exit', ok); srv.kill(); }); db.close(); try { fs.rmSync(DIR, { recursive: true, force: true }); } catch {} });
@@ -128,19 +129,54 @@ test('fechamento de 1 dia: só o Resumo, valor do dia = total do Resumo, sem sob
 });
 
 
-test('A pagar: soma aprovados não pagos, marca como pago uma só vez, recusa valor mudado e outra loja, e desfaz', async () => {
-  const fin = await entra('fin'), fin2 = await entra('fin2');
-  const pag = (await (await get(fin, '/pagar')).text()).replace(/ /g, ' ');
-  assert.ok(pag.includes('Ana') && pag.includes('Bia') && pag.includes('data-pagar'));
-  const par = (m, v) => `${F1}:${ids[m]}:${v}`, pago = (m) => db.prepare('SELECT pago_em FROM aprovacoes WHERE fechamento_id = ? AND motoboy_id = ?').get(F1, ids[m]).pago_em;
-  assert.match(await post(fin2, '/pagar', { sel: par('Ana', 1000) }), /erro=/); // financeiro de outra loja
-  assert.match(await post(fin, '/pagar', { sel: par('Ana', 999) }), /erro=/);   // valor mudou
-  assert.strictEqual(pago('Ana'), null);
-  assert.match(await post(fin, '/pagar', { sel: par('Ana', 1000) }), /ok=/);
-  assert.ok(pago('Ana'));
-  assert.match(await post(fin, '/pagar', { sel: [par('Ana', 1000), par('Bia', 2000)] }), /erro=/); // Ana já paga: nada é marcado
-  assert.strictEqual(pago('Bia'), null);
-  assert.ok(!(await (await get(fin, '/pagar')).text()).includes('value="' + par('Ana', 1000)));
-  assert.match(await post(fin, '/pagar/desfazer', { par: `${F1}:${ids.Ana}` }), /ok=/);
-  assert.strictEqual(pago('Ana'), null);
+test('Pagamentos: paga fechamentos aprovados juntos em um lote, recusa repetido/valor mudado/outra loja e desfaz o lote', async () => {
+  const fin = await entra('fin'), fin2 = await entra('fin2'), F3 = db.prepare('SELECT id FROM fechamentos WHERE origem_id = ?').get(F1).id;
+  const pag = (await (await get(fin, '/pagar')).text()).replace(/\u00a0/g, ' ');
+  const valor = (id) => Number(pag.match(new RegExp('value="' + id + ':(\\d+)"'))[1]);
+  assert.ok(pag.includes('data-pagar'));
+  const par = (id, v = valor(id)) => id + ':' + v, pagoEm = (id) => db.prepare('SELECT pago_em, lote FROM fechamentos WHERE id = ?').get(id);
+  assert.match(await post(fin2, '/pagar', { sel: par(F1) }), /erro=/);            // financeiro de outra loja
+  assert.match(await post(fin, '/pagar', { sel: par(F1, valor(F1) + 1) }), /erro=/); // valor mudou
+  assert.strictEqual(pagoEm(F1).pago_em, null);
+  const juntos = (await fetch(B + '/pagar', { method: 'POST', headers: { cookie: fin }, body: new URLSearchParams([['sel', par(F1)], ['sel', par(F3)]]), redirect: 'manual' })).headers.get('location') || '';
+  assert.match(juntos, /ok=/);      // pago junto, no mesmo lote
+  assert.ok(pagoEm(F1).pago_em && pagoEm(F1).lote === pagoEm(F3).lote);
+  assert.match(await post(fin, '/pagar', { sel: par(F1, 1) }), /erro=/);            // já pago
+  assert.ok(!(await (await get(fin, '/pagar')).text()).includes('value="' + F1 + ':'));
+  assert.match(await post(fin, '/pagar/desfazer', { lote: pagoEm(F1).lote }), /ok=/);
+  assert.strictEqual(pagoEm(F1).pago_em, null);
+  assert.strictEqual(pagoEm(F3).pago_em, null);
+});
+
+// Decisão única: o financeiro marca quem devolver (cada um com seu motivo) e os demais são aprovados juntos.
+async function fechamentoNovo(pixCaio) {
+  const loja = db.prepare("SELECT id FROM lojas WHERE nome LIKE '%SUL'").get().id;
+  const f = Number(db.prepare("INSERT INTO fechamentos (loja_id, data_ini, data_fim, status, criado_por, versao, enviado_em, so_resumo) VALUES (?, '2026-10-24', '2026-10-24', 'enviado', ?, 1, '2026-10-26 09:00:00', 1)").run(loja, ids.desp).lastInsertRowid);
+  for (const [n, v] of [['Ana', 1000], ['Bia', 2000], ['Caio', 3000]]) db.prepare('INSERT INTO resumo (fechamento_id, entregador, motoboy_id, total, pix) VALUES (?,?,?,?,?)').run(f, n, ids[n], v, n === 'Caio' && !pixCaio ? null : `${n.toLowerCase()}@pix.com`);
+  return f;
+}
+const decide = async (ck, f, entradas) => (await fetch(`${B}/fechamentos/${f}/decidir`, { method: 'POST', headers: { cookie: ck }, body: new URLSearchParams([['versao', '1'], ...entradas]), redirect: 'manual' })).headers.get('location') || '';
+
+test('Decidir: devolve só os marcados (cada um com seu motivo), aprova os demais e a loja recebe um fechamento novo só com os devolvidos', async () => {
+  const fin = await entra('fin'), F = await fechamentoNovo(false);
+  assert.match(await decide(fin, F, [['dev', ids.Bia], ['motivo_' + ids.Bia, '']]), /erro=/);                            // sem motivo
+  assert.match(await decide(fin, F, [['dev', ids.Bia], ['motivo_' + ids.Bia, 'Valor errado']]), /erro=/);              // Caio (sem PIX) não pode ser aprovado: precisa ser devolvido
+  assert.strictEqual(db.prepare('SELECT status FROM fechamentos WHERE id = ?').get(F).status, 'enviado');
+  assert.match(await decide(fin, F, [['dev', ids.Bia], ['dev', ids.Caio], ['motivo_' + ids.Bia, 'Valor errado'], ['motivo_' + ids.Caio, 'Falta a chave PIX']]), /ok=/);
+  assert.deepStrictEqual({ ...db.prepare('SELECT status FROM fechamentos WHERE id = ?').get(F) }, { status: 'pago' });  // original: só quem foi aprovado
+  assert.deepStrictEqual(db.prepare('SELECT motoboy_id m FROM aprovacoes WHERE fechamento_id = ?').all(F).map((x) => x.m), [ids.Ana]);
+  const N = db.prepare('SELECT id, status, so_resumo FROM fechamentos WHERE origem_id = ?').get(F);
+  assert.deepStrictEqual([N.status, N.so_resumo], ['rascunho', 1]); // o novo mantém o modo de 1 dia: os valores dos devolvidos continuam aparecendo                                                                             // novo: volta para a loja corrigir
+  assert.deepStrictEqual(db.prepare('SELECT motoboy_id m FROM resumo WHERE fechamento_id = ? ORDER BY 1').all(N.id).map((x) => x.m), [ids.Bia, ids.Caio]);
+  assert.deepStrictEqual(db.prepare('SELECT motivo FROM devolucoes WHERE fechamento_id = ? ORDER BY motoboy_id').all(N.id).map((x) => x.motivo), ['Valor errado', 'Falta a chave PIX']);
+  assert.match(await decide(fin, F, []), /erro=/);                                                                      // já decidido: tela antiga não decide de novo
+});
+
+test('Decidir: sem ninguém marcado aprova todos; com entregador sem PIX recusa', async () => {
+  const fin = await entra('fin'), F = await fechamentoNovo(true), G = await fechamentoNovo(false);
+  assert.match(await decide(fin, G, []), /erro=/);
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM aprovacoes WHERE fechamento_id = ?').get(G).n, 0);
+  assert.match(await decide(fin, F, []), /ok=/);
+  assert.strictEqual(db.prepare('SELECT status FROM fechamentos WHERE id = ?').get(F).status, 'pago');
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM aprovacoes WHERE fechamento_id = ?').get(F).n, 3);
 });

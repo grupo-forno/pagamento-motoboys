@@ -1,23 +1,23 @@
-# Pagamento Motoboys
+# Pagamento Entregadores
 
-Sistema web que substitui a planilha de pagamento dos motoboys. Ele lê o relatório exportado do Agilizone.
+Sistema web que substitui a planilha de pagamento dos entregadores. Ele lê o relatório exportado do Agilizone.
 
 ## Fluxo
 1. **Despachante**: no Agilizone, escolhe a loja, abre *Relatório de Pedidos*, preenche o período e clica em *Aplicar filtros*. Na mesma tela exporta **dois arquivos**:
-   - *Exportar Pedidos* (`.xlsx`): os pedidos de cada dia. Pedidos sem motoboy atrelado são descartados.
-   - *Resumo de entregas por entregador* → *Exportar Resumo* (`.csv`): o total certo e a chave PIX de cada motoboy.
+   - *Exportar Pedidos* (`.xlsx`): os pedidos de cada dia. Pedidos sem entregador atrelado são descartados.
+   - *Resumo de entregas por entregador* → *Exportar Resumo* (`.csv`): o total certo e a chave PIX de cada entregador.
 
    Em seguida importa os dois em **Novo fechamento**.
-2. Na primeira vez, o despachante liga cada nome do Agilizone a um motoboy cadastrado. Nas importações seguintes isso já sai automático.
+2. Na primeira vez, o despachante liga cada nome do Agilizone a um entregador cadastrado. Nas importações seguintes isso já sai automático.
 3. O sistema mostra o valor por motoboy e por dia e confere com o Resumo:
    - **Não bate com o Resumo**: a linha fica marcada e o envio é bloqueado até o despachante registrar a diferença no dia certo (a tela já sugere o valor).
    - **PIX**: vem do Resumo e atualiza o cadastro (fica no histórico). Se faltar, o despachante digita na própria tela do fechamento.
    - **Acerto já feito no Agilizone** (coluna "Pago" do Resumo): o sistema avisa para não pagar em dobro.
-   - Se um motoboy disser que o valor está errado, o despachante clica no dia e registra a **divergência** (valor, justificativa, evidências).
+   - Se um entregador disser que o valor está errado, o despachante clica no dia e registra a **divergência** (valor, justificativa, evidências).
 4. **Enviar ao financeiro**: sai um e-mail com o **PDF da solicitação de pagamento** para os destinatários definidos em Configurações. A tela mostra se o e-mail foi enviado, com botão para reenviar.
-5. **Financeiro**: copia o PIX de cada motoboy, paga e marca como pago (um por um ou "Marcar todos como pagos"). Pode devolver ao despachante com o motivo, e o despachante recebe um e-mail.
+5. **Financeiro**: copia o PIX de cada entregador, paga e marca como pago (um por um ou "Marcar todos como pagos"). Pode devolver ao despachante com o motivo, e o despachante recebe um e-mail.
 
-Perfis (motoboys não acessam o sistema):
+Perfis (entregadores não acessam o sistema):
 - **TI/Admin**: tudo, inclusive usuários e **Configurações** (e-mail, destinatários, lojas).
 - **Gestão**: só vê.
 - **Financeiro**: vê tudo e paga.

@@ -371,7 +371,7 @@ seg.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b
 document.addEventListener('click',function(e){var b=e.target.closest('[data-abre]');if(!b)return;var r=document.querySelector('tr[data-det="'+b.dataset.abre+'"]');if(!r)return;r.hidden=!r.hidden;b.setAttribute('aria-expanded',!r.hidden)});
 document.querySelectorAll('[data-todos]').forEach(function(t){t.addEventListener('change',function(){document.querySelectorAll('input[name=m][form='+t.dataset.todos+']').forEach(function(c){c.checked=t.checked})})});
 document.querySelectorAll('select[data-busca]').forEach(function(s){var n=function(t){return t.normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase()};
-var i=document.createElement('input');i.type='search';i.placeholder='Buscar motoboy por nome…';i.className='busca-sel';i.setAttribute('aria-label','Buscar motoboy por nome');s.parentNode.insertBefore(i,s);
+var i=document.createElement('input');i.type='search';i.placeholder='Buscar entregador por nome…';i.className='busca-sel';i.setAttribute('aria-label','Buscar entregador por nome');s.parentNode.insertBefore(i,s);
 i.addEventListener('input',function(){var q=n(i.value.trim()),vis=[];[].forEach.call(s.options,function(o){var fixa=!o.value||o.value==='novo',ok=fixa||!q||n(o.text).indexOf(q)>=0;o.hidden=!ok;o.disabled=!ok;if(ok&&!fixa)vis.push(o)});
 if(q&&vis.length===1)s.value=vis[0].value;else if(s.selectedOptions[0]&&s.selectedOptions[0].disabled)s.value=''})});
 // Aviso de sucesso some sozinho; dá para fechar antes.

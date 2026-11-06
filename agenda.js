@@ -1,4 +1,4 @@
-// Calendário de pagamento dos motoboys por loja.
+// Calendário de pagamento dos entregadores por loja.
 // Formato editável (Configurações): "seg: sex sab dom; sex: seg ter qua qui"
 //   = paga na segunda referente a sexta, sábado e domingo; paga na sexta referente a segunda a quinta.
 const DIAS = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sab'];

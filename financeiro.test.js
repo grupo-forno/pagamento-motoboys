@@ -28,7 +28,7 @@ before(async () => {
     }
   }
   srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '0' } });
-  await new Promise((ok, erro) => { srv.stdout.on('data', (d) => String(d).includes('Pagamento Motoboys') && ok()); srv.on('exit', erro); });
+  await new Promise((ok, erro) => { srv.stdout.on('data', (d) => String(d).includes('Pagamento Entregadores') && ok()); srv.on('exit', erro); });
 });
 after(async () => { await new Promise((ok) => { srv.on('exit', ok); srv.kill(); }); db.close(); try { fs.rmSync(DIR, { recursive: true, force: true }); } catch {} });
 

@@ -24,7 +24,7 @@ function gerarPdf(f0, g0) {
   const g = { ...g0, linhas: g0.linhas.map((l) => ({ ...l, nome: limpa(l.nome), pix: l.pix && limpa(l.pix) })) };
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margins: { top: 30, bottom: 40, left: 30, right: 30 }, bufferPages: true,
-      info: { Title: `Solicitação de pagamento · Motoboys · ${f.loja}`, Author: 'Grupo Forno' } });
+      info: { Title: `Solicitação de pagamento · Entregadores · ${f.loja}`, Author: 'Grupo Forno' } });
     const partes = [];
     doc.on('data', (b) => partes.push(b)).on('end', () => resolve(Buffer.concat(partes))).on('error', reject);
 
@@ -34,13 +34,13 @@ function gerarPdf(f0, g0) {
     const quando = (x) => (x ? `${x.nome || 'Sistema'} · ${dataFmt(x.quando.slice(0, 10))} ${x.quando.slice(11, 16)}` : '—');
     const gerado = new Date().toLocaleString('pt-BR', { timeZone: 'America/Fortaleza', dateStyle: 'short', timeStyle: 'short' });
     const pend = g.linhas.filter((l) => l.confere === 'pendente');
-    const conferencia = !g.temResumo ? 'Sem Resumo do Agilizone' : pend.length ? `${pend.length} motoboy(s) diferente(s) do Resumo` : 'Bate com o Resumo do Agilizone';
+    const conferencia = !g.temResumo ? 'Sem Resumo do Agilizone' : pend.length ? `${pend.length} entregador(s) diferente(s) do Resumo` : 'Bate com o Resumo do Agilizone';
     const aPagar = g.linhas.filter((l) => l.total > 0);
 
     // ---- cabeçalho (repete em toda página)
     const cabecalho = () => {
       if (fs.existsSync(LOGO)) doc.image(LOGO, L - 6, 22, { height: 34 }); else doc.font('Helvetica-Bold').fontSize(16).fillColor(COR.preto).text('GRUPO FORNO', L, 30);
-      doc.font('Helvetica-Bold').fontSize(14).fillColor(COR.preto).text('SOLICITAÇÃO DE PAGAMENTO · MOTOBOYS', L, 28, { width: W, align: 'right', characterSpacing: 0.5 });
+      doc.font('Helvetica-Bold').fontSize(14).fillColor(COR.preto).text('SOLICITAÇÃO DE PAGAMENTO · ENTREGADORES', L, 28, { width: W, align: 'right', characterSpacing: 0.5 });
       doc.font('Helvetica').fontSize(9.5).fillColor(COR.cinza).text(`${f.loja}${f.pagamento ? ` · pagamento de ${diaLongoPdf(f.pagamento)}` : ''}`, L, 46, { width: W, align: 'right' });
       doc.rect(L, 64, W, 2.5).fill(COR.laranja);
       return 78;
@@ -57,7 +57,7 @@ function gerarPdf(f0, g0) {
     bloco(L, bw, 'Loja', f.loja, { tam: 10 });
     bloco(L + (bw + gap), bw, 'Pagamento previsto', f.pagamento ? diaLongoPdf(f.pagamento) : '—', { tam: 11 });
     bloco(L + (bw + gap) * 2, bw, 'Período das entregas', `${dataFmt(f.data_ini)} a ${dataFmt(f.data_fim)}`, { tam: 11 });
-    bloco(L + (bw + gap) * 3, bw, 'Motoboys a pagar', String(aPagar.length));
+    bloco(L + (bw + gap) * 3, bw, 'Entregadores a pagar', String(aPagar.length));
     bloco(L + (bw + gap) * 4, bw, 'Total a pagar', brl(g.total), { destaque: true });
     y += 56;
     const meta = [['Situação', STATUS_PDF[f.status] || f.status], ['Enviado por', quando(envio)], ['Aprovado por', quando(aprov)], ['Conferência', conferencia], ['Gerado em', gerado]];
@@ -68,9 +68,9 @@ function gerarPdf(f0, g0) {
     });
     y += 40;
 
-    // ---- tabela por motoboy e dia
+    // ---- tabela por entregador e dia
     const mostraDias = g.dias.length <= 7; // mais que isso não cabe uma coluna por dia: aparece o valor base e os dias ficam na planilha
-    const cols = [{ t: '#', w: 22, n: true }, { t: 'Motoboy', w: 150 }, { t: 'Chave PIX', w: 125 },
+    const cols = [{ t: '#', w: 22, n: true }, { t: 'Entregador', w: 150 }, { t: 'Chave PIX', w: 125 },
       ...(mostraDias ? g.dias.map((d) => ({ t: diaFmt(d), w: 0, n: true, dia: d })) : [{ t: 'Valor base', w: 90, n: true }]), ...(g.temOc ? [{ t: 'Ocorrências', w: 80, n: true }] : []), ...(g.temPago ? [{ t: 'Já pago', w: 60, n: true }] : []), { t: 'Total a pagar', w: 78, n: true }, ...(g.temResumo ? [{ t: 'Resumo', w: 68, n: true }] : [])];
     const livre = (W - cols.reduce((s, c) => s + c.w, 0)) / Math.max(g.dias.length, 1);
     cols.forEach((c) => { if (!c.w) c.w = Math.min(livre, 95); });
@@ -84,7 +84,7 @@ function gerarPdf(f0, g0) {
       for (const c of cols) { doc.font('Helvetica-Bold').fontSize(8).fillColor('#FFFFFF').text(c.t, x + 5, y + 5.5, { width: c.w - 10, align: c.n ? 'right' : 'left', lineBreak: false }); x += c.w; }
       y += H;
     };
-    titulo('Valores por motoboy e por dia');
+    titulo('Valores por entregador e por dia');
     cabTabela();
     g.linhas.forEach((l, i) => {
       if (y + H > FIM) { novaPagina(); cabTabela(); }
@@ -93,7 +93,7 @@ function gerarPdf(f0, g0) {
       for (const c of cols) {
         let v, cor = COR.preto, bold = false;
         if (c.t === '#') { v = String(i + 1); cor = COR.cinza; }
-        else if (c.t === 'Motoboy') { v = l.nome; bold = true; }
+        else if (c.t === 'Entregador') { v = l.nome; bold = true; }
         else if (c.t === 'Chave PIX') { v = l.pix || 'SEM PIX'; if (!l.pix) cor = COR.vermelho; }
         else if (c.dia) {
           const cel = l.dias[c.dia]; v = cel ? brl(cel.final) : '–';
@@ -115,7 +115,7 @@ function gerarPdf(f0, g0) {
     doc.rect(L, y, TW, H + 2).fill(COR.laranjaSoft);
     let x = L;
     for (const c of cols) {
-      const v = c.t === 'Motoboy' ? 'TOTAL' : c.dia ? brl(g.totDia[c.dia]) : c.t === 'Valor base' ? brl(g.linhas.reduce((t, l) => t + l.bruto, 0)) : c.t === 'Total a pagar' ? brl(g.total) : c.t === 'Ocorrências' ? brl(g.totOc) : c.t === 'Já pago' ? `-${brl(g.totPago)}` : c.t === 'Resumo' ? brl(g.linhas.reduce((s, l) => s + (l.resumo || 0), 0)) : '';
+      const v = c.t === 'Entregador' ? 'TOTAL' : c.dia ? brl(g.totDia[c.dia]) : c.t === 'Valor base' ? brl(g.linhas.reduce((t, l) => t + l.bruto, 0)) : c.t === 'Total a pagar' ? brl(g.total) : c.t === 'Ocorrências' ? brl(g.totOc) : c.t === 'Já pago' ? `-${brl(g.totPago)}` : c.t === 'Resumo' ? brl(g.linhas.reduce((s, l) => s + (l.resumo || 0), 0)) : '';
       doc.font('Helvetica-Bold').fontSize(8.5).fillColor(c.t === 'Total a pagar' ? COR.laranjaEsc : COR.preto).text(v, x + 5, y + 6, { width: c.w - 10, align: c.n ? 'right' : 'left', lineBreak: false });
       x += c.w;
     }
@@ -141,7 +141,7 @@ function gerarPdf(f0, g0) {
       const fy = doc.page.height - 26;
       doc.moveTo(L, fy - 6).lineTo(R, fy - 6).strokeColor(COR.linha).lineWidth(0.5).stroke();
       doc.font('Helvetica').fontSize(7.5).fillColor(COR.cinza)
-        .text(`Grupo Forno · Pagamento de motoboys · ${f.loja} · gerado em ${gerado}`, L, fy, { width: W / 2, lineBreak: false })
+        .text(`Grupo Forno · Pagamento de entregadores · ${f.loja} · gerado em ${gerado}`, L, fy, { width: W / 2, lineBreak: false })
         .text(`Página ${i + 1} de ${total}`, L + W / 2, fy, { width: W / 2, align: 'right', lineBreak: false });
     }
     doc.end();
@@ -157,7 +157,7 @@ const listaEmails = (txt) => String(txt || '').split(/[\s,;]+/).map((e) => e.tri
 // Retorna { enviado: true } ou { salvo: caminho }. Erros do servidor de e-mail são lançados.
 async function enviarEmail(msg) {
   const host = cfg('smtp_host'), porta = Number(cfg('smtp_port') || 587);
-  const from = cfg('smtp_from') || cfg('smtp_user') || 'motoboys@localhost';
+  const from = cfg('smtp_from') || cfg('smtp_user') || 'entregadores@localhost';
   if (!host) {
     const info = await nodemailer.createTransport({ streamTransport: true, buffer: true }).sendMail({ from, ...msg });
     const pasta = path.join(DIR, 'emails');

@@ -371,7 +371,7 @@ document.querySelectorAll(i.dataset.filtro+' [data-q]').forEach(function(r){r.hi
 document.querySelectorAll('.drop input[type=file]').forEach(function(i){i.addEventListener('change',function(){var n=[].map.call(i.files,function(f){return f.name}).join(', ');var d=i.closest('.drop');d.classList.toggle('on',!!n);d.querySelector('.fname').textContent=n})});
 document.querySelectorAll('form').forEach(function(f){f.addEventListener('submit',function(e){setTimeout(function(){if(e.defaultPrevented)return;f.querySelectorAll('button[type=submit],button:not([type])').forEach(function(b){b.disabled=true})},0)})});
 document.addEventListener('click',function(e){var b=e.target.closest('[data-copiar]');if(!b)return;e.preventDefault();
-navigator.clipboard.writeText(b.dataset.copiar).then(function(){var t=b.title;b.title='Copiado!';b.classList.add('ok-t');setTimeout(function(){b.title=t;b.classList.remove('ok-t')},1500)})});
+navigator.clipboard.writeText(b.dataset.copiar).then(function(){var t=b.title;b.title='Copiado!';b.classList.add('ok-t');var v=document.getElementById('aviso-vivo');if(!v){v=document.createElement('p');v.id='aviso-vivo';v.className='sr';v.setAttribute('role','status');document.body.appendChild(v)}v.textContent='';setTimeout(function(){v.textContent='Chave PIX copiada: '+b.dataset.copiar},50);var tx=b.querySelector('[data-copiar-tx]');if(tx){tx.textContent='Copiado'}setTimeout(function(){b.title=t;b.classList.remove('ok-t');if(tx)tx.textContent='Copiar PIX'},1800)},function(){alert('Não foi possível copiar. Selecione a chave e copie manualmente: '+b.dataset.copiar)})});
 document.querySelectorAll('[data-div-filtro]').forEach(function(seg){seg.addEventListener('click',function(e){var b=e.target.closest('button[data-f]');if(!b)return;
 seg.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b);x.setAttribute('aria-pressed',x===b)});document.querySelector(seg.dataset.divFiltro).dataset.f=b.dataset.f})});
 document.addEventListener('click',function(e){var b=e.target.closest('[data-abre]');if(!b)return;var r=document.querySelector('tr[data-det="'+b.dataset.abre+'"]');if(!r)return;r.hidden=!r.hidden;b.setAttribute('aria-expanded',!r.hidden)});
@@ -381,7 +381,7 @@ var i=document.createElement('input');i.type='search';i.placeholder='Buscar entr
 i.addEventListener('input',function(){var q=n(i.value.trim()),vis=[];[].forEach.call(s.options,function(o){var fixa=!o.value||o.value==='novo',ok=fixa||!q||n(o.text).indexOf(q)>=0;o.hidden=!ok;o.disabled=!ok;if(ok&&!fixa)vis.push(o)});
 if(q&&vis.length===1)s.value=vis[0].value;else if(s.selectedOptions[0]&&s.selectedOptions[0].disabled)s.value=''})});
 // Aviso de sucesso some sozinho; dá para fechar antes.
-document.querySelectorAll('.toast').forEach(function(t){var x=function(){t.remove()};setTimeout(x,6000);t.querySelector('[data-fecha-toast]').addEventListener('click',x)});
+document.querySelectorAll('.toast').forEach(function(t){var x=function(){t.remove()};if(!t.querySelector('a'))setTimeout(x,6000);t.querySelector('[data-fecha-toast]').addEventListener('click',x)});
 if(document.querySelector('.barra'))document.body.classList.add('com-barra');
 // Menu do usuário: fecha com Escape ou clicando fora.
 document.addEventListener('keydown',function(e){if(e.key!=='Escape')return;document.querySelectorAll('details.menu[open]').forEach(function(d){d.open=false;d.querySelector('summary').focus()})});
@@ -421,8 +421,9 @@ return['bad','Formato não reconhecido: confira'];}
 function conta(){if(!c)return;var n=0;is.forEach(function(i){if(i.value.trim())n++});c.textContent=n+' de '+is.length+' preenchidas'}
 is.forEach(function(i){var t=document.getElementById(i.getAttribute('aria-describedby'));function m(){var r=tipo(i.value);t.className='pix-tipo '+r[0];t.textContent=r[0]==='ok'?'✓ '+r[1]:r[1];conta()}i.addEventListener('input',m);m()})})();
 // Importação: "Só 1 dia" esconde o Relatório de Pedidos e pede o dia.
+var fc=document.querySelector('[data-foca]');if(fc)fc.focus();
 document.querySelectorAll('form[data-modo]').forEach(function(f){var a=f.querySelector('#f-arquivo').closest('li'),d=f.querySelector('[data-so-dia]');
-function m(){var dia=f.querySelector('input[name=modo]:checked').value==='dia';a.hidden=dia;d.hidden=!dia;f.querySelector('#f-arquivo').required=!dia;d.querySelectorAll('input,select').forEach(function(x){x.required=dia})}
+function m(){var dia=f.querySelector('input[name=modo]:checked').value==='dia';a.hidden=dia;d.hidden=!dia;f.querySelector('#f-arquivo').required=!dia;d.querySelectorAll('input,select').forEach(function(x){x.required=dia});document.querySelectorAll('[data-guia-dia]').forEach(function(x){x.hidden=!dia});document.querySelectorAll('[data-guia-periodo]').forEach(function(x){x.hidden=dia})}
 f.querySelectorAll('input[name=modo]').forEach(function(x){x.addEventListener('change',m)});m()});
 `;
 

@@ -58,11 +58,12 @@
   }
   function totais() {
     const filtrado = ativo(), n = rowsR.filter((r) => !r.classList.contains('fora')).length, m = rowsR.length;
-    let base = 0, aj = 0, tot = 0;
-    rowsR.forEach((r) => { if (!r.classList.contains('fora')) { base += Number(r.dataset.base); aj += Number(r.dataset.aj); tot += Number(r.dataset.valor); } });
+    let base = 0, aj = 0, tot = 0, res = 0;
+    rowsR.forEach((r) => { if (!r.classList.contains('fora')) { base += Number(r.dataset.base); res += Number(r.dataset.res || 0); aj += Number(r.dataset.aj); tot += Number(r.dataset.valor); } });
     const fR = tR.tFoot;
     fR.querySelector('[data-t=base]').textContent = brl(base);
     fR.querySelector('[data-t=aj]').textContent = brl(aj);
+    const fRes = fR.querySelector('[data-t=res]'); if (fRes && fRes.textContent !== '–') fRes.textContent = brl(res);
     fR.querySelector('[data-t=tot]').textContent = brl(tot);
     fR.querySelector('[data-esc]').textContent = filtrado ? 'Total dos resultados filtrados' : 'Total do fechamento';
     fR.querySelector('[data-esc-n]').textContent = filtrado ? n + ' de ' + m + ' entregadores' : m + ' entregadores';
@@ -114,7 +115,7 @@
     rotApr.textContent = 'Aprovar todos · ' + brl(soma(pend));
     bD.disabled = !nDev; bL.disabled = !s.length;
     bA.disabled = !pend.length || s.length > 0 || obrig.length > 0;
-    bA.title = s.length ? 'Você marcou entregadores para devolver: use Devolver (os demais são aprovados junto).' : obrig.length ? 'Há entregadores sem chave PIX: devolva-os à loja.' : '';
+    bA.title = s.length ? 'Você marcou entregadores para devolver: use Devolver (depois você escolhe se aprova os demais ou deixa aguardando).' : obrig.length ? 'Há entregadores sem chave PIX: devolva-os à loja.' : '';
     bl.hidden = !obrig.length;
     bl.textContent = obrig.length ? plural(obrig.length, 'entregador sem chave PIX não pode', 'entregadores sem chave PIX não podem') + ' ser aprovado' + (obrig.length > 1 ? 's' : '') + ': será devolvido à loja.' : '';
     const vc = caixas().filter((c) => !c.closest('tr').classList.contains('fora'));
@@ -135,8 +136,9 @@
   const marcados = () => sel().map((c) => Number(c.value));
   const idsDevolver = () => { const s = marcados(); obrig.forEach((i) => { if (s.indexOf(i.id) < 0) s.push(i.id); }); return s; };
   const limpaCampos = () => { fm.querySelectorAll('input[name=dev]').forEach((x) => x.remove()); };
-  const t = $('dlg-dec-t'), r = $('dlg-dec-r'), av = dlg.querySelector('[data-dec-aviso]'), avp = av.querySelector('p'), ul = dlg.querySelector('[data-dlg-lista]'), hint = dlg.querySelector('[data-dlg-hint]');
-  const bOk = dlg.querySelector('[data-dlg-ok]'), bProx = dlg.querySelector('[data-dlg-prox]'), bVolta = dlg.querySelector('[data-dlg-volta]');
+  const dq = (x) => dlg && dlg.querySelector(x); // sem diálogo (despachante, gestão): só leitura, o resto da tela segue funcionando
+  const t = $('dlg-dec-t'), r = $('dlg-dec-r'), av = dq('[data-dec-aviso]'), avp = av && av.querySelector('p'), ul = dq('[data-dlg-lista]'), hint = dq('[data-dlg-hint]');
+  const bOk = dq('[data-dlg-ok]'), bProx = dq('[data-dlg-prox]'), bVolta = dq('[data-dlg-volta]'), bMan = dq('[data-dlg-man]');
   const abre = () => { if (!dlg.open) { quem = document.activeElement; dlg.showModal(); } };
   const autoTxt = () => {
     const auto = pend.filter((i) => ids.indexOf(i.id) < 0);
@@ -145,17 +147,25 @@
   };
   function vista(p) {
     r.classList.remove('erro-t');
-    ul.hidden = p !== 1; hint.hidden = p !== 1; bProx.hidden = p !== 1; bVolta.hidden = p !== 2; bOk.hidden = p !== 2;
-    const its = ids.map((id) => porId[id]);
+    const its = ids.map((id) => porId[id]), auto = pend.filter((i) => ids.indexOf(i.id) < 0);
+    ul.hidden = p !== 1; hint.hidden = p !== 1; bProx.hidden = p !== 1; bVolta.hidden = p !== 2; bOk.hidden = p !== 2; bMan.hidden = p !== 2 || !auto.length;
     if (p === 1) {
       t.textContent = 'Devolver ' + plural(its.length, 'entregador', 'entregadores') + ' à loja';
       r.textContent = 'Escreva o motivo de cada devolução. A loja vê o motivo de cada entregador.';
-      avp.textContent = autoTxt();
+      avp.textContent = auto.length ? 'No próximo passo você escolhe o que fazer com ' + (auto.length === 1 ? 'o entregador que não foi marcado' : 'os ' + auto.length + ' entregadores que não foram marcados') + ' (' + brl(soma(auto)) + ').' : autoTxt();
+    } else if (auto.length) {
+      // Duas saídas: os devolvidos sempre vão para um fechamento novo; os demais são aprovados agora ou continuam aguardando aqui.
+      t.textContent = 'E os ' + plural(auto.length, 'entregador', 'entregadores') + ' não devolvidos?';
+      r.textContent = (its.length === 1 ? 'O devolvido' : 'Os ' + its.length + ' devolvidos') + ' (' + its.map((i) => i.nome).join(', ') + ', ' + brl(soma(its)) + (its.length === 1 ? ') sai deste fechamento e vai' : ') saem deste fechamento e vão') + ' para um fechamento novo e vão para um fechamento novo, para a loja corrigir.';
+      avp.textContent = 'Não devolvidos: ' + auto.map((i) => i.nome).join(', ') + ' (' + brl(soma(auto)) + '). Aprove agora (vão para Pagamentos) ou deixe aguardando aprovação neste fechamento.';
+      bOk.className = 'btn btn-ok'; bOk.textContent = 'Aprovar pagamento dos não devolvidos (' + brl(soma(auto)) + ')';
     } else {
       t.textContent = 'Confirmar decisão';
       r.textContent = 'Você vai devolver ' + plural(its.length, 'entregador', 'entregadores') + ' (' + brl(soma(its)) + ') à loja.';
       avp.textContent = 'Atenção: ' + autoTxt().replace(/^O /, 'o ').replace(/^Os /, 'os ');
       bOk.className = 'btn btn-pri'; bOk.textContent = 'Confirmar e devolver';
+    }
+    if (p === 2) {
       limpaCampos();
       ids.forEach((id) => { const h = document.createElement('input'); h.type = 'hidden'; h.name = 'dev'; h.value = id; fm.appendChild(h); });
     }
@@ -164,7 +174,7 @@
     ids = []; limpaCampos();
     t.textContent = 'Aprovar o fechamento';
     r.textContent = 'Você vai aprovar ' + plural(pend.length, 'entregador', 'entregadores') + ', total de ' + brl(soma(pend)) + '. O fechamento fica aprovado e passa para Pagamentos.';
-    av.hidden = true; ul.hidden = true; hint.hidden = true; bProx.hidden = true; bVolta.hidden = true; bOk.hidden = false;
+    av.hidden = true; ul.hidden = true; hint.hidden = true; bProx.hidden = true; bVolta.hidden = true; bMan.hidden = true; bOk.hidden = false;
     bOk.className = 'btn btn-ok'; bOk.textContent = 'Aprovar ' + brl(soma(pend));
     abre(); bOk.focus();
   }

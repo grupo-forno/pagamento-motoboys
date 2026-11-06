@@ -132,11 +132,17 @@ test('fechamento de 1 dia: só o Resumo, valor do dia = total do Resumo, sem sob
 test('Pagamentos: paga fechamentos aprovados juntos em um lote, recusa repetido/valor mudado/outra loja e desfaz o lote', async () => {
   const fin = await entra('fin'), fin2 = await entra('fin2'), F3 = db.prepare('SELECT id FROM fechamentos WHERE origem_id = ?').get(F1).id;
   const pag = (await (await get(fin, '/pagar')).text()).replace(/\u00a0/g, ' ');
-  const valor = (id) => Number(pag.match(new RegExp('value="' + id + ':(\\d+)"'))[1]);
+  const sel = (id) => pag.match(new RegExp('value="' + id + ':(\\d+):([0-9a-f]+)"')), valor = (id) => Number(sel(id)[1]);
   assert.ok(pag.includes('data-pagar'));
-  const par = (id, v = valor(id)) => id + ':' + v, pagoEm = (id) => db.prepare('SELECT pago_em, lote FROM fechamentos WHERE id = ?').get(id);
+  const par = (id, v = valor(id)) => id + ':' + v + ':' + sel(id)[2], pagoEm = (id) => db.prepare('SELECT pago_em, lote FROM fechamentos WHERE id = ?').get(id);
   assert.match(await post(fin2, '/pagar', { sel: par(F1) }), /erro=/);            // financeiro de outra loja
   assert.match(await post(fin, '/pagar', { sel: par(F1, valor(F1) + 1) }), /erro=/); // valor mudou
+  assert.match(await post(fin, '/pagar', { sel: F1 + ':' + valor(F1) }), /erro=/);   // formato antigo, sem a conferência do PIX
+  // PIX aprovado mudou depois de abrir a tela: recusa a seleção inteira
+  const ap = db.prepare('SELECT motoboy_id, pix FROM aprovacoes WHERE fechamento_id = ? LIMIT 1').get(F1);
+  db.prepare('UPDATE aprovacoes SET pix = ? WHERE fechamento_id = ? AND motoboy_id = ?').run('outra@pix.com', F1, ap.motoboy_id);
+  assert.match(await post(fin, '/pagar', { sel: par(F1) }), /erro=/);
+  db.prepare('UPDATE aprovacoes SET pix = ? WHERE fechamento_id = ? AND motoboy_id = ?').run(ap.pix, F1, ap.motoboy_id);
   assert.strictEqual(pagoEm(F1).pago_em, null);
   const juntos = (await fetch(B + '/pagar', { method: 'POST', headers: { cookie: fin }, body: new URLSearchParams([['sel', par(F1)], ['sel', par(F3)]]), redirect: 'manual' })).headers.get('location') || '';
   assert.match(juntos, /ok=/);      // pago junto, no mesmo lote

@@ -2,13 +2,18 @@ const XLSX = require('xlsx');
 
 const erro = (msg) => Object.assign(new Error(msg), { publico: true });
 
-// Dia operacional: pedido iniciado de madrugada (antes das 5h) conta no dia anterior.
-// ponytail: corte fixo às 05:00; vira configuração por loja se alguma operar de madrugada.
+// Horários da virada do dia, num lugar só.
+// VIRADA_H: pedido iniciado antes desta hora conta no dia anterior (usado no cálculo).
+// FILTRO_HORA: horário sugerido para o filtro do Agilizone (só orientação nas telas).
+// Regra da operação (06/11/2026): o dia vai das 06:00 às 06:00 do dia seguinte (lojas abrem 15h–23h; a madrugada
+// fica com o dia anterior). Ex.: segunda a quinta = segunda 06:00 até sexta 06:00. Antes era 05:00; o que já foi importado não muda.
+const VIRADA_H = 6, FILTRO_HORA = '06:00';
+// Dia operacional: pedido iniciado de madrugada (antes de VIRADA_H) conta no dia anterior.
 function diaOperacional(s) {
   const m = /^(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):/.exec(String(s ?? '').trim());
   if (!m) return null;
   const d = new Date(Date.UTC(+m[3], +m[2] - 1, +m[1]));
-  if (+m[4] < 5) d.setUTCDate(d.getUTCDate() - 1);
+  if (+m[4] < VIRADA_H) d.setUTCDate(d.getUTCDate() - 1);
   return d.toISOString().slice(0, 10);
 }
 
@@ -74,7 +79,7 @@ function lerResumo(buf) {
   const cab = (linhas[0] || '').split(';').map((s) => sa(s.trim()));
   const col = (n) => cab.indexOf(sa(n));
   if (col('Entregador') < 0 || col('Soma das taxas de entrega') < 0)
-    throw erro('O segundo arquivo não parece o "Resumo de entregas por entregador" do Agilizone (o .csv de "Exportar Resumo").');
+    throw erro('Este arquivo não parece o "Resumo de entregas por entregador" do Agilizone. Use o .csv baixado em "Exportar Resumo", sem abrir e salvar de novo em outro formato.');
   const limpa = (v) => { const s = String(v ?? '').trim(); return s && s !== '-' && s !== '—' ? s : null; };
   const rows = linhas.slice(1).map((l) => {
     const c = l.split(';');
@@ -97,4 +102,4 @@ function pixValido(p) {
   return /^[\d.\-/()+\s]+$/.test(s) && [10, 11, 12, 13, 14].includes(d.length);
 }
 
-module.exports = { lerRelatorio, lerResumo, diaOperacional, centavos, valorDigitado, pixValido };
+module.exports = { VIRADA_H, FILTRO_HORA, lerRelatorio, lerResumo, diaOperacional, centavos, valorDigitado, pixValido };

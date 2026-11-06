@@ -134,6 +134,8 @@ if (!temColuna('aprovacoes', 'pago_em')) db.exec('ALTER TABLE aprovacoes ADD COL
 // Pagamento por fechamento: pago_em/pago_por e o lote (fechamentos pagos juntos).
 if (!temColuna('fechamentos', 'pago_em')) db.exec('ALTER TABLE fechamentos ADD COLUMN pago_em TEXT; ALTER TABLE fechamentos ADD COLUMN pago_por INTEGER; ALTER TABLE fechamentos ADD COLUMN lote INTEGER;');
 if (!temColuna('edicoes', 'obs')) db.exec('ALTER TABLE edicoes ADD COLUMN obs TEXT');
+// Justificativa do despachante para enviar com diferença entre Relatório de Pedidos e Resumo (obrigatória nesse caso).
+if (!temColuna('fechamentos', 'justificativa')) db.exec('ALTER TABLE fechamentos ADD COLUMN justificativa TEXT');
 
 for (const nome of ['FORNO PAULISTA DIRCEU', 'FORNO PAULISTA DOM SEVERINO ATIVA', 'FORNO PAULISTA SUL', 'Forno Paulista Centro de Distribuição Leste'])
   db.prepare('INSERT OR IGNORE INTO lojas (nome) VALUES (?)').run(nome);

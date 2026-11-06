@@ -31,3 +31,15 @@
 
 .lote{border-top:1px solid var(--bd)}.lote-h{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 20px;background:var(--surface-2)}
 .lojas-pills{margin:0 0 16px}
+
+/* Pagamentos: quem recebe (PIX aprovado) e passo a passo */
+.pg-visao{margin:0 0 10px;font-size:15px}
+.pg-passos{margin:0;padding:14px 20px 4px 40px;color:var(--tx-2);font-size:14px;display:grid;gap:2px}
+.tab-pg tr.pg-itens>td{padding:0 12px 10px;border-top:0;background:var(--surface)}
+.tab-pg tr.pg-itens summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--pri);padding:4px 0}
+.tab-pg tr.pg-itens summary::-webkit-details-marker{display:none}
+.tab-pg tr.pg-itens summary:focus-visible{outline:3px solid var(--brand);outline-offset:2px}
+.tab-pg tr.pg-itens details[open] .chev{transform:rotate(90deg)}
+.pg-sub{width:100%;margin-top:6px;border:1px solid var(--bd);border-radius:8px}
+.pg-sub th,.pg-sub td{padding:6px 10px;font-size:13.5px}.pg-sub thead th{background:var(--surface-2)}
+.pg-sub .pix-c{overflow-wrap:anywhere;font-family:ui-monospace,Consolas,monospace;font-size:13px}

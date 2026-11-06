@@ -64,3 +64,7 @@
 .envio-strip .envio-total{order:-1;background:var(--carvao);border-color:var(--carvao)}
 .envio-strip .envio-total dt{color:#e6d8ce}.envio-strip .envio-total dd{color:#fff;font-size:30px;font-weight:800}
 @media(max-width:1000px){.envio-strip{grid-template-columns:1fr 1fr;gap:10px}.envio-strip .envio-total{grid-column:1/-1}}
+
+/* Justificativa obrigatória quando pedidos e Resumo diferem */
+.just-rot{display:block;margin-top:10px;font-weight:600}
+#justificativa{display:block;width:100%;margin:4px 0;font:inherit}

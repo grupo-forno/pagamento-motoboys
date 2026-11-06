@@ -443,3 +443,8 @@ body.auth .erro-pag{grid-template-columns:1fr;margin:0}
 .dlg-per .per-datas input[type=date]{width:100%;height:40px;border-radius:8px;padding:0 10px}
 .dlg-per .per-datas.on input[type=date]{border-color:var(--brand);background:var(--pri-soft)}
 .dlg-per .hint::first-letter{text-transform:uppercase}
+.toast-a{color:#ffb98a;font-weight:700;margin-left:4px;white-space:nowrap}
+.erro-campo .erro-re{display:block;margin-top:4px;color:var(--tx-2);font-weight:400}.erro-campo a{font-weight:700}
+.erro-campo:focus{outline:2px solid var(--bad);outline-offset:3px;border-radius:6px}
+/* Pendências no celular: a situação (com motivo e devolvidos) ocupa a linha inteira e a ação vem embaixo, à direita */
+@container sec (max-width:560px){.sec-p .tab-p tr{grid-template-areas:"pag tot" "per tot" "sit sit" "acao acao"}.sec-p .tab-p td:nth-child(5){justify-self:end}}

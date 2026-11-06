@@ -74,7 +74,7 @@
 .fc[data-w=estreito] .fc-t.com-sel tbody tr{grid-template-columns:44px 1fr auto;padding-left:4px}
 .fc[data-w=estreito] .fc-t td,.fc[data-w=estreito] .fc-t th{border:0;padding:0;background:none;box-shadow:none}
 .fc[data-w=estreito] .fc-t .c-nome{min-width:0;width:auto}
-.fc[data-w=estreito] .c-pix,.fc[data-w=estreito] .c-base,.fc[data-w=estreito] .c-aj,.fc[data-w=estreito] .c-sit,.fc[data-w=estreito] .c-acoes,.fc[data-w=estreito] .c-int,.fc[data-w=estreito] .fc-t tfoot .c-sel{display:none}
+.fc[data-w=estreito] .c-pix,.fc[data-w=estreito] .c-base,.fc[data-w=estreito] .c-res,.fc[data-w=estreito] .c-aj,.fc[data-w=estreito] .c-sit,.fc[data-w=estreito] .c-acoes,.fc[data-w=estreito] .c-int,.fc[data-w=estreito] .fc-t tfoot .c-sel{display:none}
 .fc[data-w=estreito] .fc-t tfoot tr{grid-template-columns:1fr auto}
 .fc[data-w=estreito] .fc-t tr.tem-oc{background:#fff7e0;box-shadow:inset 4px 0 0 var(--warn)}
 .fc[data-w=estreito] .fc-t tr.tem-oc>*,.fc[data-w=estreito] .fc-t tbody tr:has(input[name=m]:checked)>*,.fc[data-w=estreito] .fc-t tbody tr:hover>*{background:none}
@@ -156,6 +156,8 @@ body.larga .main .wrap{max-width:1600px}
 #fc-resumo .c-sel{width:48px}
 #fc-resumo .c-nome{width:auto;min-width:0}
 #fc-resumo .c-base{width:108px}
+#fc-resumo .c-res{width:124px}
+.fc-t .c-res small{display:flex;justify-content:flex-end;align-items:center;gap:3px;font-size:12px;font-weight:600;white-space:nowrap}.fc-t .c-res .ico{width:13px;height:13px}
 #fc-resumo .c-aj{width:116px;min-width:0}
 #fc-resumo .c-tot{width:128px}
 #fc-resumo .c-sit{width:156px;min-width:0}

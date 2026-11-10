@@ -5,7 +5,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { db, UPLOADS, hashSenha, confereSenha, log, tx } = require('./db');
 const XLSX = require('xlsx');
-const { lerRelatorio, lerResumo, valorDigitado, pixValido, FILTRO_HORA } = require('./importar');
+const { lerRelatorio, lerResumo, valorDigitado, pixValido, FILTRO_HORA, VIRADA_H } = require('./importar');
+const AGZ_API = require('./agilizone');
 const AG = require('./agenda');
 const { gerarPdf, enviarEmail, cfg, listaEmails, brl, diaFmt, dataFmt } = require('./relatorio');
 const { Raw, html, esc, icone, iniciais, semAcento, CSS, JS } = require('./ui');
@@ -215,8 +216,8 @@ for (const { id } of db.prepare("SELECT id FROM fechamentos WHERE status = 'rasc
 
 function gravaResumo(f, rows, uid, arquivo) {
   db.prepare('DELETE FROM resumo WHERE fechamento_id = ?').run(f.id);
-  const ins = db.prepare('INSERT INTO resumo (fechamento_id, entregador, pedidos, total, cpf, pix, pago, ocorrencias, qtd_oc) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT DO UPDATE SET pedidos = pedidos + excluded.pedidos, total = total + excluded.total, pago = pago + excluded.pago, ocorrencias = ocorrencias + excluded.ocorrencias, qtd_oc = qtd_oc + excluded.qtd_oc');
-  for (const r of rows) ins.run(f.id, r.entregador, r.pedidos, r.total, r.cpf, r.pix, r.pago, r.ocorrencias, r.qtdOc);
+  const ins = db.prepare('INSERT INTO resumo (fechamento_id, entregador, pedidos, total, cpf, pix, pago, ocorrencias, qtd_oc, motoboy_id) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO UPDATE SET pedidos = pedidos + excluded.pedidos, total = total + excluded.total, pago = pago + excluded.pago, ocorrencias = ocorrencias + excluded.ocorrencias, qtd_oc = qtd_oc + excluded.qtd_oc');
+  for (const r of rows) ins.run(f.id, r.entregador, r.pedidos, r.total, r.cpf, r.pix, r.pago, r.ocorrencias, r.qtdOc, r.motoboyId ?? null);
   aplicaResumo(f, uid);
   log(uid, `f:${f.id}`, `Anexou o Resumo de entregas ${arquivo}: ${rows.length} entregadores, ${brl(rows.reduce((s, r) => s + r.total, 0))}`);
 }
@@ -715,10 +716,15 @@ app.get('/fechamentos/novo', so((r) => editaMotoboy(r.user)), (req, res) => {
   const aImportar = agenda(lojas, AG.soma(hoje, -14), hoje).filter((p) => !p.f);
   const opcoes = aImportar.length ? aImportar : agenda(lojas, AG.soma(hoje, 1), AG.soma(hoje, 7)).slice(0, 1);
   const p = opcoes.find((x) => x.pagamento === req.query.p && (!req.query.l || x.loja.id === Number(req.query.l))) || opcoes[0];
-  const erro = req.query.erro && req.query.k === assina('erro', req.query.erro) ? req.query.erro : '', campo = ['resumo', 'dia'].includes(req.query.campo) ? req.query.campo : 'arquivo', modoDia = req.query.modo === 'dia';
+  const erro = req.query.erro && req.query.k === assina('erro', req.query.erro) ? req.query.erro : '', campo = ['resumo', 'dia', 'api'].includes(req.query.campo) ? req.query.campo : 'arquivo', modoDia = req.query.modo === 'dia';
   const diaQ = /^\d{4}-\d{2}-\d{2}$/.test(req.query.dia || '') ? req.query.dia : '', lojaQ = Number(req.query.loja) || 0;
   const abrir = Number(req.query.abrir) && carregaF(req.query.abrir), podeAbrir = abrir && podeVer(u, abrir);
   const erroDe = (c) => (erro && campo === c ? html`<div class="erro-campo" id="erro-${c}" role="alert" tabindex="-1" data-foca>${icone('erro', 'sm')} <span>${erro}${podeAbrir ? html` <a href="/fechamentos/${abrir.id}">Abrir fechamento existente (#${abrir.id})</a>` : ''}<small class="erro-re">O navegador limpa os arquivos depois de um erro: escolha de novo ${modoDia ? 'o Resumo (.csv)' : 'os dois arquivos'}.</small></span></div>` : '');
+  const apiOk = !!p && AGZ_API.configurada(p.loja);
+  const cartaoApi = apiOk ? html`<form method="post" action="/fechamentos/novo/api" class="card importar-api" data-carregando="Buscando os pedidos no Agilizone…"><input type="hidden" name="loja" value="${p.loja.id}"><input type="hidden" name="p" value="${p.pagamento}">
+<div class="card-b"><h2 class="api-t">Importar direto do Agilizone</h2><p class="api-d">Busca os pedidos e a taxa de cada entregador de ${diaLongo(p.ini)} a ${diaLongo(p.fim)}, sem baixar nem enviar arquivos.</p>
+${erro && campo === 'api' ? html`<div class="erro-campo" role="alert" tabindex="-1" data-foca>${icone('erro', 'sm')} <span>${erro}${podeAbrir ? html` <a href="/fechamentos/${abrir.id}">Abrir fechamento existente (#${abrir.id})</a>` : ''}</span></div>` : ''}</div>
+<div class="card-f"><button class="btn btn-pri btn-lg">${icone('subir')} Importar do Agilizone</button><a class="btn btn-ghost" href="/">Cancelar</a></div></form>` : '';
   const upload = (n, name, accept, titulo, ext) => html`<li class="upload"><span class="num" aria-hidden="true">${n}</span><div class="field">
 <label for="f-${name}">${titulo} <span class="chip-ext">${ext.replace('.', '').toUpperCase()}</span></label>
 <label class="drop ${erro && campo === name ? 'erro' : ''}">${icone('subir')}<b class="drop-t">Escolher arquivo</b><span class="fname" aria-live="polite"></span>
@@ -729,7 +735,7 @@ ${p ? html`<section class="contexto" aria-label="Período a importar">
 <div class="filtro"><span class="mut small">Filtro sugerido no Agilizone (orientação: loja e período são lidos dos próprios arquivos)</span><dl><div><dt>Data inicial</dt><dd>${dataFmt(p.ini)} ${FILTRO_HORA}</dd></div><div><dt>Data final</dt><dd>${dataFmt(AG.soma(p.fim, 1))} ${FILTRO_HORA}</dd></div></dl></div>
 ${opcoes.length > 1 ? html`<nav class="outros" aria-label="Outros períodos pendentes"><span class="mut small">Outro período pendente:</span>${opcoes.filter((x) => x !== p).map((x) => html`<a href="/fechamentos/novo?p=${x.pagamento}&l=${x.loja.id}">${diaLongo(x.pagamento)}${lojas.length > 1 ? ` · ${lojaCurta(x.loja.nome)}` : ''}</a>`)}</nav>` : ''}
 </section>` : ''}
-<form method="post" enctype="multipart/form-data" class="card importar" data-modo data-carregando="Lendo os arquivos…"><div class="card-b">
+${cartaoApi}${apiOk ? new Raw('<details class="alt-arq"><summary>Importar por arquivo (alternativa)</summary>') : ''}<form method="post" enctype="multipart/form-data" class="card importar" data-modo data-carregando="Lendo os arquivos…"><div class="card-b">
 <fieldset class="modo"><legend>O que você vai pagar?</legend><div class="modo-op">
 <label><input type="radio" name="modo" value="periodo" ${modoDia ? '' : new Raw('checked')}><span><b>Vários dias</b><small>Relatório de Pedidos + Resumo: mostra o valor de cada dia</small></span></label>
 <label><input type="radio" name="modo" value="dia" ${modoDia ? new Raw('checked') : ''}><span><b>Só 1 dia</b><small>Só o Resumo de entregas</small></span></label></div></fieldset>
@@ -739,7 +745,7 @@ ${opcoes.length > 1 ? html`<nav class="outros" aria-label="Outros períodos pend
 <p>Abrir no Excel estraga as chaves PIX. Se abriu, baixe de novo no Agilizone.</p></div></div>
 <ol class="uploads">${upload(1, 'arquivo', '.xlsx,.xls', 'Relatório de Pedidos (botão "Exportar Pedidos")', '.xlsx')}${upload(2, 'resumo', '.csv,text/csv', 'Resumo de entregas (botão "Exportar Resumo")', '.csv')}</ol>
 </div>
-<div class="card-f"><button class="btn btn-pri btn-lg">Importar e revisar</button><a class="btn btn-ghost" href="/">Cancelar</a></div></form></div>
+<div class="card-f"><button class="btn btn-pri btn-lg">Importar e revisar</button><a class="btn btn-ghost" href="/">Cancelar</a></div></form>${apiOk ? new Raw('</details>') : ''}</div>
 <aside class="card guia" aria-label="Como exportar no Agilizone"><div class="card-h"><span class="hico pri">${icone('info')}</span><div class="t"><h2>Como exportar no Agilizone</h2><p data-guia-periodo ${modoDia ? new Raw('hidden') : ''}>Vários dias: dois arquivos, da mesma tela e com o mesmo filtro.</p><p data-guia-dia ${modoDia ? '' : new Raw('hidden')}>Só 1 dia: apenas o Resumo.</p></div></div><div class="card-b"><div data-guia-periodo ${modoDia ? new Raw('hidden') : ''}>${COMO_EXPORTAR}</div><div data-guia-dia ${modoDia ? '' : new Raw('hidden')}>${COMO_EXPORTAR_DIA}</div>
 <ul class="regras"><li>${icone('check', 'sm')} <span>Exporte os dois arquivos da <b>mesma tela</b>, com o <b>mesmo filtro</b>. Para <b>1 dia</b>, só o Resumo.</span></li><li>${icone('check', 'sm')} <span>Pedidos sem entregador são descartados automaticamente.</span></li><li>${icone('alerta', 'sm')} <span>Se algum pedido já estiver em outro fechamento, a importação é recusada (ninguém recebe duas vezes).</span></li></ul></div></aside></div>`));
 });
@@ -798,6 +804,10 @@ function importar(req, res) {
   }
   if (!l) throw falha(`Loja não cadastrada: o arquivo é da loja "${loja}", que não está cadastrada. Peça ao suporte para cadastrar em Configurações (o nome tem que ser igual ao do Agilizone).`);
   if (req.user.perfil === 'despachante' && req.user.loja_id !== l.id) throw falha(`Loja incorreta: este arquivo é da loja "${loja}", que não é a sua. No Agilizone, escolha a sua loja antes de exportar.`, 403);
+  return registra(req, res, l, loja, pedidos, resumo, nomeArq(req.file.originalname), arqResumo.originalname, 'arquivo');
+}
+// Grava o fechamento a partir dos pedidos e do resumo (vindos de arquivos ou da API do Agilizone).
+function registra(req, res, l, loja, pedidos, resumo, nomeArquivo, nomeResumo, origem) {
   const comMotoboy = pedidos.filter((p) => p.entregador), semMotoboy = pedidos.length - comMotoboy.length;
   if (!comMotoboy.length) throw falha('O arquivo não tem nenhum pedido com entregador atrelado.');
 
@@ -811,32 +821,76 @@ function importar(req, res) {
   const dias = [...new Set(comMotoboy.map((p) => p.dia))].sort();
   const umDia = db.prepare('SELECT data_ini FROM fechamentos WHERE loja_id = ? AND so_resumo = 1 AND arquivado_em IS NULL AND data_ini BETWEEN ? AND ?').all(l.id, dias[0], dias[dias.length - 1]);
   if (umDia.length) throw falha(`Pedidos já importados: o período exportado inclui ${umDia.map((x) => dataFmt(x.data_ini)).join(', ')}, que já está em um fechamento de 1 dia. Exporte de novo só os dias que ainda não foram importados.`);
+  if (origem === 'api') { // o Agilizone não tem o número+horário dos arquivos: a trava contra pagar duas vezes é o período
+    const x = db.prepare('SELECT id, data_ini, data_fim FROM fechamentos WHERE loja_id = ? AND arquivado_em IS NULL AND data_ini <= ? AND data_fim >= ?').get(l.id, dias[dias.length - 1], dias[0]);
+    if (x) throw Object.assign(falha(`Pedidos já importados: o período já está no fechamento #${x.id} (${periodo(x)}). Continue por ele; se estava errado, arquive-o e importe de novo.`), { abrir: x.id });
+  }
   const pagamento = AG.pagamentoDoDia(cal, dias[dias.length - 1]);
   const ref = pagamento ? AG.diasReferencia(cal, pagamento) : [];
   const fora = pagamento ? dias.filter((d) => !ref.includes(d)) : [];
 
   const fid = tx(() => {
     const fid = Number(db.prepare("INSERT INTO fechamentos (loja_id, data_ini, data_fim, criado_por, arquivo, pagamento) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(l.id, dias[0], dias[dias.length - 1], req.user.id, nomeArq(req.file.originalname), pagamento).lastInsertRowid);
+      .run(l.id, dias[0], dias[dias.length - 1], req.user.id, nomeArquivo, pagamento).lastInsertRowid);
     const ins = db.prepare(`INSERT INTO pedidos (fechamento_id, loja_id, chave, numero, dia, entregador, motoboy_id, taxa, status)
-      VALUES (?,?,?,?,?,?,(SELECT motoboy_id FROM apelidos WHERE loja_id = ? AND nome = ?),?,?)`);
+      VALUES (?,?,?,?,?,?,COALESCE(?, (SELECT motoboy_id FROM apelidos WHERE loja_id = ? AND nome = ?)),?,?)`);
     const vistos = new Set();
     for (const p of comMotoboy) {
       if (vistos.has(p.chave)) throw falha(`O pedido ${p.numero} aparece duas vezes no arquivo com o mesmo horário. Exporte de novo do Agilizone.`);
       vistos.add(p.chave);
-      ins.run(fid, l.id, p.chave, p.numero, p.dia, p.entregador, l.id, p.entregador, p.taxa, p.status);
+      ins.run(fid, l.id, p.chave, p.numero, p.dia, p.entregador, p.motoboyId ?? null, l.id, p.entregador, p.taxa, p.status);
     }
-    log(req.user.id, `f:${fid}`, `Importou ${nomeArq(req.file.originalname)}: ${comMotoboy.length} pedidos com entregador` + (semMotoboy ? `; ${semMotoboy} sem entregador descartados` : ''));
+    log(req.user.id, `f:${fid}`, `Importou ${nomeArquivo}: ${comMotoboy.length} pedidos com entregador` + (semMotoboy ? `; ${semMotoboy} sem entregador descartados` : ''));
     if (pagamento) log(req.user.id, `f:${fid}`, `Pagamento de ${diaLongo(pagamento)} (referente a ${ref.map(diaLongo).join(', ')})`);
     if (fora.length) log(req.user.id, `f:${fid}`, `Atenção: dias fora do período desse pagamento: ${fora.map(diaLongo).join(', ')}`);
     const f = { id: fid, loja_id: l.id, loja };
-    confereMesmoPeriodo(f, resumo);
-    gravaResumo(f, resumo, req.user.id, arqResumo.originalname);
+    if (origem === 'arquivo') confereMesmoPeriodo(f, resumo);
+    gravaResumo(f, resumo, req.user.id, nomeResumo);
     return fid;
   });
   fora.length ? volta(res, `/fechamentos/${fid}`, 'erro', `Importado, mas o arquivo tem dias fora do período do pagamento de ${diaLongo(pagamento)}: ${fora.map(diaLongo).join(', ')}. Confira o filtro de datas no Agilizone.`)
     : volta(res, `/fechamentos/${fid}`, 'ok', pagamento ? `Importado: pagamento de ${diaLongo(pagamento)}. Agora revise os valores.` : 'Importado. Agora revise os valores.');
 }
+
+// ---- Importação direto da API do Agilizone (alternativa ao envio dos arquivos) ----
+// Entregador do Agilizone -> cadastro interno: pelo id (agz_id); na primeira vez, pelo apelido ou nome, e grava o id.
+function motoboyDoAgilizone(l, agzId, nome) {
+  let id = db.prepare('SELECT id FROM motoboys WHERE agz_id = ?').get(agzId)?.id;
+  if (id) return id;
+  id = db.prepare('SELECT motoboy_id id FROM apelidos WHERE loja_id = ? AND nome = ?').get(l.id, nome)?.id
+    ?? db.prepare('SELECT id FROM motoboys WHERE nome = ? COLLATE NOCASE AND agz_id IS NULL').get(nome)?.id;
+  if (id) db.prepare('UPDATE motoboys SET agz_id = ? WHERE id = ? AND agz_id IS NULL').run(agzId, id);
+  else id = Number(db.prepare('INSERT INTO motoboys (nome, agz_id) VALUES (?, ?)').run(nome, agzId).lastInsertRowid);
+  return id;
+}
+async function importarApi(req, res) {
+  const u = req.user, hoje = agora().data;
+  const l = db.prepare('SELECT * FROM lojas WHERE id = ?').get(u.perfil === 'admin' ? Number(req.body.loja) : u.loja_id);
+  if (!l) throw falha('Escolha a loja.');
+  if (!AGZ_API.configurada(l)) throw falha('Esta loja ainda não está ligada ao Agilizone. Peça ao suporte para cadastrar as credenciais em Configurações > Lojas.');
+  const p = agenda([l], AG.soma(hoje, -14), AG.soma(hoje, 7)).find((x) => x.pagamento === String(req.body.p || ''));
+  if (!p) throw falha('Esse pagamento não está na agenda. Volte e escolha o período.');
+  if (p.f) throw Object.assign(falha(`Esse pagamento já tem fechamento (#${p.f.id}). Continue por ele; se estava errado, arquive-o e importe de novo.`), { abrir: p.f.id });
+  // O dia operacional vai de VIRADA_H a VIRADA_H do dia seguinte (horário de Teresina, UTC-3 o ano todo).
+  const h = String(VIRADA_H).padStart(2, '0');
+  const orders = await AGZ_API.pedidos(l, `${p.ini}T${h}:00:00-03:00`, `${AG.soma(p.fim, 1)}T${h}:00:00-03:00`);
+  const { pedidos, resumo } = AGZ_API.paraImportacao(orders, { tz: TZ, de: p.ini, ate: p.fim });
+  if (!pedidos.length) throw falha(`O Agilizone não tem pedidos entregues de ${l.nome} entre ${dataFmt(p.ini)} e ${dataFmt(p.fim)}.`);
+  const ids = new Map(resumo.map((e) => [e.agzId, motoboyDoAgilizone(l, e.agzId, e.entregador)]));
+  for (const x of pedidos) x.motoboyId = ids.get(x.agzId);
+  for (const r of resumo) r.motoboyId = ids.get(r.agzId);
+  registra(req, res, l, l.nome, pedidos, resumo, 'Agilizone (API)', 'Agilizone (API)', 'api');
+}
+app.post('/fechamentos/novo/api', so((r) => editaMotoboy(r.user)), async (req, res, next) => {
+  try { await importarApi(req, res); } catch (e) {
+    if (!e.publico) return next(e);
+    const q = new URLSearchParams({ campo: 'api' });
+    if (/^\d{4}-\d{2}-\d{2}$/.test(req.body.p || '')) q.set('p', req.body.p);
+    if (Number(req.body.loja)) q.set('l', Number(req.body.loja));
+    if (e.abrir) q.set('abrir', e.abrir);
+    volta(res, `/fechamentos/novo?${q}`, 'erro', e.message);
+  }
+});
 
 const celOc = (l) => html`<td class="n oc-c">${l.oc || l.qtdOc ? html`<span class="${l.oc < 0 ? 'bad-t' : ''}">${l.oc > 0 ? '+' : ''}${brl(l.oc)}</span><small class="mut"> ${l.qtdOc} ocorr.</small>` : html`<span class="mut">–</span>`}</td>`;
 const celPago = (l) => html`<td class="n">${l.pago ? html`<span class="bad-t">−${brl(l.pago)}</span>` : html`<span class="mut">–</span>`}</td>`;
@@ -960,6 +1014,7 @@ app.post('/fechamentos/:fid/pix', so((r) => podeEditar(r.user, r.f)), (req, res)
       const l = linhas.get(Number(k.replace(/^pix_/, ''))), pix = String(v || '').trim().slice(0, 120);
       if (!k.startsWith('pix_') || !l || !pix || l.pix === pix) continue;
       editaPix.run(req.f.id, l.id, pix);
+      if (pixValido(pix)) db.prepare("UPDATE motoboys SET pix = ? WHERE id = ? AND (pix IS NULL OR pix = '')").run(pix, l.id); // a 1ª chave vira o cadastro; trocar uma existente é no cadastro (admin)
       log(req.user.id, `f:${req.f.id}`, `PIX de ${l.nome} digitado: ${pix}`);
       n++;
     }
@@ -1499,8 +1554,8 @@ app.get('/config', so((r) => r.user.perfil === 'admin'), (req, res) => {
   const v = (k) => cfg(k), lojas = db.prepare('SELECT l.*, (SELECT COUNT(*) FROM fechamentos WHERE loja_id = l.id) n FROM lojas l ORDER BY nome').all();
   const ultimosAlertas = db.prepare("SELECT acao, quando FROM log WHERE ref = 'alertas' ORDER BY id DESC LIMIT 15").all();
   const temSenha = !!v('smtp_pass'), semSmtp = !v('smtp_host');
-  const aba = ['email', 'alertas', 'lojas'].includes(req.query.aba) ? req.query.aba : 'email';
-  const nav = html`<nav class="seg abas-cfg" aria-label="Seções das configurações">${[['email', 'E-mail'], ['alertas', 'Alertas'], ['lojas', 'Lojas e pagamentos']].map(([k, t]) => html`<a href="/config?aba=${k}" class="${k === aba ? 'on' : ''}" ${k === aba ? new Raw('aria-current="page"') : ''}>${t}${k === 'email' && semSmtp ? html`<span class="c" title="Falta configurar o servidor de e-mail">!</span>` : ''}</a>`)}</nav>`;
+  const aba = ['email', 'alertas', 'lojas', 'entregadores'].includes(req.query.aba) ? req.query.aba : 'email';
+  const nav = html`<nav class="seg abas-cfg" aria-label="Seções das configurações">${[['email', 'E-mail'], ['alertas', 'Alertas'], ['lojas', 'Lojas e pagamentos'], ['entregadores', 'Entregadores']].map(([k, t]) => html`<a href="/config?aba=${k}" class="${k === aba ? 'on' : ''}" ${k === aba ? new Raw('aria-current="page"') : ''}>${t}${k === 'email' && semSmtp ? html`<span class="c" title="Falta configurar o servidor de e-mail">!</span>` : ''}</a>`)}</nav>`;
   const email = html`<div class="split">
 <form method="post" action="/config" class="stack">
 ${semSmtp ? html`<div class="alert warn">${icone('alerta')}<div><b>Servidor de e-mail ainda não configurado</b>Enquanto isso, os e-mails não saem: ficam salvos no servidor (pasta data/emails) e o fechamento mostra o aviso.</div></div>` : ''}
@@ -1537,13 +1592,23 @@ ${ultimosAlertas.length ? html`<details class="fold" style="margin-top:8px"><sum
 <div class="card-f"><button class="btn btn-pri">${icone('check')} Salvar alertas</button></div></form>`;
   const calCampos = (p, nome, cal) => html`<div class="field"><label for="${p}-nome">Nome no Agilizone</label><input id="${p}-nome" name="nome" value="${nome}" required></div>
 <div class="field"><label for="${p}-cal">Dias de pagamento</label><input id="${p}-cal" name="calendario" value="${cal}" required><p class="hint">Formato <b>dia: dias de referência</b>, separados por ponto e vírgula. Ex.: <b>seg: sex sab dom; sex: seg ter qua qui</b> = segunda paga sexta a domingo; sexta paga segunda a quinta.</p></div>`;
+  const agzCampos = (p, l) => html`<fieldset class="agz"><legend>Conexão com o Agilizone (API)</legend><div class="fgrid"><div class="field"><label for="${p}-cid">Client ID</label><input id="${p}-cid" name="agz_client_id" value="${l.agz_client_id || ''}" autocomplete="off"></div>
+<div class="field"><label for="${p}-csec">Client Secret</label><input id="${p}-csec" name="agz_client_secret" type="password" placeholder="${l.agz_client_secret ? '•••••••• (mantido)' : ''}" autocomplete="new-password"></div></div>
+<p class="hint">Credenciais desta loja, entregues pelo Agilizone. Com elas o despachante importa direto, sem arquivos. Deixe o secret vazio para manter o atual; apague o Client ID para desligar.</p></fieldset>`;
+  const ents = aba === 'entregadores' ? db.prepare('SELECT * FROM motoboys WHERE ativo = 1 ORDER BY nome COLLATE NOCASE').all() : [];
+  const entTab = html`<section class="card" aria-labelledby="ent-t"><div class="card-h"><span class="hico">${icone('moto')}</span><div class="t"><h2 id="ent-t">Entregadores e chaves PIX</h2><p>${ents.length} cadastrados. O Agilizone não envia a chave PIX pela API: ela vem daqui. Clique em um entregador para editar.</p></div></div>
+<div class="card-b"><form method="post" action="/config/entregadores/importar" enctype="multipart/form-data" class="ent-imp"><div class="field"><label for="ent-csv">Carregar chaves de um Resumo (.csv)</label><input id="ent-csv" type="file" name="resumo" accept=".csv,text/csv" required><p class="hint">Use o CSV de "Exportar Resumo" do Agilizone, sem abrir no Excel. Atualiza PIX e CPF de quem já existe e cadastra quem falta. Chaves quebradas (como 5,587E+12) são recusadas.</p></div><button class="btn btn-sec">${icone('subir', 'sm')} Importar chaves</button></form>
+<div class="field" style="margin-top:16px"><label for="ent-busca">Buscar</label><input id="ent-busca" type="search" data-busca=".lista-ed.ent > details" placeholder="Nome do entregador"></div></div>
+<div class="lista-ed ent">${ents.map((m) => html`<details><summary><span class="nome-l">${m.nome}</span><span class="cal">${m.pix || 'sem PIX'}</span>${icone('chevron', 'chev')}</summary>
+<div class="corpo"><form method="post" action="/config/entregadores/${m.id}"><div class="field"><label for="e${m.id}-pix">Chave PIX</label><input id="e${m.id}-pix" name="pix" value="${m.pix || ''}" maxlength="120" autocomplete="off"></div>
+<div class="field"><label for="e${m.id}-cpf">CPF</label><input id="e${m.id}-cpf" name="cpf" value="${m.cpf || ''}" maxlength="20" autocomplete="off"></div><button class="btn btn-pri">${icone('check', 'sm')} Salvar</button></form></div></details>`)}</div></section>`;
   const lojasTab = html`<section class="card" aria-labelledby="lojas-t"><div class="card-h"><span class="hico">${icone('loja')}</span><div class="t"><h2 id="lojas-t">Lojas e dias de pagamento</h2><p>O nome precisa ser <b>igual ao do Agilizone</b>. Clique em uma loja para editar.</p></div><button type="button" class="btn btn-sec" data-abre="dlg-loja">${icone('mais', 'sm')} Nova loja</button></div>
 <div class="lista-cab lojas" aria-hidden="true"><span>Loja</span><span>Quando paga</span><span>Fechamentos</span><span></span></div>
-<div class="lista-ed lojas">${lojas.map((l) => html`<details><summary><span class="nome-l">${l.nome}</span><span class="cal">${AG.textoCalendario(calendarioDa(l))}</span><span class="sub">${l.n} fechamento(s)</span>${icone('chevron', 'chev')}</summary>
-<div class="corpo"><form method="post" action="/config/lojas/${l.id}">${calCampos(`l${l.id}`, l.nome, l.calendario || AG.PADRAO)}<button class="btn btn-pri">${icone('check', 'sm')} Salvar loja</button></form></div></details>`)}</div></section>
-<dialog id="dlg-loja" class="dlg" aria-labelledby="loja-t"><form method="post" action="/config/lojas"><h2 id="loja-t">Nova loja</h2>${calCampos('nl', '', AG.PADRAO)}
+<div class="lista-ed lojas">${lojas.map((l) => html`<details><summary><span class="nome-l">${l.nome}${AGZ_API.configurada(l) ? html` <span class="badge ok">API</span>` : ''}</span><span class="cal">${AG.textoCalendario(calendarioDa(l))}</span><span class="sub">${l.n} fechamento(s)</span>${icone('chevron', 'chev')}</summary>
+<div class="corpo"><form method="post" action="/config/lojas/${l.id}">${calCampos(`l${l.id}`, l.nome, l.calendario || AG.PADRAO)}${agzCampos(`l${l.id}`, l)}<button class="btn btn-pri">${icone('check', 'sm')} Salvar loja</button></form>${AGZ_API.configurada(l) ? html`<form method="post" action="/config/lojas/${l.id}/agilizone" style="margin-top:10px"><button class="btn btn-sec">${icone('check', 'sm')} Testar conexão com o Agilizone</button></form>` : ''}</div></details>`)}</div></section>
+<dialog id="dlg-loja" class="dlg" aria-labelledby="loja-t"><form method="post" action="/config/lojas"><h2 id="loja-t">Nova loja</h2>${calCampos('nl', '', AG.PADRAO)}${agzCampos('nl', {})}
 <div class="acoes-dlg"><button type="button" class="btn btn-ghost" data-fecha>Cancelar</button><button class="btn btn-pri">${icone('mais')} Adicionar loja</button></div></form></dialog>`;
-  res.send(page(req, { titulo: 'Configurações', eyebrow: 'Administração', sub: 'E-mail da solicitação de pagamento, alertas e lojas. Só a TI vê esta tela.', css: '/marca/admin.css', js: '/marca/admin.js' }, html`${nav}${aba === 'alertas' ? alertas : aba === 'lojas' ? lojasTab : email}`));
+  res.send(page(req, { titulo: 'Configurações', eyebrow: 'Administração', sub: 'E-mail da solicitação de pagamento, alertas, lojas e entregadores. Só o suporte vê esta tela.', css: '/marca/admin.css', js: '/marca/admin.js' }, html`${nav}${aba === 'alertas' ? alertas : aba === 'lojas' ? lojasTab : aba === 'entregadores' ? entTab : email}`));
 });
 
 app.post('/config', so((r) => r.user.perfil === 'admin'), (req, res) => {
@@ -1580,11 +1645,58 @@ const salvaLoja = (req, res) => {
   if (dono && dono.id !== id) throw falha('Já existe uma loja com esse nome.');
   let cal;
   if (req.body.calendario != null) { try { cal = AG.lerCalendario(req.body.calendario); } catch (e) { throw falha(`Calendário de pagamento inválido: ${e.message}`); } }
-  if (id) db.prepare('UPDATE lojas SET nome = ?, calendario = COALESCE(?, calendario) WHERE id = ?').run(nome, cal ? String(req.body.calendario).trim() : null, id);
-  else db.prepare('INSERT INTO lojas (nome, calendario) VALUES (?, ?)').run(nome, cal ? String(req.body.calendario).trim() : AG.PADRAO);
-  log(req.user.id, 'config', `${id ? 'Alterou loja #' + id : 'Criou loja'} "${nome}"${cal ? ` · pagamentos: ${AG.textoCalendario(cal)}` : ''}`);
+  const agzId = req.body.agz_client_id == null ? null : String(req.body.agz_client_id).trim().slice(0, 200), agzSec = String(req.body.agz_client_secret || '').trim().slice(0, 400);
+  if (id) {
+    db.prepare('UPDATE lojas SET nome = ?, calendario = COALESCE(?, calendario), agz_client_id = COALESCE(?, agz_client_id), agz_client_secret = COALESCE(?, agz_client_secret) WHERE id = ?').run(nome, cal ? String(req.body.calendario).trim() : null, agzId || null, agzSec || null, id);
+    if (agzId === '') db.prepare('UPDATE lojas SET agz_client_id = NULL, agz_client_secret = NULL WHERE id = ?').run(id);
+  } else db.prepare('INSERT INTO lojas (nome, calendario, agz_client_id, agz_client_secret) VALUES (?, ?, ?, ?)').run(nome, cal ? String(req.body.calendario).trim() : AG.PADRAO, agzId || null, agzSec || null);
+  log(req.user.id, 'config', `${id ? 'Alterou loja #' + id : 'Criou loja'} "${nome}"${cal ? ` · pagamentos: ${AG.textoCalendario(cal)}` : ''}${agzSec || agzId === '' ? ' · credenciais do Agilizone alteradas' : ''}`);
   volta(res, '/config?aba=lojas', 'ok', 'Loja salva.');
 };
+app.post('/config/lojas/:id/agilizone', so((r) => r.user.perfil === 'admin'), async (req, res, next) => {
+  const l = db.prepare('SELECT * FROM lojas WHERE id = ?').get(Number(req.params.id));
+  if (!l) return next(falha('Loja não encontrada.', 404));
+  if (!AGZ_API.configurada(l)) return volta(res, '/config?aba=lojas', 'erro', `${l.nome}: cadastre o Client ID e o Client Secret e salve antes de testar.`);
+  try {
+    const t = await AGZ_API.testa(l);
+    if (t.taxa === false) return volta(res, '/config?aba=lojas', 'erro', `${l.nome}: conectou, mas o Agilizone não está enviando a taxa do entregador. Peça ao desenvolvedor para liberar o escopo DELIVERYMAN_FEES.`);
+    volta(res, '/config?aba=lojas', 'ok', `${l.nome}: conexão com o Agilizone funcionando${t.total != null ? ` (${t.total} pedidos nos últimos 7 dias)` : ''}.`);
+  } catch (e) {
+    if (!e.publico) return next(e);
+    volta(res, '/config?aba=lojas', 'erro', `${l.nome}: ${e.message}`);
+  }
+});
+
+// Cadastro de entregadores: a chave PIX não vem pela API do Agilizone, então fica aqui (ligada ao id do entregador no Agilizone).
+app.post('/config/entregadores/importar', so((r) => r.user.perfil === 'admin'), umResumo, (req, res) => {
+  if (!req.file) throw falha('Escolha o arquivo do Resumo (.csv).');
+  const rows = lerResumo(req.file.buffer), ruins = [];
+  let ok = 0, novos = 0;
+  tx(() => {
+    for (const r of rows) {
+      if (!r.pix) continue;
+      if (!pixValido(r.pix)) { ruins.push(r.entregador); continue; }
+      let m = db.prepare('SELECT id FROM motoboys WHERE nome = ? COLLATE NOCASE').get(r.entregador);
+      if (!m) { m = { id: Number(db.prepare('INSERT INTO motoboys (nome) VALUES (?)').run(r.entregador).lastInsertRowid) }; novos++; }
+      db.prepare('UPDATE motoboys SET pix = ?, cpf = COALESCE(?, cpf) WHERE id = ?').run(r.pix, r.cpf, m.id);
+      ok++;
+    }
+  });
+  log(req.user.id, 'config', `Importou chaves PIX do Resumo ${req.file.originalname}: ${ok} salvas (${novos} entregadores novos), ${ruins.length} recusadas`);
+  const msg = `${ok} chave(s) PIX salva(s)${novos ? `, ${novos} entregador(es) novo(s)` : ''}.${ruins.length ? ` ${ruins.length} com chave inválida (provavelmente o arquivo foi aberto no Excel): ${ruins.join(', ')}. Baixe o Resumo de novo no Agilizone.` : ''}`;
+  volta(res, '/config?aba=entregadores', ok ? 'ok' : 'erro', ok || ruins.length ? msg : 'O Resumo não tem nenhuma chave PIX.');
+});
+app.post('/config/entregadores/:id', so((r) => r.user.perfil === 'admin'), (req, res) => {
+  const m = db.prepare('SELECT id, nome FROM motoboys WHERE id = ?').get(Number(req.params.id));
+  if (!m) throw falha('Entregador não encontrado.', 404);
+  const pix = String(req.body.pix || '').trim(), cpf = String(req.body.cpf || '').trim();
+  if (pix && !pixValido(pix)) throw falha('Chave PIX inválida. Use CPF, CNPJ, celular (com ou sem +55), e-mail ou chave aleatória.');
+  if (cpf && !/^[\d.\-\s]{11,14}$/.test(cpf)) throw falha('CPF inválido.');
+  db.prepare('UPDATE motoboys SET pix = ?, cpf = ? WHERE id = ?').run(pix || null, cpf || null, m.id);
+  log(req.user.id, 'config', `Cadastro de ${m.nome}: PIX ${pix ? 'alterado' : 'removido'}`);
+  volta(res, '/config?aba=entregadores', 'ok', `${m.nome}: salvo.`);
+});
+
 app.post('/config/lojas', so((r) => r.user.perfil === 'admin'), salvaLoja);
 app.post('/config/lojas/:id', so((r) => r.user.perfil === 'admin'), salvaLoja);
 

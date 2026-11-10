@@ -454,3 +454,16 @@ body.auth .erro-pag{grid-template-columns:1fr;margin:0}
 
 /* Aviso "não abra os arquivos" na importação: destacado */
 .aviso-abrir{border-width:2px;border-left-width:6px;padding:16px 18px;font-size:15px;line-height:1.5}.aviso-abrir>div>b{display:block;font-size:16.5px;margin-bottom:6px}.aviso-abrir p b{display:inline;font-size:inherit;margin:0}.aviso-abrir p{margin:4px 0 0}.aviso-abrir>.ico,.aviso-abrir>svg{width:26px;height:26px;flex:none}
+
+/* API do Agilizone: cartão de importação, alternativa por arquivo, credenciais da loja e cadastro de entregadores */
+.importar-api{margin-bottom:16px;border-color:var(--brand);box-shadow:0 10px 26px -18px rgba(239,118,45,.6)}
+.importar-api .api-t{font-size:20px;font-weight:800;letter-spacing:-.01em;margin:0 0 4px}
+.importar-api .api-d{color:var(--tx-2);margin:0 0 8px}
+.alt-arq{margin:0 0 16px}
+.alt-arq>summary{cursor:pointer;font-weight:700;color:var(--tx-2);padding:10px 2px;list-style:none}
+.alt-arq>summary::-webkit-details-marker{display:none}
+.alt-arq>summary::before{content:'\25B8';display:inline-block;margin-right:8px;transition:transform .15s}
+.alt-arq[open]>summary::before{transform:rotate(90deg)}
+fieldset.agz{border:1px solid var(--bd);border-radius:10px;padding:12px 14px;margin:0 0 14px;min-width:0}
+fieldset.agz legend{font-size:13px;font-weight:700;color:var(--tx-2);padding:0 6px}
+.ent-imp{display:grid;gap:10px;justify-items:start}

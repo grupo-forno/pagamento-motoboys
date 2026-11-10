@@ -94,3 +94,12 @@ cd /opt/motoboys && sudo git pull && sudo npm ci --omit=dev && sudo systemctl re
 ```
 
 Copie os backups para fora da VPS de vez em quando (Drive, outro servidor), porque se a VPS morrer os backups vão junto.
+
+## Importação direto do Agilizone (API v3)
+
+Em **Configurações > Lojas**, o admin cadastra o Client ID e o Client Secret de cada loja e usa **Testar conexão**. Com a loja conectada, a tela de importar mostra **Importar direto do Agilizone**: busca os pedidos finalizados do período (06:00 a 06:00, horário de Teresina) e a taxa de cada entregador (`deliverymanFee`). A importação por arquivo continua como alternativa.
+
+- A API não traz chave PIX nem CPF: ficam em **Configurações > Entregadores** (dá para carregar de um Resumo .csv). O entregador é ligado pelo id do Agilizone.
+- A API não traz Ocorrências nem acertos já feitos ("Já pago"): se precisar deles, anexe o Resumo (.csv) ao fechamento.
+- O escopo `DELIVERYMAN_FEES` precisa estar liberado para a credencial; sem ele a importação é recusada.
+- Variável opcional `AGILIZONE_URL` (padrão: produção). O Client Secret fica no banco, como a senha do SMTP.

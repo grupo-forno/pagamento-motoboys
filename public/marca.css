@@ -464,6 +464,4 @@ body.auth .erro-pag{grid-template-columns:1fr;margin:0}
 .alt-arq>summary::-webkit-details-marker{display:none}
 .alt-arq>summary::before{content:'\25B8';display:inline-block;margin-right:8px;transition:transform .15s}
 .alt-arq[open]>summary::before{transform:rotate(90deg)}
-fieldset.agz{border:1px solid var(--bd);border-radius:10px;padding:12px 14px;margin:0 0 14px;min-width:0}
-fieldset.agz legend{font-size:13px;font-weight:700;color:var(--tx-2);padding:0 6px}
 .ent-imp{display:grid;gap:10px;justify-items:start}

@@ -7,6 +7,7 @@ const { spawn } = require('node:child_process');
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-api-'));
 process.env.DATA_DIR = DIR;
 const { db, hashSenha } = require('./db');
+const { variaveis } = require('./agilizone');
 const PORT = 3800 + Math.floor(Math.random() * 90), B = `http://127.0.0.1:${PORT}`;
 let srv, mock, loja;
 
@@ -29,7 +30,9 @@ before(async () => {
   loja = db.prepare("SELECT id FROM lojas WHERE nome LIKE '%SUL'").get().id;
   const user = (login, perfil, l) => db.prepare('INSERT INTO usuarios (nome, login, senha, perfil, loja_id) VALUES (?,?,?,?,?)').run(login, login, hashSenha('senha12345'), perfil, l);
   user('desp', 'despachante', loja); user('adm', 'admin', null);
-  srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '0', EMAIL_SO_ARQUIVO: '1', AGILIZONE_URL: `http://127.0.0.1:${mock.address().port}` } });
+  // Credenciais só no ambiente do servidor (variáveis derivadas do nome da loja), nunca no banco.
+  const v = variaveis(db.prepare('SELECT nome FROM lojas WHERE id = ?').get(loja));
+  srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '0', EMAIL_SO_ARQUIVO: '1', AGILIZONE_URL: `http://127.0.0.1:${mock.address().port}`, [v.id]: 'cid', [v.secret]: 'segredo-api' } });
   srv.stderr.on('data', (d) => process.stderr.write(d));
   await new Promise((ok, erro) => { srv.stdout.on('data', (d) => String(d).includes('Pagamento Entregadores') && ok()); srv.on('exit', erro); });
 });
@@ -39,15 +42,13 @@ const entra = async (login) => (await fetch(`${B}/login`, { method: 'POST', body
 const get = async (ck, url) => (await fetch(B + url, { headers: { cookie: ck }, redirect: 'manual' })).text();
 const post = async (ck, url, dados) => (await fetch(B + url, { method: 'POST', headers: { cookie: ck }, body: new URLSearchParams(dados), redirect: 'manual' })).headers.get('location') || '';
 
-test('credenciais: salvas pelo admin, nunca aparecem na tela, e a conexão é testada', async () => {
+test('credenciais: só no ambiente do servidor; a tela não tem campo nem valor, só o nome das variáveis, e a conexão é testada', async () => {
   const adm = await entra('adm');
-  assert.match(await post(adm, `/config/lojas/${loja}`, { nome: db.prepare('SELECT nome FROM lojas WHERE id = ?').get(loja).nome, agz_client_id: 'cid', agz_client_secret: 'segredo-api' }), /ok=/);
   const tela = await get(adm, '/config?aba=lojas');
-  assert.ok(!tela.includes('segredo-api') && tela.includes('(mantido)') && tela.includes('Testar conexão'));
+  assert.ok(!tela.includes('segredo-api') && !tela.includes('agz_client') && !tela.includes('name="cid"') && tela.includes('Testar conexão'));
+  const outra = db.prepare('SELECT nome FROM lojas WHERE id <> ? ORDER BY id LIMIT 1').get(loja);
+  assert.ok(tela.includes(variaveis(outra).id), 'loja sem credencial mostra qual variável definir');
   assert.match(await post(adm, `/config/lojas/${loja}/agilizone`, {}), /ok=/);
-  // Salvar de novo com o secret vazio mantém o atual.
-  await post(adm, `/config/lojas/${loja}`, { nome: db.prepare('SELECT nome FROM lojas WHERE id = ?').get(loja).nome, agz_client_id: 'cid', agz_client_secret: '' });
-  assert.strictEqual(db.prepare('SELECT agz_client_secret s FROM lojas WHERE id = ?').get(loja).s, 'segredo-api');
 });
 
 test('importa pelo Agilizone: pedidos, total por entregador, id ligado e PIX do cadastro; segunda vez é recusada', async () => {

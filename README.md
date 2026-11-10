@@ -97,9 +97,9 @@ Copie os backups para fora da VPS de vez em quando (Drive, outro servidor), porq
 
 ## Importação direto do Agilizone (API v3)
 
-Em **Configurações > Lojas**, o admin cadastra o Client ID e o Client Secret de cada loja e usa **Testar conexão**. Com a loja conectada, a tela de importar mostra **Importar direto do Agilizone**: busca os pedidos finalizados do período (06:00 a 06:00, horário de Teresina) e a taxa de cada entregador (`deliverymanFee`). A importação por arquivo continua como alternativa.
+As credenciais de cada loja ficam **só nas variáveis de ambiente do servidor** (nunca no banco nem na tela): `AGILIZONE_<LOJA>_ID` e `AGILIZONE_<LOJA>_SECRET`, com o nome da loja em maiúsculas, sem acento e com `_` no lugar de espaços (ex.: `AGILIZONE_FORNO_PAULISTA_DIRCEU_ID`). Em **Configurações > Lojas** aparece o nome exato das variáveis de cada loja e o botão **Testar conexão**. Com a loja conectada, a tela de importar mostra **Importar direto do Agilizone**: busca os pedidos finalizados do período (06:00 a 06:00, horário de Teresina) e a taxa de cada entregador (`deliverymanFee`). A importação por arquivo continua como alternativa.
 
 - A API não traz chave PIX nem CPF: ficam em **Configurações > Entregadores** (dá para carregar de um Resumo .csv). O entregador é ligado pelo id do Agilizone.
 - A API não traz Ocorrências nem acertos já feitos ("Já pago"): se precisar deles, anexe o Resumo (.csv) ao fechamento.
 - O escopo `DELIVERYMAN_FEES` precisa estar liberado para a credencial; sem ele a importação é recusada.
-- Variável opcional `AGILIZONE_URL` (padrão: produção). O Client Secret fica no banco, como a senha do SMTP.
+- Variável opcional `AGILIZONE_URL` (padrão: produção).

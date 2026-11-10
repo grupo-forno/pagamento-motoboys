@@ -98,7 +98,8 @@ CREATE TABLE IF NOT EXISTS log (
 const temColuna = (t, c) => !!db.prepare(`SELECT 1 FROM pragma_table_info('${t}') WHERE name = ?`).get(c);
 if (!temColuna('resumo', 'pago')) db.exec('ALTER TABLE resumo ADD COLUMN pago INTEGER NOT NULL DEFAULT 0');
 if (!temColuna('lojas', 'calendario')) db.exec('ALTER TABLE lojas ADD COLUMN calendario TEXT'); // dias de pagamento (agenda.js)
-if (!temColuna('lojas', 'agz_client_id')) db.exec('ALTER TABLE lojas ADD COLUMN agz_client_id TEXT; ALTER TABLE lojas ADD COLUMN agz_client_secret TEXT'); // credenciais da API do Agilizone (agilizone.js)
+// As credenciais do Agilizone ficam só no ambiente do servidor (agilizone.js), nunca no banco.
+if (temColuna('lojas', 'agz_client_id')) db.exec('UPDATE lojas SET agz_client_id = NULL, agz_client_secret = NULL');
 if (!temColuna('motoboys', 'agz_id')) db.exec('ALTER TABLE motoboys ADD COLUMN agz_id INTEGER; CREATE UNIQUE INDEX IF NOT EXISTS motoboys_agz ON motoboys (agz_id) WHERE agz_id IS NOT NULL'); // id do entregador no Agilizone
 if (!temColuna('fechamentos', 'arquivado_em')) db.exec('ALTER TABLE fechamentos ADD COLUMN arquivado_em TEXT'); // arquivado: fora da lista e não conta como válido
 // Tabelas com UNIQUE fixo da versão anterior: recria sem ele (procedimento do SQLite), copiando os dados.

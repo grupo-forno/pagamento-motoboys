@@ -4,7 +4,17 @@ const { diaOperacional } = require('./importar');
 
 const base = () => (process.env.AGILIZONE_URL || 'https://api.agilizone.com/agilizone/v3').replace(/\/$/, '');
 const erro = (msg) => Object.assign(new Error(msg), { publico: true });
-const configurada = (l) => !!(l && l.agz_client_id && l.agz_client_secret);
+// Credenciais só no ambiente do servidor (nunca no banco nem na tela): AGILIZONE_<LOJA>_ID e AGILIZONE_<LOJA>_SECRET,
+// com <LOJA> = nome da loja em maiúsculas, sem acento e com _ no lugar de espaços e símbolos (ex.: AGILIZONE_FORNO_PAULISTA_DIRCEU_ID).
+const variaveis = (l) => {
+  const s = String(l?.nome || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '');
+  return { id: `AGILIZONE_${s}_ID`, secret: `AGILIZONE_${s}_SECRET` };
+};
+const credenciais = (l) => {
+  const v = variaveis(l), id = (process.env[v.id] || '').trim(), secret = (process.env[v.secret] || '').trim();
+  return id && secret ? { id, secret } : null;
+};
+const configurada = (l) => !!credenciais(l);
 const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 const tokens = new Map(); // "id:secret" -> { token, exp }
 
@@ -21,10 +31,12 @@ async function chama(url, opts) {
 }
 
 async function token(l, renova) {
-  const k = `${l.agz_client_id}:${l.agz_client_secret}`, c = tokens.get(k);
+  const cr = credenciais(l);
+  if (!cr) throw erro(`A loja ${l.nome} ainda não tem as credenciais do Agilizone no servidor.`);
+  const k = `${cr.id}:${cr.secret}`, c = tokens.get(k);
   if (!renova && c && c.exp > Date.now()) return c.token;
-  const r = await chama(`${base()}/auth/token`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clientId: l.agz_client_id, clientSecret: l.agz_client_secret }) });
-  if (r.status === 400 || r.status === 401) throw erro(`O Agilizone recusou as credenciais da loja ${l.nome}. Confira o Client ID e o Client Secret em Configurações > Lojas.`);
+  const r = await chama(`${base()}/auth/token`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clientId: cr.id, clientSecret: cr.secret }) });
+  if (r.status === 400 || r.status === 401) throw erro(`O Agilizone recusou as credenciais da loja ${l.nome}. Confira as variáveis ${variaveis(l).id} e ${variaveis(l).secret} no servidor.`);
   if (!r.ok) throw erro(`O Agilizone não respondeu (erro ${r.status}). Tente de novo em instantes.`);
   const j = await r.json();
   tokens.set(k, { token: j.access_token, exp: Date.now() + Math.max((j.expires_in || 3600) - 300, 60) * 1000 });
@@ -84,4 +96,4 @@ async function testa(l) {
   return { total: j.total, taxa: j.data.length ? j.data.every((o) => typeof o.deliverymanFee === 'number') : null };
 }
 
-module.exports = { configurada, pedidos, paraImportacao, testa };
+module.exports = { configurada, variaveis, pedidos, paraImportacao, testa };

@@ -867,7 +867,7 @@ async function importarApi(req, res) {
   const u = req.user, hoje = agora().data;
   const l = db.prepare('SELECT * FROM lojas WHERE id = ?').get(u.perfil === 'admin' ? Number(req.body.loja) : u.loja_id);
   if (!l) throw falha('Escolha a loja.');
-  if (!AGZ_API.configurada(l)) throw falha('Esta loja ainda não está ligada ao Agilizone. Peça ao suporte para cadastrar as credenciais em Configurações > Lojas.');
+  if (!AGZ_API.configurada(l)) throw falha('Esta loja ainda não está ligada ao Agilizone. Peça ao suporte para configurar as credenciais da loja no servidor.');
   const p = agenda([l], AG.soma(hoje, -14), AG.soma(hoje, 7)).find((x) => x.pagamento === String(req.body.p || ''));
   if (!p) throw falha('Esse pagamento não está na agenda. Volte e escolha o período.');
   if (p.f) throw Object.assign(falha(`Esse pagamento já tem fechamento (#${p.f.id}). Continue por ele; se estava errado, arquive-o e importe de novo.`), { abrir: p.f.id });
@@ -1592,9 +1592,8 @@ ${ultimosAlertas.length ? html`<details class="fold" style="margin-top:8px"><sum
 <div class="card-f"><button class="btn btn-pri">${icone('check')} Salvar alertas</button></div></form>`;
   const calCampos = (p, nome, cal) => html`<div class="field"><label for="${p}-nome">Nome no Agilizone</label><input id="${p}-nome" name="nome" value="${nome}" required></div>
 <div class="field"><label for="${p}-cal">Dias de pagamento</label><input id="${p}-cal" name="calendario" value="${cal}" required><p class="hint">Formato <b>dia: dias de referência</b>, separados por ponto e vírgula. Ex.: <b>seg: sex sab dom; sex: seg ter qua qui</b> = segunda paga sexta a domingo; sexta paga segunda a quinta.</p></div>`;
-  const agzCampos = (p, l) => html`<fieldset class="agz"><legend>Conexão com o Agilizone (API)</legend><div class="fgrid"><div class="field"><label for="${p}-cid">Client ID</label><input id="${p}-cid" name="agz_client_id" value="${l.agz_client_id || ''}" autocomplete="off"></div>
-<div class="field"><label for="${p}-csec">Client Secret</label><input id="${p}-csec" name="agz_client_secret" type="password" placeholder="${l.agz_client_secret ? '•••••••• (mantido)' : ''}" autocomplete="new-password"></div></div>
-<p class="hint">Credenciais desta loja, entregues pelo Agilizone. Com elas o despachante importa direto, sem arquivos. Deixe o secret vazio para manter o atual; apague o Client ID para desligar.</p></fieldset>`;
+  // As credenciais do Agilizone não passam pela tela: ficam nas variáveis do servidor. Aqui só aparece o estado e o nome das variáveis.
+  const agzStatus = (l) => { const v = AGZ_API.variaveis(l); return AGZ_API.configurada(l) ? html`<p class="hint">${icone('check', 'sm')} Conexão com o Agilizone configurada no servidor.</p>` : html`<p class="hint">Para importar direto do Agilizone, defina no servidor (EasyPanel > Ambiente) as variáveis <b>${v.id}</b> e <b>${v.secret}</b> com o Client ID e o Client Secret desta loja, e reinicie o serviço.</p>`; };
   const ents = aba === 'entregadores' ? db.prepare('SELECT * FROM motoboys WHERE ativo = 1 ORDER BY nome COLLATE NOCASE').all() : [];
   const entTab = html`<section class="card" aria-labelledby="ent-t"><div class="card-h"><span class="hico">${icone('moto')}</span><div class="t"><h2 id="ent-t">Entregadores e chaves PIX</h2><p>${ents.length} cadastrados. O Agilizone não envia a chave PIX pela API: ela vem daqui. Clique em um entregador para editar.</p></div></div>
 <div class="card-b"><form method="post" action="/config/entregadores/importar" enctype="multipart/form-data" class="ent-imp"><div class="field"><label for="ent-csv">Carregar chaves de um Resumo (.csv)</label><input id="ent-csv" type="file" name="resumo" accept=".csv,text/csv" required><p class="hint">Use o CSV de "Exportar Resumo" do Agilizone, sem abrir no Excel. Atualiza PIX e CPF de quem já existe e cadastra quem falta. Chaves quebradas (como 5,587E+12) são recusadas.</p></div><button class="btn btn-sec">${icone('subir', 'sm')} Importar chaves</button></form>
@@ -1605,8 +1604,8 @@ ${ultimosAlertas.length ? html`<details class="fold" style="margin-top:8px"><sum
   const lojasTab = html`<section class="card" aria-labelledby="lojas-t"><div class="card-h"><span class="hico">${icone('loja')}</span><div class="t"><h2 id="lojas-t">Lojas e dias de pagamento</h2><p>O nome precisa ser <b>igual ao do Agilizone</b>. Clique em uma loja para editar.</p></div><button type="button" class="btn btn-sec" data-abre="dlg-loja">${icone('mais', 'sm')} Nova loja</button></div>
 <div class="lista-cab lojas" aria-hidden="true"><span>Loja</span><span>Quando paga</span><span>Fechamentos</span><span></span></div>
 <div class="lista-ed lojas">${lojas.map((l) => html`<details><summary><span class="nome-l">${l.nome}${AGZ_API.configurada(l) ? html` <span class="badge ok">API</span>` : ''}</span><span class="cal">${AG.textoCalendario(calendarioDa(l))}</span><span class="sub">${l.n} fechamento(s)</span>${icone('chevron', 'chev')}</summary>
-<div class="corpo"><form method="post" action="/config/lojas/${l.id}">${calCampos(`l${l.id}`, l.nome, l.calendario || AG.PADRAO)}${agzCampos(`l${l.id}`, l)}<button class="btn btn-pri">${icone('check', 'sm')} Salvar loja</button></form>${AGZ_API.configurada(l) ? html`<form method="post" action="/config/lojas/${l.id}/agilizone" style="margin-top:10px"><button class="btn btn-sec">${icone('check', 'sm')} Testar conexão com o Agilizone</button></form>` : ''}</div></details>`)}</div></section>
-<dialog id="dlg-loja" class="dlg" aria-labelledby="loja-t"><form method="post" action="/config/lojas"><h2 id="loja-t">Nova loja</h2>${calCampos('nl', '', AG.PADRAO)}${agzCampos('nl', {})}
+<div class="corpo"><form method="post" action="/config/lojas/${l.id}">${calCampos(`l${l.id}`, l.nome, l.calendario || AG.PADRAO)}<button class="btn btn-pri">${icone('check', 'sm')} Salvar loja</button></form>${agzStatus(l)}${AGZ_API.configurada(l) ? html`<form method="post" action="/config/lojas/${l.id}/agilizone" style="margin-top:10px"><button class="btn btn-sec">${icone('check', 'sm')} Testar conexão com o Agilizone</button></form>` : ''}</div></details>`)}</div></section>
+<dialog id="dlg-loja" class="dlg" aria-labelledby="loja-t"><form method="post" action="/config/lojas"><h2 id="loja-t">Nova loja</h2>${calCampos('nl', '', AG.PADRAO)}
 <div class="acoes-dlg"><button type="button" class="btn btn-ghost" data-fecha>Cancelar</button><button class="btn btn-pri">${icone('mais')} Adicionar loja</button></div></form></dialog>`;
   res.send(page(req, { titulo: 'Configurações', eyebrow: 'Administração', sub: 'E-mail da solicitação de pagamento, alertas, lojas e entregadores. Só o suporte vê esta tela.', css: '/marca/admin.css', js: '/marca/admin.js' }, html`${nav}${aba === 'alertas' ? alertas : aba === 'lojas' ? lojasTab : aba === 'entregadores' ? entTab : email}`));
 });
@@ -1645,18 +1644,15 @@ const salvaLoja = (req, res) => {
   if (dono && dono.id !== id) throw falha('Já existe uma loja com esse nome.');
   let cal;
   if (req.body.calendario != null) { try { cal = AG.lerCalendario(req.body.calendario); } catch (e) { throw falha(`Calendário de pagamento inválido: ${e.message}`); } }
-  const agzId = req.body.agz_client_id == null ? null : String(req.body.agz_client_id).trim().slice(0, 200), agzSec = String(req.body.agz_client_secret || '').trim().slice(0, 400);
-  if (id) {
-    db.prepare('UPDATE lojas SET nome = ?, calendario = COALESCE(?, calendario), agz_client_id = COALESCE(?, agz_client_id), agz_client_secret = COALESCE(?, agz_client_secret) WHERE id = ?').run(nome, cal ? String(req.body.calendario).trim() : null, agzId || null, agzSec || null, id);
-    if (agzId === '') db.prepare('UPDATE lojas SET agz_client_id = NULL, agz_client_secret = NULL WHERE id = ?').run(id);
-  } else db.prepare('INSERT INTO lojas (nome, calendario, agz_client_id, agz_client_secret) VALUES (?, ?, ?, ?)').run(nome, cal ? String(req.body.calendario).trim() : AG.PADRAO, agzId || null, agzSec || null);
-  log(req.user.id, 'config', `${id ? 'Alterou loja #' + id : 'Criou loja'} "${nome}"${cal ? ` · pagamentos: ${AG.textoCalendario(cal)}` : ''}${agzSec || agzId === '' ? ' · credenciais do Agilizone alteradas' : ''}`);
+  if (id) db.prepare('UPDATE lojas SET nome = ?, calendario = COALESCE(?, calendario) WHERE id = ?').run(nome, cal ? String(req.body.calendario).trim() : null, id);
+  else db.prepare('INSERT INTO lojas (nome, calendario) VALUES (?, ?)').run(nome, cal ? String(req.body.calendario).trim() : AG.PADRAO);
+  log(req.user.id, 'config', `${id ? 'Alterou loja #' + id : 'Criou loja'} "${nome}"${cal ? ` · pagamentos: ${AG.textoCalendario(cal)}` : ''}`);
   volta(res, '/config?aba=lojas', 'ok', 'Loja salva.');
 };
 app.post('/config/lojas/:id/agilizone', so((r) => r.user.perfil === 'admin'), async (req, res, next) => {
   const l = db.prepare('SELECT * FROM lojas WHERE id = ?').get(Number(req.params.id));
   if (!l) return next(falha('Loja não encontrada.', 404));
-  if (!AGZ_API.configurada(l)) return volta(res, '/config?aba=lojas', 'erro', `${l.nome}: cadastre o Client ID e o Client Secret e salve antes de testar.`);
+  if (!AGZ_API.configurada(l)) return volta(res, '/config?aba=lojas', 'erro', `${l.nome}: defina no servidor as variáveis ${AGZ_API.variaveis(l).id} e ${AGZ_API.variaveis(l).secret} antes de testar.`);
   try {
     const t = await AGZ_API.testa(l);
     if (t.taxa === false) return volta(res, '/config?aba=lojas', 'erro', `${l.nome}: conectou, mas o Agilizone não está enviando a taxa do entregador. Peça ao desenvolvedor para liberar o escopo DELIVERYMAN_FEES.`);

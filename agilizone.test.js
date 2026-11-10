@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { paraImportacao, pedidos, configurada } = require('./agilizone');
+const { paraImportacao, pedidos, configurada, variaveis } = require('./agilizone');
 
 const ped = (o) => ({ id: 'a1', orderDisplayNumber: '0001', status: 'COMPLETED', deliveryman: { id: 7, name: 'Kevin' }, deliverymanFee: 7.5, createdAt: '2026-11-09T18:00:00.000Z', ...o });
 
@@ -40,8 +40,10 @@ test('API: lê todas as páginas, manda o token e repete após 429', async () =>
     return Response.json({ data: Array.from({ length: pg === 1 ? 100 : 20 }, (_, i) => ped({ id: `${pg}-${i}` })), page: pg, pageSize: 100, total: 120 });
   };
   try {
-    const l = { nome: 'Teste', agz_client_id: 'idpagina', agz_client_secret: 'segredo' };
-    assert.ok(configurada(l) && !configurada({ agz_client_id: 'x' }));
+    process.env.AGILIZONE_TESTE_ID = 'idpagina'; process.env.AGILIZONE_TESTE_SECRET = 'segredo';
+    const l = { nome: 'Teste' };
+    assert.ok(configurada(l) && !configurada({ nome: 'Outra Loja' }));
+    assert.deepStrictEqual(variaveis({ nome: 'Forno Paulista Distribuição' }), { id: 'AGILIZONE_FORNO_PAULISTA_DISTRIBUICAO_ID', secret: 'AGILIZONE_FORNO_PAULISTA_DISTRIBUICAO_SECRET' });
     const todos = await pedidos(l, '2026-11-01T06:00:00-03:00', '2026-11-08T06:00:00-03:00');
     assert.strictEqual(todos.length, 120);
     assert.ok(chamadas.filter((c) => c[0].includes('/orders')).every((c) => c[1] === 'Bearer tok'));

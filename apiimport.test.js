@@ -23,7 +23,7 @@ before(async () => {
     if (req.headers.authorization !== 'Bearer tok') { res.statusCode = 401; return res.end('{}'); }
     const de = new Date(u.searchParams.get('from')).getTime();
     const o = (id, n, e, fee, h, status = 'COMPLETED') => ({ id, orderDisplayNumber: n, status, deliveryman: e, deliverymanFee: fee, createdAt: new Date(de + h * 36e5).toISOString() });
-    const data = [o('x1', '0001', { id: 7, name: 'Kevin' }, 7.5, 9), o('x2', '0002', { id: 7, name: 'Kevin' }, 10, 10), o('x3', '0001', { id: 8, name: 'Marcos' }, 6, 11), o('x4', '0003', { id: 8, name: 'Marcos' }, 9, 11, 'CANCELED')];
+    const data = [o('x1', '0001', { id: 7, name: 'Kevin' }, 7.5, 9), o('x2', '0002', { id: 7, name: 'Kevin' }, 10, 10), o('x3', '0001', { id: 8, name: 'Marcos' }, 6, 11), o('x4', '0003', { id: 8, name: 'Marcos' }, 9, 11, 'CANCELED'), o('x5', '0004', { id: 9, name: 'Bruna' }, 9, 12, 'CANCELED')];
     res.end(JSON.stringify({ data, page: 1, pageSize: 100, total: data.length }));
   });
   await new Promise((ok) => mock.listen(0, '127.0.0.1', ok));
@@ -67,6 +67,19 @@ test('importa pelo Agilizone: pedidos, total por entregador, id ligado e PIX do 
   const pag = await get(desp, `/fechamentos/${fid}`);
   assert.ok(pag.includes('kevin@pix.com'), 'PIX vem do cadastro');
   assert.match(await post(desp, '/fechamentos/novo/api', { loja, p }), /erro=/);
+});
+
+test('Entregadores: busca todos no Agilizone (cadastra quem falta, com o id), lista os sem PIX e o PIX salvo persiste', async () => {
+  const adm = await entra('adm');
+  assert.match(await post(adm, '/config/entregadores/buscar', {}), /ok=/);
+  const b = db.prepare('SELECT id, nome, pix FROM motoboys WHERE agz_id = 9').get();
+  assert.deepStrictEqual([b.nome, b.pix], ['Bruna', null]);
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM motoboys WHERE agz_id IN (7, 8)').get().n, 2, 'quem já existe não duplica');
+  const sem = await get(adm, '/config?aba=entregadores&f=sem');
+  assert.ok(sem.includes('Bruna') && !sem.includes('Kevin'), 'filtro Sem PIX');
+  assert.match(await post(adm, `/config/entregadores/${b.id}`, { pix: 'bruna@pix.com', cpf: '', f: 'sem' }), /f=sem/);
+  await post(adm, '/config/entregadores/buscar', {}); // buscar de novo não mexe no PIX salvo
+  assert.strictEqual(db.prepare('SELECT pix FROM motoboys WHERE id = ?').get(b.id).pix, 'bruna@pix.com');
 });
 
 test('cadastro de entregadores: só o admin altera; PIX inválido é recusado', async () => {

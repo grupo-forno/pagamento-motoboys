@@ -1594,12 +1594,14 @@ ${ultimosAlertas.length ? html`<details class="fold" style="margin-top:8px"><sum
 <div class="field"><label for="${p}-cal">Dias de pagamento</label><input id="${p}-cal" name="calendario" value="${cal}" required><p class="hint">Formato <b>dia: dias de referência</b>, separados por ponto e vírgula. Ex.: <b>seg: sex sab dom; sex: seg ter qua qui</b> = segunda paga sexta a domingo; sexta paga segunda a quinta.</p></div>`;
   // As credenciais do Agilizone não passam pela tela: ficam nas variáveis do servidor. Aqui só aparece o estado e o nome das variáveis.
   const agzStatus = (l) => { const v = AGZ_API.variaveis(l); return AGZ_API.configurada(l) ? html`<p class="hint">${icone('check', 'sm')} Conexão com o Agilizone configurada no servidor.</p>` : html`<p class="hint">Para importar direto do Agilizone, defina no servidor (EasyPanel > Ambiente) as variáveis <b>${v.id}</b> e <b>${v.secret}</b> com o Client ID e o Client Secret desta loja, e reinicie o serviço.</p>`; };
-  const ents = aba === 'entregadores' ? db.prepare('SELECT * FROM motoboys WHERE ativo = 1 ORDER BY nome COLLATE NOCASE').all() : [];
-  const entTab = html`<section class="card" aria-labelledby="ent-t"><div class="card-h"><span class="hico">${icone('moto')}</span><div class="t"><h2 id="ent-t">Entregadores e chaves PIX</h2><p>${ents.length} cadastrados. O Agilizone não envia a chave PIX pela API: ela vem daqui. Clique em um entregador para editar.</p></div></div>
-<div class="card-b"><form method="post" action="/config/entregadores/importar" enctype="multipart/form-data" class="ent-imp"><div class="field"><label for="ent-csv">Carregar chaves de um Resumo (.csv)</label><input id="ent-csv" type="file" name="resumo" accept=".csv,text/csv" required><p class="hint">Use o CSV de "Exportar Resumo" do Agilizone, sem abrir no Excel. Atualiza PIX e CPF de quem já existe e cadastra quem falta. Chaves quebradas (como 5,587E+12) são recusadas.</p></div><button class="btn btn-sec">${icone('subir', 'sm')} Importar chaves</button></form>
-<div class="field" style="margin-top:16px"><label for="ent-busca">Buscar</label><input id="ent-busca" type="search" data-busca=".lista-ed.ent > details" placeholder="Nome do entregador"></div></div>
-<div class="lista-ed ent">${ents.map((m) => html`<details><summary><span class="nome-l">${m.nome}</span><span class="cal">${m.pix || 'sem PIX'}</span>${icone('chevron', 'chev')}</summary>
-<div class="corpo"><form method="post" action="/config/entregadores/${m.id}"><div class="field"><label for="e${m.id}-pix">Chave PIX</label><input id="e${m.id}-pix" name="pix" value="${m.pix || ''}" maxlength="120" autocomplete="off"></div>
+  const soSem = req.query.f === 'sem', cnt = aba === 'entregadores' ? db.prepare("SELECT COUNT(*) n, SUM(pix IS NULL OR pix = '') sem FROM motoboys WHERE ativo = 1").get() : { n: 0, sem: 0 };
+  const ents = aba === 'entregadores' ? db.prepare(`SELECT * FROM motoboys WHERE ativo = 1${soSem ? " AND (pix IS NULL OR pix = '')" : ''} ORDER BY nome COLLATE NOCASE`).all() : [];
+  const entTab = html`<section class="card" aria-labelledby="ent-t"><div class="card-h"><span class="hico">${icone('moto')}</span><div class="t"><h2 id="ent-t">Entregadores e chaves PIX</h2><p>${cnt.n} cadastrados, ${cnt.sem || 0} sem PIX. O Agilizone não envia a chave PIX pela API: ela fica salva aqui e vale para todos os fechamentos. Clique em um entregador para editar.</p></div></div>
+<div class="card-b"><form method="post" action="/config/entregadores/buscar" class="ent-imp" style="margin-bottom:18px" data-carregando="Buscando os entregadores nas lojas…"><div><b>Trazer do Agilizone</b><p class="hint">Lê os pedidos dos últimos 80 dias de cada loja conectada e cadastra todo entregador que ainda não está aqui, com o id do Agilizone. Depois é só preencher a chave PIX de cada um. Quem já tem PIX salvo não é alterado.</p></div><button class="btn btn-pri">${icone('subir', 'sm')} Buscar entregadores no Agilizone</button></form><form method="post" action="/config/entregadores/importar" enctype="multipart/form-data" class="ent-imp"><div class="field"><label for="ent-csv">Carregar chaves de um Resumo (.csv)</label><input id="ent-csv" type="file" name="resumo" accept=".csv,text/csv" required><p class="hint">Use o CSV de "Exportar Resumo" do Agilizone, sem abrir no Excel. Atualiza PIX e CPF de quem já existe e cadastra quem falta. Chaves quebradas (como 5,587E+12) são recusadas.</p></div><button class="btn btn-sec">${icone('subir', 'sm')} Importar chaves</button></form>
+<nav class="pills" style="margin-top:16px" aria-label="Filtro"><a href="/config?aba=entregadores" class="${soSem ? '' : 'on'}">Todos<span class="c">${cnt.n}</span></a><a href="/config?aba=entregadores&f=sem" class="${soSem ? 'on' : ''}">Sem PIX<span class="c">${cnt.sem || 0}</span></a></nav>
+<div class="field" style="margin-top:12px"><label for="ent-busca">Buscar</label><input id="ent-busca" type="search" data-busca=".lista-ed.ent > details" placeholder="Nome do entregador"></div></div>
+<div class="lista-ed ent">${ents.map((m) => html`<details><summary><span class="nome-l">${m.nome}${m.agz_id ? html` <small class="mut">#${m.agz_id}</small>` : ''}</span><span class="cal">${m.pix || 'sem PIX'}</span>${icone('chevron', 'chev')}</summary>
+<div class="corpo"><form method="post" action="/config/entregadores/${m.id}"><input type="hidden" name="f" value="${soSem ? 'sem' : ''}"><div class="field"><label for="e${m.id}-pix">Chave PIX</label><input id="e${m.id}-pix" name="pix" value="${m.pix || ''}" maxlength="120" autocomplete="off"></div>
 <div class="field"><label for="e${m.id}-cpf">CPF</label><input id="e${m.id}-cpf" name="cpf" value="${m.cpf || ''}" maxlength="20" autocomplete="off"></div><button class="btn btn-pri">${icone('check', 'sm')} Salvar</button></form></div></details>`)}</div></section>`;
   const lojasTab = html`<section class="card" aria-labelledby="lojas-t"><div class="card-h"><span class="hico">${icone('loja')}</span><div class="t"><h2 id="lojas-t">Lojas e dias de pagamento</h2><p>O nome precisa ser <b>igual ao do Agilizone</b>. Clique em uma loja para editar.</p></div><button type="button" class="btn btn-sec" data-abre="dlg-loja">${icone('mais', 'sm')} Nova loja</button></div>
 <div class="lista-cab lojas" aria-hidden="true"><span>Loja</span><span>Quando paga</span><span>Fechamentos</span><span></span></div>
@@ -1663,6 +1665,20 @@ app.post('/config/lojas/:id/agilizone', so((r) => r.user.perfil === 'admin'), as
   }
 });
 
+// Traz do Agilizone todos os entregadores que aparecem nos pedidos recentes das lojas conectadas (a API não tem lista de
+// entregadores) e cadastra quem falta, com o id. A chave PIX de quem já existe não é tocada: o que foi salvo persiste.
+app.post('/config/entregadores/buscar', so((r) => r.user.perfil === 'admin'), async (req, res, next) => {
+  const lojas = db.prepare('SELECT * FROM lojas ORDER BY nome').all().filter((l) => AGZ_API.configurada(l));
+  if (!lojas.length) return volta(res, '/config?aba=entregadores', 'erro', 'Nenhuma loja está ligada ao Agilizone ainda. Defina as variáveis de ambiente da loja (Configurações > Lojas mostra os nomes).');
+  const antes = db.prepare('SELECT COUNT(*) n FROM motoboys').get().n, ids = new Set(), falhas = [];
+  for (const l of lojas) {
+    try { for (const e of await AGZ_API.entregadores(l)) { motoboyDoAgilizone(l, e.id, e.nome); ids.add(e.id); } }
+    catch (e) { if (!e.publico) return next(e); falhas.push(`${l.nome}: ${e.message}`); }
+  }
+  const novos = db.prepare('SELECT COUNT(*) n FROM motoboys').get().n - antes;
+  log(req.user.id, 'config', `Buscou entregadores no Agilizone: ${ids.size} encontrados, ${novos} novos no cadastro${falhas.length ? `; falhou: ${falhas.length} loja(s)` : ''}`);
+  volta(res, '/config?aba=entregadores', falhas.length && !ids.size ? 'erro' : 'ok', `${ids.size} entregador(es) encontrado(s) em ${lojas.length - falhas.length} loja(s); ${novos} novo(s) no cadastro.${falhas.length ? ` Falhou: ${falhas.join(' | ')}` : ''}`);
+});
 // Cadastro de entregadores: a chave PIX não vem pela API do Agilizone, então fica aqui (ligada ao id do entregador no Agilizone).
 app.post('/config/entregadores/importar', so((r) => r.user.perfil === 'admin'), umResumo, (req, res) => {
   if (!req.file) throw falha('Escolha o arquivo do Resumo (.csv).');
@@ -1690,7 +1706,7 @@ app.post('/config/entregadores/:id', so((r) => r.user.perfil === 'admin'), (req,
   if (cpf && !/^[\d.\-\s]{11,14}$/.test(cpf)) throw falha('CPF inválido.');
   db.prepare('UPDATE motoboys SET pix = ?, cpf = ? WHERE id = ?').run(pix || null, cpf || null, m.id);
   log(req.user.id, 'config', `Cadastro de ${m.nome}: PIX ${pix ? 'alterado' : 'removido'}`);
-  volta(res, '/config?aba=entregadores', 'ok', `${m.nome}: salvo.`);
+  volta(res, `/config?aba=entregadores${req.body.f === 'sem' ? '&f=sem' : ''}`, 'ok', `${m.nome}: salvo.`);
 });
 
 app.post('/config/lojas', so((r) => r.user.perfil === 'admin'), salvaLoja);

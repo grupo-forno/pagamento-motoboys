@@ -89,6 +89,15 @@ function paraImportacao(orders, { tz = 'America/Fortaleza', de = '0000-01-01', a
   return { pedidos: lista, resumo: [...por.values()], semEntregador, naoFinalizados, fora };
 }
 
+// Entregadores que aparecem nos pedidos dos últimos dias (a API não tem lista de entregadores): id e nome mais recente.
+// A janela máxima da API é de cerca de 3 meses.
+async function entregadores(l, dias = 80) {
+  const ate = new Date(), de = new Date(ate.getTime() - dias * 864e5), por = new Map();
+  for (const o of await pedidos(l, de.toISOString(), ate.toISOString()))
+    if (o.deliveryman?.id != null && !por.has(o.deliveryman.id)) por.set(o.deliveryman.id, String(o.deliveryman.name || '').trim() || `Entregador ${o.deliveryman.id}`);
+  return [...por].map(([id, nome]) => ({ id, nome }));
+}
+
 // Teste de conexão (Configurações > Lojas): pega o token e olha os últimos pedidos.
 async function testa(l) {
   const ate = new Date(), de = new Date(ate.getTime() - 7 * 864e5);
@@ -96,4 +105,4 @@ async function testa(l) {
   return { total: j.total, taxa: j.data.length ? j.data.every((o) => typeof o.deliverymanFee === 'number') : null };
 }
 
-module.exports = { configurada, variaveis, pedidos, paraImportacao, testa };
+module.exports = { configurada, variaveis, pedidos, entregadores, paraImportacao, testa };

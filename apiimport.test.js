@@ -9,7 +9,7 @@ process.env.DATA_DIR = DIR;
 const { db, hashSenha } = require('./db');
 const { variaveis } = require('./agilizone');
 const PORT = 3800 + Math.floor(Math.random() * 90), B = `http://127.0.0.1:${PORT}`;
-let srv, mock, loja;
+let srv, mock, loja, novoNoAgilizone = false, outroPeriodo = false;
 
 before(async () => {
   // Agilizone de mentira: token só com as credenciais certas; pedidos dentro da janela pedida (from).
@@ -22,8 +22,8 @@ before(async () => {
     }
     if (req.headers.authorization !== 'Bearer tok') { res.statusCode = 401; return res.end('{}'); }
     const de = new Date(u.searchParams.get('from')).getTime();
-    const o = (id, n, e, fee, h, status = 'COMPLETED') => ({ id, orderDisplayNumber: n, status, deliveryman: e, deliverymanFee: fee, createdAt: new Date(de + h * 36e5).toISOString() });
-    const data = [o('x1', '0001', { id: 7, name: 'Kevin' }, 7.5, 9), o('x2', '0002', { id: 7, name: 'Kevin' }, 10, 10), o('x3', '0001', { id: 8, name: 'Marcos' }, 6, 11), o('x4', '0003', { id: 8, name: 'Marcos' }, 9, 11, 'CANCELED'), o('x5', '0004', { id: 9, name: 'Bruna' }, 9, 12, 'CANCELED')];
+    const o = (id, n, e, fee, h, status = 'COMPLETED') => ({ id: outroPeriodo ? id + de : id, orderDisplayNumber: n, status, deliveryman: e, deliverymanFee: fee, createdAt: new Date(de + h * 36e5).toISOString() });
+    const data = [o('x1', '0001', { id: 7, name: 'Kevin' }, 7.5, 9), o('x2', '0002', { id: 7, name: 'Kevin' }, 10, 10), o('x3', '0001', { id: 8, name: 'Marcos' }, 6, 11), o('x4', '0003', { id: 8, name: 'Marcos' }, 9, 11, 'CANCELED'), o('x5', '0004', { id: 9, name: 'Bruna' }, 9, 12, 'CANCELED'), ...(novoNoAgilizone ? [o('x6', '0005', { id: 10, name: 'Novato' }, 9, 13)] : [])];
     res.end(JSON.stringify({ data, page: 1, pageSize: 100, total: data.length }));
   });
   await new Promise((ok) => mock.listen(0, '127.0.0.1', ok));
@@ -32,7 +32,7 @@ before(async () => {
   user('desp', 'despachante', loja); user('adm', 'admin', null);
   // Credenciais só no ambiente do servidor (variáveis derivadas do nome da loja), nunca no banco.
   const v = variaveis(db.prepare('SELECT nome FROM lojas WHERE id = ?').get(loja));
-  srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '0', EMAIL_SO_ARQUIVO: '1', AGILIZONE_URL: `http://127.0.0.1:${mock.address().port}`, [v.id]: 'cid', [v.secret]: 'segredo-api' } });
+  srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '0', SYNC_ENTREGADORES: '0', EMAIL_SO_ARQUIVO: '1', AGILIZONE_URL: `http://127.0.0.1:${mock.address().port}`, [v.id]: 'cid', [v.secret]: 'segredo-api' } });
   srv.stderr.on('data', (d) => process.stderr.write(d));
   await new Promise((ok, erro) => { srv.stdout.on('data', (d) => String(d).includes('Pagamento Entregadores') && ok()); srv.on('exit', erro); });
 });
@@ -52,10 +52,10 @@ test('credenciais: só no ambiente do servidor; a tela não tem campo nem valor,
 });
 
 test('importa pelo Agilizone: pedidos, total por entregador, id ligado e PIX do cadastro; segunda vez é recusada', async () => {
-  db.prepare("INSERT INTO motoboys (nome, pix) VALUES ('Kevin', 'kevin@pix.com')").run(); // já cadastrado por nome: ganha o id do Agilizone
+  db.prepare("INSERT INTO motoboys (nome, pix) VALUES ('Kevin', 'kevin@pix.com')").run(); // homônimo legado: não pode herdar identidade nem Pix só pelo nome
   const desp = await entra('desp');
   const tela = await get(desp, '/fechamentos/novo');
-  assert.ok(tela.includes('Importar direto do Agilizone') && tela.includes('Importar por arquivo (alternativa)'));
+  assert.ok(tela.includes('Importar direto do Agilizone') && tela.includes('Enviar arquivos (alternativa)'));
   const p = /name="p" value="([\d-]+)"/.exec(tela)[1];
   const loc = await post(desp, '/fechamentos/novo/api', { loja, p });
   const fid = Number((/^\/fechamentos\/(\d+)\?/.exec(loc) || [])[1]);
@@ -63,9 +63,12 @@ test('importa pelo Agilizone: pedidos, total por entregador, id ligado e PIX do 
   assert.deepStrictEqual(db.prepare('SELECT chave FROM pedidos WHERE fechamento_id = ? ORDER BY chave').all(fid).map((x) => x.chave), ['agz:x1', 'agz:x2', 'agz:x3']);
   assert.deepStrictEqual(db.prepare('SELECT entregador, pedidos, total FROM resumo WHERE fechamento_id = ? ORDER BY entregador').all(fid).map((x) => [x.entregador, x.pedidos, x.total]), [['Kevin', 2, 1750], ['Marcos', 1, 600]]);
   assert.deepStrictEqual(db.prepare('SELECT nome, agz_id FROM motoboys WHERE agz_id IS NOT NULL ORDER BY nome').all().map((x) => [x.nome, x.agz_id]), [['Kevin', 7], ['Marcos', 8]]);
-  assert.strictEqual(db.prepare("SELECT COUNT(*) n FROM motoboys WHERE nome = 'Kevin'").get().n, 1);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) n FROM motoboys WHERE nome = 'Kevin'").get().n, 2);
   const pag = await get(desp, `/fechamentos/${fid}`);
-  assert.ok(pag.includes('kevin@pix.com'), 'PIX vem do cadastro');
+  assert.ok(!pag.includes('kevin@pix.com'), 'não herda PIX de homônimo sem id confirmado');
+  const kevin = db.prepare('SELECT id FROM motoboys WHERE agz_id = 7').get().id;
+  assert.match(await post(desp, `/fechamentos/${fid}/pix`, { ['pix_' + kevin]: 'kevin@pix.com' }), /ok=/);
+  assert.ok((await get(desp, `/fechamentos/${fid}`)).includes('kevin@pix.com'));
   assert.match(await post(desp, '/fechamentos/novo/api', { loja, p }), /erro=/);
 });
 
@@ -76,10 +79,29 @@ test('Entregadores: busca todos no Agilizone (cadastra quem falta, com o id), li
   assert.deepStrictEqual([b.nome, b.pix], ['Bruna', null]);
   assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM motoboys WHERE agz_id IN (7, 8)').get().n, 2, 'quem já existe não duplica');
   const sem = await get(adm, '/config?aba=entregadores&f=sem');
-  assert.ok(sem.includes('Bruna') && !sem.includes('Kevin'), 'filtro Sem PIX');
+  assert.ok(sem.includes('Bruna') && sem.includes('Marcos'), 'filtro Sem PIX');
   assert.match(await post(adm, `/config/entregadores/${b.id}`, { pix: 'bruna@pix.com', cpf: '', f: 'sem' }), /f=sem/);
   await post(adm, '/config/entregadores/buscar', {}); // buscar de novo não mexe no PIX salvo
   assert.strictEqual(db.prepare('SELECT pix FROM motoboys WHERE id = ?').get(b.id).pix, 'bruna@pix.com');
+});
+
+test('página de Entregadores da loja: lista, salva PIX com autoria, isola outras lojas e cadastra entregador novo do Agilizone', async () => {
+  const desp = await entra('desp');
+  const pag = await get(desp, '/entregadores');
+  assert.ok(['Kevin', 'Marcos', 'Bruna'].every((n) => pag.includes(n)) && pag.includes('Atualizar do Agilizone'));
+  const marcos = db.prepare("SELECT id FROM motoboys WHERE nome = 'Marcos'").get().id;
+  assert.match(await post(desp, `/entregadores/${marcos}`, { pix: '5,587E+12' }), /erro=/);
+  assert.match(await post(desp, `/entregadores/${marcos}`, { pix: 'marcos@pix.com' }), /ok=/);
+  const m = db.prepare('SELECT pix, pix_por FROM entregador_pix WHERE loja_id = ? AND motoboy_id = ?').get(loja, marcos);
+  assert.deepStrictEqual([m.pix, m.pix_por > 0], ['marcos@pix.com', true]);
+  assert.ok((await get(desp, '/entregadores')).includes('marcos@pix.com'), 'a chave persiste');
+  const alheio = Number(db.prepare("INSERT INTO motoboys (nome) VALUES ('De Outra Loja')").run().lastInsertRowid);
+  assert.strictEqual((await fetch(`${B}/entregadores/${alheio}`, { method: 'POST', headers: { cookie: desp }, body: new URLSearchParams({ pix: 'x@y.com' }), redirect: 'manual' })).status, 404);
+  assert.ok(!(await get(desp, '/entregadores')).includes('De Outra Loja'));
+  novoNoAgilizone = true; // entregador novo no Agilizone: entra sozinho ao atualizar
+  assert.match(await post(desp, '/entregadores/atualizar', {}), /ok=/);
+  assert.ok((await get(desp, '/entregadores')).includes('Novato'));
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM motoboys WHERE agz_id = 10').get().n, 1);
 });
 
 test('cadastro de entregadores: só o admin altera; PIX inválido é recusado', async () => {
@@ -91,4 +113,58 @@ test('cadastro de entregadores: só o admin altera; PIX inválido é recusado', 
   assert.strictEqual(db.prepare('SELECT pix FROM motoboys WHERE id = ?').get(id).pix, '+5586995344508');
   assert.ok([403, 404].includes((await envia(desp, 'outro@pix.com')).status));
   assert.strictEqual(db.prepare('SELECT pix FROM motoboys WHERE id = ?').get(id).pix, '+5586995344508');
+});
+
+test('Pix por loja: lote parcial, edição individual, nova importação, divergência e congelamento no envio', async () => {
+  const desp = await entra('desp'), adm = await entra('adm');
+  const f1 = db.prepare('SELECT * FROM fechamentos ORDER BY id LIMIT 1').get();
+  const kevin = db.prepare('SELECT id FROM motoboys WHERE agz_id = 7').get().id;
+  const marcos = db.prepare('SELECT id FROM motoboys WHERE agz_id = 8').get().id;
+  const cadastrado = (id, l = loja) => db.prepare('SELECT pix FROM entregador_pix WHERE loja_id = ? AND motoboy_id = ?').get(l, id)?.pix;
+  const parcial = await post(desp, `/fechamentos/${f1.id}/pix`, {['pix_' + kevin]: 'novo.kevin@exemplo.com', ['pix_' + marcos]: 'invalida'});
+  assert.match(parcial, /ok=/);
+  assert.strictEqual(new URL(parcial,B).hash,'#pix', 'salvar retorna à aba Pix com o aviso fora do fragmento');
+  assert.strictEqual(cadastrado(kevin), 'novo.kevin@exemplo.com');
+  assert.strictEqual(cadastrado(marcos), 'marcos@pix.com', 'uma chave inválida não perde o salvamento parcial nem altera cadastro');
+  assert.ok((await get(desp, `/fechamentos/${f1.id}`)).includes('novo.kevin@exemplo.com'), 'recarregar mantém a edição');
+  const cadastro = await get(desp, '/entregadores?q=Kevin');
+  assert.ok(cadastro.includes('••••••.com') && cadastro.includes('Editar Pix'));
+  assert.match(await post(desp, `/fechamentos/${f1.id}/motoboy/${kevin}`, {nome:'Kevin', pix:'individual@exemplo.com', obs:''}), /ok=/);
+  assert.strictEqual(cadastrado(kevin), 'individual@exemplo.com');
+
+  // Um segundo período real da agenda; o mock usa ids de pedidos diferentes.
+  outroPeriodo = true;
+  const importar = await get(desp, '/fechamentos/novo');
+  const p = /name="p" value="([\d-]+)"/.exec(importar)[1];
+  const loc = await post(desp, '/fechamentos/novo/api', {loja, p});
+  const f2 = Number((/^\/fechamentos\/(\d+)\?/.exec(loc) || [])[1]);
+  assert.ok(f2 && f2 !== f1.id, loc);
+  assert.ok((await get(desp, `/fechamentos/${f2}`)).includes('individual@exemplo.com'), 'importação sem Pix usa o cadastro da loja');
+  db.prepare('UPDATE resumo SET pix = ? WHERE fechamento_id = ? AND motoboy_id = ?').run('agilizone@exemplo.com', f2, kevin);
+  assert.ok((await get(desp, `/fechamentos/${f2}`)).includes('Divergência com o cadastro'));
+  assert.match(await post(desp, `/fechamentos/${f2}/enviar`, {para:'financeiro@exemplo.com'}), /erro=/, 'divergência bloqueia até revisão explícita');
+  assert.strictEqual(cadastrado(kevin), 'individual@exemplo.com');
+  await post(desp, `/fechamentos/${f2}/pix`, {['pix_' + kevin]:'revisado@exemplo.com', ['pix_' + marcos]:'marcos@pix.com'});
+  const novato = db.prepare('SELECT id FROM motoboys WHERE agz_id = 10').get().id;
+  await post(desp, `/fechamentos/${f2}/pix`, {['pix_' + novato]:'novato@exemplo.com'});
+  assert.match(await post(desp, `/fechamentos/${f2}/enviar`, {para:'financeiro@exemplo.com'}), /ok=/);
+  assert.strictEqual(db.prepare('SELECT status FROM fechamentos WHERE id = ?').get(f2).status, 'enviado');
+  const filtro = await post(desp, `/entregadores/${kevin}`, {pix:'futuro@exemplo.com', q:'Kev', f:'sem'});
+  assert.match(filtro, /q=Kev/); assert.match(filtro, /f=sem/);
+  assert.strictEqual(cadastrado(kevin), 'futuro@exemplo.com');
+  assert.ok((await get(desp, `/fechamentos/${f2}`)).includes('revisado@exemplo.com'), 'enviado preserva chave anterior');
+  assert.strictEqual(db.prepare('SELECT pix FROM envio_pix WHERE fechamento_id = ? AND motoboy_id = ?').get(f2, kevin).pix, 'revisado@exemplo.com');
+  const outra = db.prepare('SELECT id FROM lojas WHERE id <> ? LIMIT 1').get(loja).id;
+  db.prepare('INSERT INTO loja_motoboys VALUES (?,?)').run(outra, kevin);
+  db.prepare('INSERT INTO entregador_pix (loja_id,motoboy_id,agz_id,pix) VALUES (?,?,?,?)').run(outra,kevin,'7','outra@exemplo.com');
+  const acesso = await fetch(`${B}/entregadores/${kevin}`, {method:'POST',headers:{cookie:desp},body:new URLSearchParams({loja:outra,pix:'invasao@exemplo.com'}),redirect:'manual'});
+  assert.strictEqual(acesso.status,404);
+  assert.strictEqual((await fetch(`${B}/entregadores?loja=${outra}`, {headers:{cookie:desp},redirect:'manual'})).status,404);
+  await post(adm, `/entregadores/${kevin}`, {loja:outra,pix:'outra.editada@exemplo.com'});
+  assert.strictEqual(cadastrado(kevin), 'futuro@exemplo.com');
+  assert.strictEqual(cadastrado(kevin,outra), 'outra.editada@exemplo.com');
+  const pendente = Number(db.prepare("INSERT INTO motoboys (nome) VALUES ('Kevin')").run().lastInsertRowid);
+  db.prepare('INSERT INTO loja_motoboys VALUES (?,?)').run(loja,pendente);
+  assert.match(await post(desp, `/entregadores/${pendente}`, {pix:'sem.id@exemplo.com'}), /erro=/);
+  assert.strictEqual(cadastrado(pendente),undefined);
 });

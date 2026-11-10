@@ -103,3 +103,17 @@ As credenciais de cada loja ficam **só nas variáveis de ambiente do servidor**
 - A API não traz Ocorrências nem acertos já feitos ("Já pago"): se precisar deles, anexe o Resumo (.csv) ao fechamento.
 - O escopo `DELIVERYMAN_FEES` precisa estar liberado para a credencial; sem ele a importação é recusada.
 - Variável opcional `AGILIZONE_URL` (padrão: produção).
+
+## Despachante e Pix por loja
+
+O menu do despachante tem **Pendências** e **Entregadores**. A conferência usa as abas Resumo, Chaves Pix, Por dia e Histórico. O salvamento de chaves é parcial: entradas vazias ou inválidas não substituem as válidas. A ação principal leva à aba de correção enquanto faltar Pix ou houver divergência com o cadastro.
+
+O cadastro persistente fica em `entregador_pix`, com unicidade por `(loja_id, agz_id)` e `(loja_id, motoboy_id)`. O id do Agilizone confirma a identidade; um nome igual não autoriza herdar chave. Importações por arquivo sem id mantêm o Pix no fechamento e indicam identidade pendente. O cadastro não é criado por aproximação de nome. Para esses casos, é necessário confirmar a identidade na origem; não há associação automática ao cadastro.
+
+Salvar Pix no fechamento (lote ou edição individual) atualiza, na mesma transação, a edição e o cadastro confirmado daquela loja. Importações sem chave usam o cadastro da loja. Uma chave diferente trazida pelo Resumo exige revisão e salvamento explícitos; a importação não sobrescreve o cadastro. A edição em Entregadores vale para importações futuras. `envio_pix` e a aprovação continuam preservando a chave enviada, independentemente de mudanças no cadastro.
+
+A migração é aditiva e automática em `db.js`: preserva `motoboys.pix` e os fechamentos existentes. Copia a chave legada somente quando há vínculo explícito da API com uma única loja. Vínculos com várias lojas começam sem chave no novo cadastro para conferência. Reexecutar a migração não sobrescreve cadastros existentes. Os campos globais de Pix da administração antiga são legado; o cadastro operacional por loja é **Entregadores**.
+
+Rotas e permissões: `/entregadores` e seus POSTs usam `editaMotoboy` (admin/despachante) e validam a loja autorizada no servidor; `/fechamentos/:fid` usa `podeVer`, e as edições usam `podeEditar` (rascunho não arquivado da própria loja, ou admin). Importação continua em `/fechamentos/novo` e `/fechamentos/novo/api`, com `agilizone.js`, `importar.js` e calendário de `agenda.js`. Valores e snapshots continuam em `grade`, `envio_pix` e `aprovacoes`. O shell e os componentes compartilhados vêm de `ui.js`, `public/marca.css`, `public/marca.js` e `public/conferencia.*`.
+
+Para revisar: execute `npm test`; para a interface use um banco de desenvolvimento separado com `DATA_DIR` e entre como despachante. Abra `/`, `/fechamentos/novo`, um rascunho e `/entregadores`. Teste a janela em 1440×900 e 390×844, as setas/Home/End nas abas, Escape/Tab no painel de Pix e o retorno dos filtros. Não use credenciais de produção para testes. `apiimport.test.js` usa um Agilizone HTTP fictício e cobre persistência, nova importação, divergência, isolamento por loja e congelamento do envio. `pix-migracao.test.js` verifica migração e reinicialização em banco temporário.

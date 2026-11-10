@@ -62,3 +62,48 @@ document.addEventListener('click', (e) => {
   const f = e.target.closest && e.target.closest('[data-fecha]'); if (f) { const d = f.closest('dialog'); if (d) d.close(); return; }
   if (e.target instanceof HTMLDialogElement && e.target.classList.contains('dlg-per')) e.target.close();
 });
+// Pendências: o retorno à lista conserva período, sanfonas e posição.
+(function () {
+  if (!document.body.classList.contains('despachante')) return;
+  const key = 'desp-pendencias';
+  if (location.pathname === '/') {
+    try {
+      const state = JSON.parse(sessionStorage.getItem(key) || 'null');
+      if (state && state.url === location.pathname + location.search) {
+        document.querySelectorAll('.sec-p details').forEach((d, i) => { d.open = !!state.open[i]; });
+        requestAnimationFrame(() => scrollTo(0, state.y));
+      }
+    } catch (_) {}
+    addEventListener('pagehide', () => {
+      try { sessionStorage.setItem(key, JSON.stringify({url:location.pathname + location.search, y:scrollY, open:[...document.querySelectorAll('.sec-p details')].map(d => d.open)})); } catch (_) {}
+    });
+  } else {
+    try {
+      const state = JSON.parse(sessionStorage.getItem(key) || 'null');
+      if (state && /^\/(\?|$)/.test(state.url)) document.querySelectorAll('a[href="/"]').forEach(a => { a.href = state.url; });
+    } catch (_) {}
+  }
+})();
+
+// Filas financeiras: filtros ficam no endereço; posição e detalhes no navegador.
+(() => {
+  if (!document.body.classList.contains('financeiro') || !['/', '/pagar'].includes(location.pathname)) return;
+  const url = new URL(location.href);
+  ['ok', 'erro', 'k', 'lk'].forEach((k) => url.searchParams.delete(k));
+  const key = 'financeiro-lista:' + url.pathname + '?' + url.searchParams;
+  const detalhes = [...document.querySelectorAll('main details')];
+  const tabelas = [...document.querySelectorAll('main .tw')];
+  try {
+    const estado = JSON.parse(sessionStorage.getItem(key) || 'null');
+    if (estado) {
+      detalhes.forEach((d, i) => { if (estado.abertos[i] != null) d.open = estado.abertos[i]; });
+      requestAnimationFrame(() => {
+        tabelas.forEach((t, i) => { t.scrollLeft = estado.tabelas[i] || 0; });
+        scrollTo(0, estado.y || 0);
+      });
+    }
+  } catch (_) {}
+  addEventListener('pagehide', () => {
+    try { sessionStorage.setItem(key, JSON.stringify({ y: scrollY, abertos: detalhes.map((d) => d.open), tabelas: tabelas.map((t) => t.scrollLeft) })); } catch (_) {}
+  });
+})();

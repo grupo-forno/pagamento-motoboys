@@ -465,3 +465,75 @@ body.auth .erro-pag{grid-template-columns:1fr;margin:0}
 .alt-arq>summary::before{content:'\25B8';display:inline-block;margin-right:8px;transition:transform .15s}
 .alt-arq[open]>summary::before{transform:rotate(90deg)}
 .ent-imp{display:grid;gap:10px;justify-items:start}
+
+/* Entregadores da loja: nome e chave PIX por linha */
+.ent-lista{display:grid}
+.ent-linha{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,420px);gap:10px 18px;align-items:center;padding:12px 20px;border-top:1px solid var(--bd)}
+.ent-nome b{display:block}.ent-nome small{display:block;font-size:12.5px}
+.ent-pix{display:flex;gap:8px;margin:0}.ent-pix input{flex:1;min-width:0}
+@media(max-width:640px){.ent-linha{grid-template-columns:1fr;padding:12px 16px}.ent-pix .btn{flex:none}}
+/* Despachante: superfícies compactas e tokens do fluxo operacional. */
+body.operacional{--bg:#f7f8fa;--surface:#fff;--surface-2:#f3f4f6;--tx:#171d27;--tx-2:#505b6a;--mut:#616c7a;--bd:#e0e4e9;--bd-2:#c8cfd8;--pri:#a64016;--pri-h:#89320f;--pri-soft:#fff1e9;--pri-bd:#e6b69f;--r:10px;--sh:0 1px 2px #171d2708}
+.operacional .main .top{background:#fff}.operacional input,.operacional select,.operacional textarea{background:#fff}
+.operacional .ph{padding-bottom:16px;margin-bottom:16px}.operacional .ph h1{font-size:25px}.operacional .ph .sub{font-size:13px;margin-top:5px}
+.operacional .side-arte{background:none}.operacional .side-arte::before{display:none}
+.operacional .card{background:#fff;box-shadow:var(--sh)}.operacional .card-h,.operacional .card-b{padding:16px 20px}
+.operacional .requer-g{display:block}.operacional .painel-pend,.operacional .requer-t{display:none}
+.operacional .sec-p{margin:0 0 20px}.operacional .sec-h{margin-bottom:8px}.operacional .sec-h h2{font-size:17px}
+.operacional .sec-h p{font-size:13px}.operacional .hoje-dest{background:#fff;border:1px solid var(--bd);box-shadow:none;padding:16px 20px}
+.operacional .resumo{margin:12px 0 16px}.operacional .conferencia{padding:12px 16px;margin-bottom:12px}
+.operacional .conferencia ol{gap:8px}.operacional .conferencia h2{font-size:16px}
+.operacional .split.imp{grid-template-columns:minmax(0,1fr) 300px}.operacional .contexto{background:#fff;border:1px solid var(--bd)}
+.pix-bloco .card-h{position:sticky;top:62px;z-index:3;background:var(--surface);border-bottom:1px solid var(--bd);flex-wrap:wrap}
+:is(.ent-sheet,.side-panel){position:fixed;margin:0 0 0 auto;inset:0 0 0 auto;height:100dvh;max-height:100dvh;width:min(480px,100%);max-width:100%;border-radius:0;padding:24px;text-align:left}
+:is(.ent-sheet,.side-panel) .acoes-f{margin-top:24px}:is(.ent-sheet,.side-panel) h2{font-size:20px}:is(.ent-sheet,.side-panel) form{margin-top:20px}
+.operacional th small{display:block;font-weight:400;font-size:12px;margin-top:4px}
+.operacional .loja-tag{display:inline-flex!important;max-width:none}.operacional .n{font-variant-numeric:tabular-nums}
+.operacional :is(button,a,input,select,textarea):focus-visible{outline:3px solid #a64016;outline-offset:3px}
+@media(max-width:1000px){.operacional .split.imp{grid-template-columns:1fr}.operacional .guia{max-width:none}}
+@media(max-width:700px){.operacional .ph h1{font-size:21px}.operacional .card-h,.operacional .card-b{padding:12px 16px}.pix-bloco .card-h{top:56px}.pix-bloco .card-h .t{min-width:0;flex-basis:100%}.pix-bloco .card-h .btn{flex:1}.operacional .barra-in{flex-wrap:wrap}.operacional .loja-tag{font-size:12px}.operacional .linha-form{flex-wrap:wrap}}
+.operacional .ph{background:#fff;color:var(--tx);border:1px solid var(--bd);border-radius:10px;padding:16px 20px;min-height:0}
+.operacional .ph::before{display:none}.operacional .ph h1,.operacional .ph .sub b{color:var(--tx)}.operacional .ph .sub,.operacional .ph .mut{color:var(--tx-2)}
+.operacional .ph .ph-actions{margin-right:0}.operacional .ph .btn{box-shadow:none}.operacional .ph .btn-sec{background:#fff;border-color:var(--bd-2)}
+.operacional .resumo>div:first-child.destaque{background:#fff!important;border-color:var(--bd)!important}.operacional .resumo>div:first-child dt{color:var(--tx-2)}.operacional .resumo>div:first-child dd{color:var(--tx)}
+.operacional .barra{background:#fff}.operacional .abas{overflow-x:auto;max-width:100%}.operacional .abas button{white-space:nowrap}
+@media(max-width:700px){.operacional .pix-campo input{width:100%;flex-basis:100%}.operacional .pix-item{grid-template-columns:minmax(0,1fr)}.operacional .card-h .t{min-width:0}.operacional .ph-actions{flex-wrap:wrap;gap:8px}.operacional .ph .sub{overflow-wrap:anywhere}}
+.operacional .fc .abas{overflow-x:auto;overflow-y:hidden}.operacional .fc:has(#pix:not([hidden])) .fc-bar{display:none}
+.operacional #pix{scroll-margin-top:78px}
+
+/* Financeiro usa os mesmos tokens operacionais do Despachante. */
+body.financeiro.fila-pg .main .wrap{max-width:1600px;padding:28px 32px 96px}
+body.financeiro.fila-pg .ph.compacto{padding:16px 20px}
+body.financeiro.fila-pg .ph.compacto h1{font-size:25px}
+.financeiro .fin-escopo{font-size:12px;color:var(--tx-2);margin:0 0 10px;line-height:1.5}
+.financeiro .fila>.fin-escopo{padding:10px 16px 0;margin:0}
+.financeiro .fin-indicadores{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0 0 16px}
+body.financeiro .fin-indicadores>div{padding:10px 14px;min-height:0;background:#fff;border:1px solid var(--bd);border-radius:var(--r);box-shadow:none}
+body.financeiro .fin-indicadores dd,body.financeiro .fin-indicadores>div:first-child dd,.financeiro .fin-indicadores .v{font-size:22px;line-height:1.3;color:var(--tx);margin-top:2px}
+body.financeiro .fin-indicadores dd+dd,.financeiro .fin-indicadores .l{font-size:12px;font-weight:400;color:var(--tx-2)}
+.financeiro .fin-indicadores .hico{display:none}.financeiro .fin-indicadores dt{font-size:12px}
+.financeiro .resumo>div:first-child{background:#fff;border-color:var(--bd)}
+.financeiro .resumo>div:first-child dd+dd{color:var(--tx-2)}
+.financeiro .pg-visao{font-size:14px;margin:0 0 8px}.financeiro .pg-visao .small{font-size:12px}
+.financeiro .fin-periodo{padding:8px 16px;border-top:1px solid var(--bd);font-size:12px;color:var(--tx-2)}
+.financeiro .fin-periodo summary{cursor:pointer}.financeiro .fin-periodo .per-resumo{margin-top:10px}
+.financeiro .filtros{gap:12px;align-items:flex-end}.financeiro .filtros select,.financeiro .filtros input{height:40px;width:100%}
+.financeiro .filtros .grow{min-width:160px;flex:1 1 200px}
+.financeiro .tab-fila .btn-sm{box-shadow:none}.financeiro .tab-fila td{padding-top:12px;padding-bottom:12px}
+.financeiro .tab-pg{min-width:1000px;width:100%}.financeiro .tab-pg td{vertical-align:middle}
+.financeiro .tab-pg .c-chk{width:44px}.financeiro .tab-pg .c-per{min-width:190px}.financeiro .tab-pg .c-loja{min-width:120px}
+.financeiro .tab-pg .c-pag small{display:block;margin-top:4px}.financeiro .tw{max-width:100%;overflow-x:auto}
+.financeiro .pg-instrucao{font-size:13px;color:var(--tx-2);padding:12px 16px;margin:0;border-top:1px solid var(--bd)}
+.financeiro .pg-aviso-banco{max-width:240px;color:var(--tx-2)}
+.financeiro .pg-confirmar-lista{list-style:none;padding:0;margin:16px 0;max-height:45vh;overflow:auto}
+.financeiro .pg-confirmar-lista li{padding:10px 0;border-bottom:1px solid var(--bd);overflow-wrap:anywhere;font-size:14px}
+.financeiro #dlg-pagamento{max-width:680px}.financeiro #dlg-pagamento .acoes-f{flex-wrap:wrap}
+.financeiro #dlg-pagamento [data-pg-status]{font-size:14px;line-height:1.6}
+.financeiro .side-panel .pix-c{display:block;overflow-wrap:anywhere;max-width:240px;font-weight:400}
+.financeiro .side-panel .pg-sub{min-width:0}.financeiro .side-panel .pg-sub td{padding:10px 6px}
+.financeiro .sheet-h{background:#fff;color:var(--tx);min-height:0;padding:16px 20px;border-bottom:1px solid var(--bd)}
+.financeiro .sheet-h::before{display:none}.financeiro .sheet-h h2{color:var(--tx);font-size:20px}.financeiro .sheet-h .icon-btn{color:var(--tx);border-color:var(--bd)}
+.financeiro .btn-ok{background:var(--pri);border-color:var(--pri);color:#fff}.financeiro .btn-ok:hover{background:var(--pri-h)}
+.financeiro .ag-filtro{font-size:12px;margin-top:4px}.financeiro .ag-filtro summary{cursor:pointer;color:var(--tx-2)}
+@media(max-width:1100px){body.financeiro .fin-indicadores{grid-template-columns:repeat(2,minmax(0,1fr))}body.financeiro .fin-indicadores>div:first-child{grid-column:auto}}
+@media(max-width:760px){body.financeiro.fila-pg .main .wrap{padding:16px 12px 96px}.financeiro .fin-indicadores .v{font-size:20px}.financeiro .filtros .field{flex:1 1 140px!important;min-width:0}.financeiro .filtros .grow{flex-basis:100%!important}.financeiro .filtros-b{flex-wrap:wrap}.financeiro .fila .fila-abas{padding:0 12px;max-width:100%}.financeiro .tab-fila{display:table;min-width:980px}.financeiro .tab-fila thead{display:table-header-group}.financeiro .tab-fila tbody{display:table-row-group}.financeiro .tab-fila tr{display:table-row}.financeiro .tab-fila th,.financeiro .tab-fila td{display:table-cell!important;padding:12px;white-space:normal}.financeiro .barra-in{gap:8px}.financeiro .barra-in>div{flex:1 1 100%}.financeiro .barra-in .btn{width:auto!important;flex:1}.financeiro .pg-aviso-banco{max-width:none;flex-basis:100%;font-size:12px}.financeiro .side-panel{padding:18px 12px}}

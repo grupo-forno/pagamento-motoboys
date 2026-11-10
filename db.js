@@ -100,7 +100,20 @@ if (!temColuna('resumo', 'pago')) db.exec('ALTER TABLE resumo ADD COLUMN pago IN
 if (!temColuna('lojas', 'calendario')) db.exec('ALTER TABLE lojas ADD COLUMN calendario TEXT'); // dias de pagamento (agenda.js)
 // As credenciais do Agilizone ficam só no ambiente do servidor (agilizone.js), nunca no banco.
 if (temColuna('lojas', 'agz_client_id')) db.exec('UPDATE lojas SET agz_client_id = NULL, agz_client_secret = NULL');
+db.exec('CREATE TABLE IF NOT EXISTS loja_motoboys (loja_id INTEGER NOT NULL REFERENCES lojas ON DELETE CASCADE, motoboy_id INTEGER NOT NULL REFERENCES motoboys ON DELETE CASCADE, PRIMARY KEY (loja_id, motoboy_id))'); // entregadores de cada loja (vindos do Agilizone)
+if (!temColuna('motoboys', 'pix_em')) db.exec('ALTER TABLE motoboys ADD COLUMN pix_em TEXT; ALTER TABLE motoboys ADD COLUMN pix_por INTEGER'); // quando e quem salvou a chave PIX
 if (!temColuna('motoboys', 'agz_id')) db.exec('ALTER TABLE motoboys ADD COLUMN agz_id INTEGER; CREATE UNIQUE INDEX IF NOT EXISTS motoboys_agz ON motoboys (agz_id) WHERE agz_id IS NOT NULL'); // id do entregador no Agilizone
+// Cadastro de Pix por loja. O legado permanece intacto; só migramos vínculos
+// explícitos da API, nunca deduzimos a identidade pelo nome ou pelo histórico.
+db.exec(`CREATE TABLE IF NOT EXISTS entregador_pix (
+  loja_id INTEGER NOT NULL REFERENCES lojas, motoboy_id INTEGER NOT NULL REFERENCES motoboys,
+  agz_id TEXT NOT NULL, pix TEXT, pix_em TEXT, pix_por INTEGER REFERENCES usuarios,
+  PRIMARY KEY (loja_id, motoboy_id), UNIQUE (loja_id, agz_id));
+  INSERT OR IGNORE INTO entregador_pix (loja_id, motoboy_id, agz_id, pix, pix_em, pix_por)
+  SELECT lm.loja_id, m.id, CAST(m.agz_id AS TEXT),
+    CASE WHEN (SELECT COUNT(*) FROM loja_motoboys x WHERE x.motoboy_id = m.id) = 1 THEN m.pix END,
+    m.pix_em, m.pix_por
+  FROM loja_motoboys lm JOIN motoboys m ON m.id = lm.motoboy_id WHERE m.agz_id IS NOT NULL;`);
 if (!temColuna('fechamentos', 'arquivado_em')) db.exec('ALTER TABLE fechamentos ADD COLUMN arquivado_em TEXT'); // arquivado: fora da lista e não conta como válido
 // Tabelas com UNIQUE fixo da versão anterior: recria sem ele (procedimento do SQLite), copiando os dados.
 function recria(nome, criar) {

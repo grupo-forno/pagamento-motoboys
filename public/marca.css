@@ -537,3 +537,11 @@ body.financeiro .fin-indicadores dd+dd,.financeiro .fin-indicadores .l{font-size
 .financeiro .ag-filtro{font-size:12px;margin-top:4px}.financeiro .ag-filtro summary{cursor:pointer;color:var(--tx-2)}
 @media(max-width:1100px){body.financeiro .fin-indicadores{grid-template-columns:repeat(2,minmax(0,1fr))}body.financeiro .fin-indicadores>div:first-child{grid-column:auto}}
 @media(max-width:760px){body.financeiro.fila-pg .main .wrap{padding:16px 12px 96px}.financeiro .fin-indicadores .v{font-size:20px}.financeiro .filtros .field{flex:1 1 140px!important;min-width:0}.financeiro .filtros .grow{flex-basis:100%!important}.financeiro .filtros-b{flex-wrap:wrap}.financeiro .fila .fila-abas{padding:0 12px;max-width:100%}.financeiro .tab-fila{display:table;min-width:980px}.financeiro .tab-fila thead{display:table-header-group}.financeiro .tab-fila tbody{display:table-row-group}.financeiro .tab-fila tr{display:table-row}.financeiro .tab-fila th,.financeiro .tab-fila td{display:table-cell!important;padding:12px;white-space:normal}.financeiro .barra-in{gap:8px}.financeiro .barra-in>div{flex:1 1 100%}.financeiro .barra-in .btn{width:auto!important;flex:1}.financeiro .pg-aviso-banco{max-width:none;flex-basis:100%;font-size:12px}.financeiro .side-panel{padding:18px 12px}}
+/* Financeiro alinhado ao Despachante: indicadores claros, linha de apoio pequena, mesmo respiro lateral nas tabelas */
+body.financeiro .fin-indicadores>div dd:nth-of-type(2){font-size:12px;font-weight:400;line-height:1.3;color:var(--tx-2)}
+body.financeiro .fin-indicadores>div.atenc dd:nth-of-type(2){color:var(--tx-2)}body.financeiro .fin-indicadores>div dd.bad-t+dd,body.financeiro .fin-indicadores>div dd+dd.bad-t{color:var(--bad)}
+body.financeiro .stats>.stat,body.financeiro .stats>.stat:first-child{background:#fff;border-color:var(--bd);color:var(--tx)}
+body.financeiro .stats>.stat:first-child .l{color:var(--tx-2)}body.financeiro .stats>.stat:first-child .v{color:var(--tx)}
+.financeiro .tab-fila :is(th,td):first-child,.financeiro .tab-pg :is(th,td):first-child{padding-left:16px}
+.financeiro .tab-fila :is(th,td):last-child,.financeiro .tab-pg :is(th,td):last-child{padding-right:16px}
+@media(max-width:760px){.financeiro .tab-fila :is(th,td):first-child,.financeiro .tab-fila :is(th,td):last-child{padding-left:0;padding-right:0}}

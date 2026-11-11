@@ -1,0 +1,3 @@
+Entregador;Pedidos;CPF;Chave Pix;Data de Nascimento;Soma das taxas de entrega;Pago;Saldo a pagar
+Hugo Fictício;1;-;hugo@exemplo.com;-;R$ 10,00;R$ 0,00;R$ 10,00
+Iris Fictícia;1;-;-;-;R$ 12,00;R$ 0,00;R$ 12,00

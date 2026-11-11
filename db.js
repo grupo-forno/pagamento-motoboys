@@ -126,6 +126,7 @@ function recria(nome, criar) {
 }
 if (!temColuna('pedidos', 'ativo')) recria('pedidos', PEDIDOS);
 if (!temColuna('ajustes', 'substituido_em')) recria('ajustes', AJUSTES);
+db.exec('CREATE INDEX IF NOT EXISTS pedidos_fechamento ON pedidos (fechamento_id)'); // soma dos pedidos por fechamento sem varrer a tabela inteira (listas ficavam em dezenas de segundos)
 db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS pedidos_validos ON pedidos (loja_id, chave) WHERE ativo = 1;
 CREATE UNIQUE INDEX IF NOT EXISTS ajustes_vigentes ON ajustes (fechamento_id, motoboy_id, dia) WHERE substituido_em IS NULL;`);
 if (!temColuna('fechamentos', 'pagamento')) db.exec('ALTER TABLE fechamentos ADD COLUMN pagamento TEXT'); // data do pagamento a que se refere

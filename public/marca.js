@@ -107,3 +107,14 @@ document.addEventListener('click', (e) => {
     try { sessionStorage.setItem(key, JSON.stringify({ y: scrollY, abertos: detalhes.map((d) => d.open), tabelas: tabelas.map((t) => t.scrollLeft) })); } catch (_) {}
   });
 })();
+
+// Indicadores: se o valor não couber no cartão, a fonte diminui (até 13px); só em último caso corta com reticências e mostra o valor inteiro no title.
+(function () {
+  const ajusta = () => document.querySelectorAll('.stat .v, .resumo>div>dd:first-of-type, #sel-total').forEach((v) => {
+    v.style.fontSize = ''; v.removeAttribute('title');
+    let s = parseFloat(getComputedStyle(v).fontSize);
+    while (v.scrollWidth > v.clientWidth + 1 && s > 13) { s -= 1; v.style.fontSize = s + 'px'; }
+    if (v.scrollWidth > v.clientWidth + 1) v.title = v.textContent.trim();
+  });
+  ajusta(); addEventListener('resize', ajusta); const st = document.getElementById('sel-total'); if (st) new MutationObserver(ajusta).observe(st, { childList: true, characterData: true, subtree: true }); // total selecionado muda ao marcar if (document.fonts && document.fonts.ready) document.fonts.ready.then(ajusta);
+})();

@@ -22,10 +22,10 @@
     });
     ta.value = lista.join('\n');
     n.textContent = lista.length ? '(' + lista.length + ')' : '';
-    envio.disabled = !lista.length;
-    lbl.textContent = lista.length ? lbl.dataset.rotulo + ' para ' + lista.length + (lista.length > 1 ? ' destinatários' : ' destinatário') : lbl.dataset.rotulo;
+    const soEmail = form.action.endsWith('/email'); envio.disabled = soEmail && !lista.length; // enviar ao financeiro vale sem e-mail; só o reenvio do e-mail exige destinatário
+    lbl.textContent = lista.length ? lbl.dataset.rotulo + ' para ' + lista.length + (lista.length > 1 ? ' destinatários' : ' destinatário') : (soEmail ? lbl.dataset.rotulo : lbl.dataset.rotulo + ' (sem e-mail)');
     padraoBtn.hidden = lista.length === padrao.length && lista.every((e, i) => e === padrao[i]);
-    if (!padrao.length && !lista.length) aviso('Nenhum e-mail configurado. Digite o e-mail de quem vai receber.');
+    if (!padrao.length && !lista.length) aviso(soEmail ? 'Nenhum e-mail configurado. Digite o e-mail de quem vai receber.' : 'Sem e-mail: o fechamento vai só para o financeiro, no sistema. Depois você pode reenviar o e-mail e acrescentar destinatários.');
   }
   function adiciona(txt) {
     const itens = parte(txt); let falha = '';
@@ -55,7 +55,7 @@
     if (!lista.length && /\/email$/.test(form.action)) { e.preventDefault(); e.stopImmediatePropagation(); aviso('Adicione pelo menos um destinatário.'); inp.focus(); return; }
     // Reconfirmação: o diálogo mostra para quem vai e a justificativa digitada.
     const dp = document.querySelector('[data-dlg-para]'), dj = document.querySelector('[data-dlg-just]'), j = document.getElementById('justificativa');
-    if (dp) { dp.textContent = ''; lista.forEach((x) => { const li = document.createElement('li'); li.textContent = x; dp.appendChild(li); }); }
+    if (dp) { dp.textContent = ''; (lista.length ? lista : ['Nenhum e-mail: o fechamento chega ao financeiro só no sistema. Reenvie o e-mail depois.']).forEach((x) => { const li = document.createElement('li'); li.textContent = x; dp.appendChild(li); }); }
     if (dj && j) dj.textContent = j.value.trim();
   }, true);
   render();

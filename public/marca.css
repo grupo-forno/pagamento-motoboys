@@ -545,3 +545,32 @@ body.financeiro .stats>.stat:first-child .l{color:var(--tx-2)}body.financeiro .s
 .financeiro .tab-fila :is(th,td):first-child,.financeiro .tab-pg :is(th,td):first-child{padding-left:16px}
 .financeiro .tab-fila :is(th,td):last-child,.financeiro .tab-pg :is(th,td):last-child{padding-right:16px}
 @media(max-width:760px){.financeiro .tab-fila :is(th,td):first-child,.financeiro .tab-fila :is(th,td):last-child{padding-left:0;padding-right:0}}
+/* Importação: o painel de contexto não força largura em janela estreita (vale para Despachante e Admin) */
+@media(max-width:1000px){.operacional .split.imp{grid-template-columns:minmax(0,1fr)}}
+.alert>div{min-width:0;overflow-wrap:anywhere}
+@media(max-width:640px){.contexto{grid-template-columns:minmax(0,1fr)}.contexto>*{min-width:0}}
+
+/* Login no padrão das demais telas: painel escuro como o menu, fundo neutro, cartão branco e textos no mesmo tom */
+body.auth.operacional{grid-template-columns:minmax(320px,2fr) 3fr;background:var(--bg)}
+body.auth.operacional .auth-arte{position:relative;overflow:hidden;background:var(--carvao);min-height:100vh;padding:32px 36px}
+body.auth.operacional .auth-arte::after{content:"";position:absolute;left:0;right:0;bottom:0;height:70%;background:url(/marca/percurso-fino.svg) left bottom/100% auto no-repeat;opacity:.3;pointer-events:none}
+.auth-brand{position:relative;z-index:1;display:flex;align-items:center;gap:10px}.auth-brand img{height:44px;width:auto;display:block}
+.auth-brand b{display:block;font-size:19px;line-height:1.15;color:#fff;font-weight:800}.auth-brand small{display:block;margin-top:2px;font-size:11px;letter-spacing:.14em;color:#cdb9ab;font-weight:600}
+body.auth.operacional .auth-box{max-width:420px;text-align:left;padding:32px 20px}
+body.auth.operacional .auth-t{font-size:22px;font-weight:800;margin:0 0 4px;color:var(--tx)}
+body.auth.operacional .auth-sub{font-size:14px;line-height:1.5;color:var(--tx-2);text-transform:none;letter-spacing:0;font-weight:400;margin:0 0 18px}
+body.auth.operacional .auth-box .card{background:#fff;border:1px solid var(--bd);box-shadow:var(--sh)}
+body.auth.operacional .login h1{font-size:20px;margin:0 0 14px}
+body.auth.operacional .btn-pri{box-shadow:none}
+@media(max-width:900px){body.auth.operacional{grid-template-columns:1fr;grid-template-rows:auto 1fr}body.auth.operacional .auth-arte{min-height:0;padding:14px 20px}body.auth.operacional .auth-arte::after{display:none}.auth-brand img{height:36px}body.auth.operacional .auth-box{padding:20px 16px 40px}}
+/* Indicadores (.stat): o valor ocupa a largura inteira do cartão (não divide espaço com o ícone), não quebra nem sai (a fonte se ajusta em marca.js) e o rótulo longo quebra */
+.stat,.stats>.stat{min-width:0;display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-areas:"v v" "i l";gap:8px 0;align-items:center;align-content:start}
+.stat>div{display:contents}.stat .v{grid-area:v;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat .l{grid-area:l;min-width:0;overflow-wrap:anywhere}.stat .hico{grid-area:i;margin-right:12px}
+/* Totais em destaque (conferência e barra de pagamento): mesma regra dos indicadores */
+.resumo>div{min-width:0}.resumo>div>dd:first-of-type,#sel-total{display:block;min-width:0;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Texto longo em cartões e avisos: quebra dentro do cartão em vez de sair dele */
+.quote{overflow-wrap:anywhere}.aviso-item>span:first-child{min-width:0;flex:1 1 auto;overflow-wrap:anywhere}.aviso-item .btn{flex:none}
+.card-h>.t{min-width:0;overflow-wrap:anywhere}
+/* Tabelas largas: o texto oculto das células fica preso ao quadro de rolagem e não alarga a página */
+.tw{position:relative}

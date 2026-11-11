@@ -51,9 +51,10 @@ const crypto = require('node:crypto'), { PADRAO } = require('./agenda');
 const rev = (...c) => crypto.createHash('sha1').update(JSON.stringify(c)).digest('hex').slice(0, 12);
 const revUsuario = (id) => { const u = db.prepare('SELECT nome, perfil, loja_id, ativo FROM usuarios WHERE id = ?').get(id); return rev(u.nome, u.perfil, u.loja_id, u.ativo); };
 const revLoja = (id) => { const l = db.prepare('SELECT nome, calendario FROM lojas WHERE id = ?').get(id); return rev(l.nome, l.calendario || PADRAO); };
-// campos rev_<id> que a tela de Chaves Pix manda junto com cada chave
-const revs = async (ck, fid) => Object.fromEntries([...(await texto(ck, `/fechamentos/${fid}`)).matchAll(/name="(rev_\d+)" value="([0-9a-f]+)"/g)].map((m) => [m[1], m[2]]));
-const postPix = async (ck, fid, dados) => post(ck, `/fechamentos/${fid}/pix`, { ...(await revs(ck, fid)), ...dados });
+// versão do registro que a tela de edição do entregador manda (rev); a aba de chaves Pix usa a mesma (rev_<id>)
+const revDe = async (ck, fid, m) => (await texto(ck, `/fechamentos/${fid}/motoboy/${m}`)).match(/name="rev" value="([0-9a-f]+)"/)[1];
+const revsPix = async (ck, fid, dados) => { const r = {}; for (const k of Object.keys(dados)) if (k.startsWith('pix_')) r['rev_' + k.slice(4)] = await revDe(ck, fid, k.slice(4)); return r; };
+const postPix = async (ck, fid, dados) => post(ck, `/fechamentos/${fid}/pix`, { ...(await revsPix(ck, fid, dados)), ...dados });
 
 // Arquivos do Agilizone: pedidos [numero, "dd/mm/aaaa hh:mm:ss", entregador, taxa]; resumo [nome, pedidos, pix, total]
 const xlsx = (loja, rows) => {
@@ -325,7 +326,7 @@ test('D12 duas sessões no mesmo registro: só a primeira edição vale, a segun
   assert.ok(['gabi.um@exemplo.com', 'gabi.dois@exemplo.com'].includes(pix));
   assert.strictEqual(n("SELECT COUNT(*) n FROM log WHERE ref = ? AND acao LIKE 'Editou entregador%'", `f:${fid}`), 1, 'só uma edição foi gravada');
   // mesma regra na tela de Chaves Pix: chave com versão velha não grava, a versão atual grava
-  const velha = await revs(s1, fid), perdedor = pix === 'gabi.um@exemplo.com' ? 'gabi.dois@exemplo.com' : 'gabi.um@exemplo.com';
+  const velha = { ['rev_' + m]: r1 }, perdedor = pix === 'gabi.um@exemplo.com' ? 'gabi.dois@exemplo.com' : 'gabi.um@exemplo.com';
   await edita(s1, 'gabi.tres@exemplo.com', await abre(s1)); // muda o registro depois de a tela ter sido aberta
   assert.match(msg(await post(s2, `/fechamentos/${fid}/pix`, { ...velha, [`pix_${m}`]: perdedor })), /Nada foi salvo.*alterado por outra pessoa/);
   assert.strictEqual(db.prepare('SELECT pix FROM edicoes WHERE fechamento_id = ? AND motoboy_id = ?').get(fid, m).pix, 'gabi.tres@exemplo.com');
@@ -358,4 +359,27 @@ test('D13 o Pix salvo persiste quando a lista do Agilizone é atualizada e entra
   // as telas antigas de Configurações não gravam mais um Pix que os fechamentos ignorariam
   assert.match(msg(await post(adm, `/config/entregadores/${kevin}`, { pix: 'legado@exemplo.com' })), /Esta edição foi desativada/);
   assert.strictEqual(db.prepare('SELECT pix FROM entregador_pix WHERE loja_id = ? AND motoboy_id = ?').get(A.id, kevin).pix, antes);
+});
+
+test('D14 chaves Pix do fechamento: só quem está sem chave abre campo; quem já tem mostra a chave e o botão Editar', async () => {
+  const ck = await entra('desp');
+  const r = await importa(ck, { arq: xlsx(A.nome, [['61', '05/10/2026 20:00:00', 'Ana Com Pix', 10], ['62', '05/10/2026 21:00:00', 'Bia Sem Pix', 8], ['63', '06/10/2026 20:00:00', 'Caio Sem Pix', 6]]), res: csv([['Ana Com Pix', 1, 'ana.com@exemplo.com', 10], ['Bia Sem Pix', 1, null, 8], ['Caio Sem Pix', 1, null, 6]]) });
+  assert.ok(r.fid, r.loc);
+  const id = (nome) => db.prepare('SELECT motoboy_id m FROM resumo WHERE fechamento_id = ? AND entregador = ?').get(r.fid, nome).m;
+  const [ana, bia, caio] = [id('Ana Com Pix'), id('Bia Sem Pix'), id('Caio Sem Pix')];
+  let h = await texto(ck, `/fechamentos/${r.fid}`);
+  assert.ok(!h.includes(`name="pix_${ana}"`), 'quem já tem chave não abre campo');
+  assert.ok(h.includes(`name="pix_${bia}"`) && h.includes(`name="pix_${caio}"`), 'quem está sem chave abre campo');
+  assert.ok(h.includes('Chave cadastrada') && h.includes(`/fechamentos/${r.fid}/motoboy/${ana}`), 'mostra a chave e o botão Editar');
+  assert.ok(h.includes('data-base="1"') && h.includes('data-total="3"'), 'o contador conta todos, não só os campos abertos');
+  // salvar uma: ela passa a mostrar a chave; os campos que sobram são só dos que faltam
+  assert.match(msg(await postPix(ck, r.fid, { ['pix_' + bia]: 'bia@exemplo.com' })), /salva/);
+  h = await texto(ck, `/fechamentos/${r.fid}`);
+  assert.ok(!h.includes(`name="pix_${bia}"`) && h.includes(`name="pix_${caio}"`));
+  // salvar a última: some a lista de campos e os botões de salvar chaves
+  await postPix(ck, r.fid, { ['pix_' + caio]: 'caio@exemplo.com' });
+  h = await texto(ck, `/fechamentos/${r.fid}`);
+  assert.ok(!h.includes('name="pix_') && h.includes('Todos os entregadores já têm chave Pix') && !h.includes('Salvar chaves preenchidas'));
+  assert.ok(h.includes('data-base="3"'));
+  await post(ck, `/fechamentos/${r.fid}/arquivar`);
 });

@@ -574,3 +574,5 @@ body.auth.operacional .btn-pri{box-shadow:none}
 .card-h>.t{min-width:0;overflow-wrap:anywhere}
 /* Tabelas largas: o texto oculto das células fica preso ao quadro de rolagem e não alarga a página */
 .tw{position:relative}
+/* Chaves Pix do fechamento: quem já tem chave não abre campo, só mostra a chave e o botão Editar */
+.pix-ok{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.pix-mask{font-variant-numeric:tabular-nums;color:var(--tx-2)}.pix-todas{display:flex;gap:6px;align-items:center;margin:0;padding:14px 20px;color:var(--tx-2);font-size:14px}

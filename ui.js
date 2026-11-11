@@ -418,7 +418,7 @@ if(/^[^ @]+@[^ @]+[.][^ @]+$/.test(v))return['ok','E-mail'];
 if(/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(v))return['ok','Chave aleatória'];
 if(/^[0-9 ().+-]+$/.test(v)){if(d.length===14)return['ok','CNPJ'];if(d.length===11&&v.charAt(0)!=='+')return['ok','CPF ou celular'];if(d.length>=10&&d.length<=13)return['ok','Telefone'];}
 return['bad','Formato não reconhecido: confira'];}
-function conta(){if(!c)return;var n=0;is.forEach(function(i){if(i.value.trim())n++});c.textContent=n+' de '+is.length+' preenchidas'}
+function conta(){if(!c)return;var n=+c.dataset.base||0,t=+c.dataset.total||is.length;is.forEach(function(i){if(i.value.trim())n++});c.textContent=n+' de '+t+' preenchidas'}
 is.forEach(function(i){var t=document.getElementById(i.getAttribute('aria-describedby'));function m(){var r=tipo(i.value);t.className='pix-tipo '+r[0];t.textContent=r[0]==='ok'?'✓ '+r[1]:r[1];conta()}i.addEventListener('input',m);m()})})();
 // Importação: "Só 1 dia" esconde o Relatório de Pedidos e pede o dia.
 var fc=document.querySelector('[data-foca]');if(fc)fc.focus();

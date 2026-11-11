@@ -40,7 +40,8 @@ after(async () => { await new Promise((ok) => { srv.on('exit', ok); srv.kill(); 
 
 const entra = async (login) => (await fetch(`${B}/login`, { method: 'POST', body: new URLSearchParams({ login, senha: 'senha12345' }), redirect: 'manual' })).headers.get('set-cookie').split(';')[0];
 const get = async (ck, url) => (await fetch(B + url, { headers: { cookie: ck }, redirect: 'manual' })).text();
-const revs = async (ck, fid) => Object.fromEntries([...(await get(ck, `/fechamentos/${fid}`)).matchAll(/name="(rev_\d+)" value="([0-9a-f]+)"/g)].map((m) => [m[1], m[2]]));
+// versão de cada entregador do fechamento (a aba de chaves Pix só abre campo para quem está sem chave; a versão vem da tela de edição)
+const revs = async (ck, fid) => { const o = {}; for (const { m } of db.prepare('SELECT DISTINCT motoboy_id m FROM resumo WHERE fechamento_id = ? AND motoboy_id IS NOT NULL').all(fid)) o['rev_' + m] = (await get(ck, `/fechamentos/${fid}/motoboy/${m}`)).match(/name="rev" value="([0-9a-f]+)"/)[1]; return o; };
 const post = async (ck, url, dados) => (await fetch(B + url, { method: 'POST', headers: { cookie: ck }, body: new URLSearchParams(dados), redirect: 'manual' })).headers.get('location') || '';
 
 test('credenciais: só no ambiente do servidor; a tela não tem campo nem valor, só o nome das variáveis, e a conexão é testada', async () => {

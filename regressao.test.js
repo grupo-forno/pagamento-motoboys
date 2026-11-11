@@ -98,22 +98,19 @@ test('devolução: devolvidos vão para um fechamento novo; com resto=manter os 
   assert.ok(p.includes('Corrigir devolução') && p.includes('Valor errado no dia 20') && p.includes('<b>Devolvidos:</b> Ana'));
 });
 
-test('envio com diferença exige justificativa e e-mail; a justificativa chega ao financeiro', async () => {
+test('envio com diferença exige justificativa; o e-mail não bloqueia e a justificativa chega ao financeiro', async () => {
   const F = fechamento({ Ana: [1000, 1300] }, '2026-10-23'), desp = await entra('desp');
   db.prepare("UPDATE fechamentos SET status = 'rascunho', versao = 0 WHERE id = ?").run(F);
   assert.ok((await texto(desp, `/fechamentos/${F}/enviar`)).includes('name="justificativa"'));
   assert.match(msg(await post(desp, `/fechamentos/${F}/enviar`, { para: 'fin@teste.com', justificativa: 'curta' })), /justificativa/);
-  await post(desp, `/fechamentos/${F}/enviar`, { para: '', justificativa: 'Resumo saiu com filtro diferente' }); // sem destinatário: recusado
   assert.strictEqual(db.prepare('SELECT status FROM fechamentos WHERE id = ?').get(F).status, 'rascunho');
-  // E-mail que falha (servidor inacessível): nada é enviado, o fechamento continua com a loja e o PDF segue disponível.
+  // E-mail que falha (servidor inacessível): o fechamento é enviado mesmo assim e o e-mail pode ser reenviado depois.
   db.prepare("INSERT OR REPLACE INTO config (chave, valor) VALUES ('smtp_host', '127.0.0.1'), ('smtp_port', '1')").run();
   const falhou = await post(desp, `/fechamentos/${F}/enviar`, { para: 'fin@teste.com', justificativa: 'Resumo saiu com filtro diferente' });
   db.prepare("DELETE FROM config WHERE chave IN ('smtp_host', 'smtp_port')").run();
-  assert.match(msg(falhou), /Nada foi enviado/); assert.match(new URL(falhou, B).searchParams.get('lk'), /\/pdf\t/);
-  assert.strictEqual(db.prepare('SELECT status FROM fechamentos WHERE id = ?').get(F).status, 'rascunho');
-  assert.strictEqual((await get(desp, `/fechamentos/${F}/pdf`)).status, 200);
-  await post(desp, `/fechamentos/${F}/enviar`, { para: 'fin@teste.com', justificativa: 'Resumo saiu com filtro diferente' });
+  assert.match(msg(falhou), /o e-mail não saiu/);
   assert.strictEqual(db.prepare('SELECT status FROM fechamentos WHERE id = ?').get(F).status, 'enviado');
+  assert.strictEqual((await get(desp, `/fechamentos/${F}/pdf`)).status, 200);
   const fin = await entra('fin');
   assert.ok((await texto(fin, `/fechamentos/${F}`)).includes('Resumo saiu com filtro diferente'));
   // Histórico: busca por entregador e filtro de datas

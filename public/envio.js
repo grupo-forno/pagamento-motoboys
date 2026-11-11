@@ -52,7 +52,7 @@
   // Se sobrou algo digitado, entra na lista antes de enviar; sem destinatário, não envia.
   form.addEventListener('submit', (e) => {
     if (inp.value.trim() && !tenta()) { e.preventDefault(); e.stopImmediatePropagation(); return; }
-    if (!lista.length) { e.preventDefault(); e.stopImmediatePropagation(); aviso('Adicione pelo menos um destinatário.'); inp.focus(); return; }
+    if (!lista.length && /\/email$/.test(form.action)) { e.preventDefault(); e.stopImmediatePropagation(); aviso('Adicione pelo menos um destinatário.'); inp.focus(); return; }
     // Reconfirmação: o diálogo mostra para quem vai e a justificativa digitada.
     const dp = document.querySelector('[data-dlg-para]'), dj = document.querySelector('[data-dlg-just]'), j = document.getElementById('justificativa');
     if (dp) { dp.textContent = ''; lista.forEach((x) => { const li = document.createElement('li'); li.textContent = x; dp.appendChild(li); }); }

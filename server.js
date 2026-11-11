@@ -1170,8 +1170,8 @@ app.get('/fechamentos/:fid/enviar', so((r) => podeEditar(r.user, r.f) || podeRee
 <div><dt>Pagamento previsto</dt><dd>${f.pagamento ? diaLongo(f.pagamento) : '—'}</dd></div>
 <div><dt>Entregadores a pagar</dt><dd>${aPagar.length}</dd></div>
 <div class="envio-total"><dt>Total a pagar</dt><dd>${brl(g.total)}</dd></div></dl>
-${!padrao.length ? html`<div class="alert warn">${icone('email')}<div><b>Nenhum destinatário padrão configurado</b>Hoje o envio exige pelo menos um e-mail: digite abaixo quem deve receber. Para deixar uma lista fixa, peça ao Admin para configurar em Configurações.</div></div>` : ''}
-${!cfg('smtp_host') && process.env.EMAIL_SO_ARQUIVO !== '1' ? html`<div class="alert bad">${icone('alerta')}<div><b>Servidor de e-mail não configurado</b>${reenvio ? 'O e-mail não vai sair' : 'O envio fica bloqueado, porque o e-mail ao financeiro é obrigatório'} até o Admin configurar o servidor em Configurações. Enquanto isso, você pode baixar o PDF e o Excel abaixo.</div></div>` : ''}
+${!padrao.length ? html`<div class="alert warn">${icone('email')}<div><b>Nenhum destinatário padrão configurado</b>Digite abaixo quem deve receber o e-mail (opcional: o fechamento chega ao financeiro mesmo sem e-mail). Para deixar uma lista fixa, peça ao Admin para configurar em Configurações.</div></div>` : ''}
+${!cfg('smtp_host') && process.env.EMAIL_SO_ARQUIVO !== '1' ? html`<div class="alert bad">${icone('alerta')}<div><b>Servidor de e-mail não configurado</b>${reenvio ? 'O e-mail não vai sair' : 'O fechamento será enviado ao financeiro, mas o e-mail não vai sair'} até o Admin configurar o servidor em Configurações. Enquanto isso, você pode baixar o PDF e o Excel abaixo.</div></div>` : ''}
 ${pend.length && !reenvio ? html`<div class="alert warn">${icone('alerta')}<div><b>${pend.length} entregador(s) com diferença com o Resumo do Agilizone</b>${pend.map((l) => l.nome).join(', ')}. <a href="/fechamentos/${f.id}#conferencia">Revisar antes de enviar</a>
 <label class="just-rot" for="justificativa">Justificativa da diferença <span class="req" aria-hidden="true">*</span></label>
 <textarea id="justificativa" name="justificativa" required minlength="10" maxlength="2000" rows="3" aria-describedby="just-dica">${f.justificativa || ''}</textarea>
@@ -1213,7 +1213,8 @@ ${conferir ? html`<p><b>Diferença com o Resumo:</b></p><ul class="dlg-l">${pend
 });
 
 app.post('/fechamentos/:fid/enviar', so((r) => podeEditar(r.user, r.f)), async (req, res) => {
-  const f = req.f, para = destinatariosDigitados(req.body.para);
+  // Destinatário e e-mail são opcionais: o envio ao financeiro vale mesmo sem e-mail (dá para reenviar depois).
+  const f = req.f, para = String(req.body.para || '').trim() ? destinatariosDigitados(req.body.para) : [];
   const p = pendenciasEnvio(f);
   if (p) return volta(res, `/fechamentos/${f.id}`, 'erro', p);
   // Reenvio: entregador já aprovado que mudou (valor ou PIX) exige revisão explícita do despachante.
@@ -1223,9 +1224,8 @@ app.post('/fechamentos/:fid/enviar', so((r) => podeEditar(r.user, r.f)), async (
   const difs = grade(f).linhas.filter((l) => l.confere === 'pendente');
   const just = difs.length ? String(req.body.justificativa || '').trim().slice(0, 2000) : null;
   if (difs.length && just.length < 10) return volta(res, `/fechamentos/${f.id}/enviar`, 'erro', `Escreva a justificativa da diferença com o Resumo (${nomes(difs)}), com pelo menos 10 caracteres. Nada foi enviado.`);
-  // O e-mail ao financeiro é obrigatório: sai primeiro e, se falhar, nada é enviado (o fechamento continua com a loja).
-  const erro = await solicitarPagamento({ ...f, status: 'enviado', justificativa: just, envioAgora: req.user.nome }, req.user, para);
-  if (erro) return volta(res, `/fechamentos/${f.id}/enviar`, 'erro', `Nada foi enviado: o e-mail ao financeiro não saiu (${erro}). O fechamento continua com você. Se precisar, baixe o PDF e o Excel nesta tela; quando o e-mail voltar a funcionar, envie de novo.`, [`/fechamentos/${f.id}/pdf`, 'Baixar o PDF']);
+  // O e-mail não bloqueia o envio: se falhar, o fechamento segue para o financeiro e o despachante pode reenviar o e-mail depois.
+  const erro = await solicitarPagamento({ ...f, status: 'enviado', justificativa: just, envioAgora: req.user.nome }, req.user, para).catch((e) => { console.error(e); return `falha ao gerar o e-mail (${e.message})`; });
   const ok = tx(() => {
     const atual = carregaF(f.id);
     if (atual.status !== 'rascunho' || atual.versao !== f.versao) return false; // clique duplo ou outra aba: já enviado
@@ -1241,7 +1241,7 @@ app.post('/fechamentos/:fid/enviar', so((r) => podeEditar(r.user, r.f)), async (
     if (!g.linhas.some((l) => l.total > 0 && !l.aprovado)) { db.prepare("UPDATE fechamentos SET status = 'pago' WHERE id = ?").run(f.id); log(null, `f:${f.id}`, 'Aprovou a solicitação de pagamento (todos já estavam aprovados)'); }
     return true;
   });
-  volta(res, `/fechamentos/${f.id}`, 'ok', ok ? `Fechamento enviado ao financeiro. E-mail com o PDF enviado para ${para.join(', ')}.` : 'Este fechamento já tinha sido enviado. Nada mudou.');
+  volta(res, `/fechamentos/${f.id}`, erro && ok ? 'erro' : 'ok', !ok ? 'Este fechamento já tinha sido enviado. Nada mudou.' : erro ? `Fechamento enviado ao financeiro, mas o e-mail não saiu (${erro}). O financeiro já vê o fechamento em Para aprovar. Use "Reenviar e-mail" quando puder.` : `Fechamento enviado ao financeiro. E-mail com o PDF enviado para ${para.join(', ')}.`);
 });
 
 // Envia e registra no histórico do fechamento. Devolve null se enviou, ou o motivo de não ter enviado.

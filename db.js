@@ -102,6 +102,7 @@ if (!temColuna('lojas', 'calendario')) db.exec('ALTER TABLE lojas ADD COLUMN cal
 if (temColuna('lojas', 'agz_client_id')) db.exec('UPDATE lojas SET agz_client_id = NULL, agz_client_secret = NULL');
 db.exec('CREATE TABLE IF NOT EXISTS loja_motoboys (loja_id INTEGER NOT NULL REFERENCES lojas ON DELETE CASCADE, motoboy_id INTEGER NOT NULL REFERENCES motoboys ON DELETE CASCADE, PRIMARY KEY (loja_id, motoboy_id))'); // entregadores de cada loja (vindos do Agilizone)
 if (!temColuna('motoboys', 'pix_em')) db.exec('ALTER TABLE motoboys ADD COLUMN pix_em TEXT; ALTER TABLE motoboys ADD COLUMN pix_por INTEGER'); // quando e quem salvou a chave PIX
+if (!temColuna('motoboys', 'nascimento')) db.exec('ALTER TABLE motoboys ADD COLUMN nascimento TEXT'); // aaaa-mm-dd, digitado pelo despachante (a API não traz)
 if (!temColuna('motoboys', 'agz_id')) db.exec('ALTER TABLE motoboys ADD COLUMN agz_id INTEGER; CREATE UNIQUE INDEX IF NOT EXISTS motoboys_agz ON motoboys (agz_id) WHERE agz_id IS NOT NULL'); // id do entregador no Agilizone
 // Cadastro de Pix por loja. O legado permanece intacto; só migramos vínculos
 // explícitos da API, nunca deduzimos a identidade pelo nome ou pelo histórico.

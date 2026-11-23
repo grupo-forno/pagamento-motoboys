@@ -912,16 +912,16 @@ app.get('/entregadores', so((r) => editaMotoboy(r.user)), (req, res) => {
   const busca = String(req.query.q || '').trim().slice(0, 120);
   const lista = (soSem ? sem : todos).filter((m) => semAcento(m.nome).includes(semAcento(busca)));
   const qs = (o = {}) => '/entregadores?' + new URLSearchParams({ loja: l.id, f: soSem ? 'sem' : '', q: busca, ...o });
-  const linha = (m) => html`<tr><th scope="row">${m.nome}<small class="mut">${l.nome}${m.identidade ? '' : ' · Identidade pendente'}</small></th><td>${mascaraPix(m.pix)}</td><td class="n"><button type="button" class="btn btn-sec btn-sm" data-abre="pix-ed-${m.id}">Editar Pix</button>
+  const linha = (m) => html`<tr><th scope="row">${m.nome}<small class="mut">${l.nome}${m.identidade ? '' : ' · Identidade pendente'}</small></th><td>${m.cpf ? mascaraPix(m.cpf) : '—'}</td><td>${m.nascimento ? m.nascimento.split('-').reverse().join('/') : '—'}</td><td>${mascaraPix(m.pix)}</td><td class="n"><button type="button" class="btn btn-sec btn-sm" data-abre="pix-ed-${m.id}">Editar Pix</button>
 <dialog id="pix-ed-${m.id}" class="dlg sheet ent-sheet" aria-labelledby="pix-t-${m.id}"><h2 id="pix-t-${m.id}">Editar Pix · ${m.nome}</h2><p>${l.nome}</p><p class="hint">Usado nas próximas importações desta loja. Fechamentos enviados preservam a chave registrada.</p>
-<form method="post" action="/entregadores/${m.id}"><input type="hidden" name="loja" value="${l.id}"><input type="hidden" name="f" value="${soSem ? 'sem' : ''}"><input type="hidden" name="q" value="${busca}"><div class="field"><label for="pix-ed-c-${m.id}">Chave Pix</label><input id="pix-ed-c-${m.id}" name="pix" value="${m.pix || ''}" required maxlength="120" autocomplete="off"><p class="hint">CPF, CNPJ, celular, e-mail ou chave aleatória.</p></div>
+<form method="post" action="/entregadores/${m.id}"><input type="hidden" name="loja" value="${l.id}"><input type="hidden" name="f" value="${soSem ? 'sem' : ''}"><input type="hidden" name="q" value="${busca}"><div class="field"><label for="cpf-ed-${m.id}">CPF</label><input id="cpf-ed-${m.id}" name="cpf" value="${m.cpf || ''}" inputmode="numeric" maxlength="14" autocomplete="off"></div><div class="field"><label for="nasc-ed-${m.id}">Data de nascimento</label><input id="nasc-ed-${m.id}" name="nascimento" type="date" value="${m.nascimento || ''}"></div><div class="field"><label for="pix-ed-c-${m.id}">Chave Pix</label><input id="pix-ed-c-${m.id}" name="pix" value="${m.pix || ''}" required maxlength="120" autocomplete="off"><p class="hint">CPF, CNPJ, celular, e-mail ou chave aleatória.</p></div>
 ${m.identidade ? '' : html`<p class="bad-t">Identidade pendente. Confirme o vínculo pelo id do Agilizone antes de cadastrar.</p>`}<div class="acoes-f"><button type="button" class="btn btn-ghost" data-fecha>Cancelar</button><button class="btn btn-pri" ${m.identidade ? '' : 'disabled'}>Salvar Pix</button></div></form></dialog></td></tr>`;
   res.send(page(req, { titulo: 'Entregadores', compacto: true, eyebrow: 'Cadastro', sub: l.nome,
     acoes: conectada ? html`<form method="post" action="/entregadores/atualizar" data-carregando="Buscando no Agilizone…"><input type="hidden" name="loja" value="${l.id}"><input type="hidden" name="f" value="${soSem ? 'sem' : ''}"><input type="hidden" name="q" value="${busca}"><button class="btn btn-sec">Atualizar do Agilizone</button></form>` : '' }, html`
 ${lojas.length > 1 ? html`<nav class="pills" aria-label="Loja">${lojas.map((x) => html`<a href="${qs({ loja: x.id })}" class="${x.id === l.id ? 'on' : ''}">${lojaCurta(x.nome)}</a>`)}</nav>` : ''}
 <section class="card"><div class="card-h"><div class="t"><h2>${todos.length} entregadores · ${sem.length} sem chave Pix</h2><p>Chaves cadastradas por loja, para as próximas importações.</p></div></div>
 <div class="card-b"><form method="get" class="linha-form"><input type="hidden" name="loja" value="${l.id}"><div class="field"><label for="ent-busca">Buscar por nome</label><input id="ent-busca" name="q" type="search" value="${busca}" placeholder="Nome do entregador"></div><label><input type="checkbox" name="f" value="sem" ${soSem ? 'checked' : ''}> Sem chave Pix</label><button class="btn btn-sec">Filtrar</button><a class="btn btn-ghost" href="${qs({q: '', f: ''})}">Limpar</a></form></div>
-<div class="tw"><table><thead><tr><th>Entregador e loja</th><th>Chave Pix</th><th class="n">Ação</th></tr></thead><tbody>${lista.map(linha)}${lista.length ? '' : html`<tr><td colspan="3">Nenhum entregador com estes filtros.</td></tr>`}</tbody></table></div></section>`));
+<div class="tw"><table><thead><tr><th>Entregador e loja</th><th>CPF</th><th>Nascimento</th><th>Chave Pix</th><th class="n">Ação</th></tr></thead><tbody>${lista.map(linha)}${lista.length ? '' : html`<tr><td colspan="5">Nenhum entregador com estes filtros.</td></tr>`}</tbody></table></div></section>`));
 });
 app.post('/entregadores/atualizar', so((r) => editaMotoboy(r.user)), async (req, res, next) => {
   const { l } = lojaEntregadores(req), url = '/entregadores?' + new URLSearchParams({loja:l.id, f:req.body.f === 'sem' ? 'sem' : '', q:String(req.body.q || '').slice(0,120)});
@@ -935,13 +935,20 @@ app.post('/entregadores/:id', so((r) => editaMotoboy(r.user)), (req, res) => {
   if (!m) throw falha('Entregador não encontrado nesta loja.', 404);
   const pix = String(req.body.pix || '').trim();
   if (!pixValido(pix)) return volta(res, url, 'erro', `${m.nome}: chave PIX inválida. Use CPF, CNPJ, celular (com ou sem +55), e-mail ou chave aleatória.`);
-  if (pix === m.pix) return volta(res, url, 'ok', `${m.nome}: sem mudanças.`);
+  const cpf = String(req.body.cpf || '').replace(/\D/g, ''), nasc = String(req.body.nascimento || '').trim();
+  if (cpf && cpf.length !== 11) return volta(res, url, 'erro', `${m.nome}: CPF deve ter 11 números.`);
+  if (nasc && (!/^\d{4}-\d{2}-\d{2}$/.test(nasc) || isNaN(Date.parse(nasc)))) return volta(res, url, 'erro', `${m.nome}: data de nascimento inválida.`);
   if (!m.identidade) return volta(res, url, 'erro', 'Identidade pendente: este entregador precisa de vínculo pelo id do Agilizone. Nenhuma chave foi associada pelo nome.');
+  const dadosMudaram = cpf !== (m.cpf || '') || nasc !== (m.nascimento || '');
+  if (pix === m.pix && !dadosMudaram) return volta(res, url, 'ok', `${m.nome}: sem mudanças.`);
   tx(() => {
+  if (dadosMudaram) { db.prepare('UPDATE motoboys SET cpf = ?, nascimento = ? WHERE id = ?').run(cpf || null, nasc || null, m.id); log(req.user.id, 'entregadores', `CPF/nascimento de ${m.nome} atualizados`); }
+  if (pix !== m.pix) {
   salvaPixCadastro(l.id, m.id, pix, req.user.id);
   log(req.user.id, 'entregadores', `PIX de ${m.nome} (${l.nome}) ${m.pix ? `alterado de ${m.pix} para ${pix}` : `cadastrado: ${pix}`}`);
+  }
   });
-  volta(res, url, 'ok', `${m.nome}: chave PIX salva.`);
+  volta(res, url, 'ok', `${m.nome}: dados salvos.`);
 });
 
 // ---- Importação direto da API do Agilizone (alternativa ao envio dos arquivos) ----

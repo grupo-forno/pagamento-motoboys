@@ -878,7 +878,11 @@ const sincronizado = new Map(); // loja_id -> quando foi a última busca
 let sincronizando = false;
 async function sincronizaEntregadores(l, dias) {
   const lista = await AGZ_API.entregadores(l, dias), antes = db.prepare('SELECT COUNT(*) n FROM motoboys').get().n;
-  for (const e of lista) motoboyDoAgilizone(l, e.id, e.nome);
+  for (const e of lista) {
+    const id = motoboyDoAgilizone(l, e.id, e.nome), cpf = String(e.cpf || '').replace(/\D/g, '');
+    if (cpf.length === 11) db.prepare("UPDATE motoboys SET cpf = ? WHERE id = ? AND IFNULL(cpf, '') = ''").run(cpf, id);
+    if (e.pix && pixValido(e.pix) && !pixCadastro(l.id, id)?.pix) salvaPixCadastro(l.id, id, e.pix, null); // só preenche vazio; nunca sobrescreve
+  }
   sincronizado.set(l.id, Date.now());
   return { achados: lista.length, novos: db.prepare('SELECT COUNT(*) n FROM motoboys').get().n - antes };
 }

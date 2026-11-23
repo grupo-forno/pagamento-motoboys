@@ -91,7 +91,18 @@ function paraImportacao(orders, { tz = 'America/Fortaleza', de = '0000-01-01', a
 
 // Entregadores que aparecem nos pedidos dos últimos dias (a API não tem lista de entregadores): id e nome mais recente.
 // A janela máxima da API é de cerca de 3 meses.
+// GET /deliverymen traz todos os vinculados (e cpf/pixKeys se a credencial tiver DELIVERYMAN_PAYOUT); sem o escopo DELIVERYMEN (403), cai nos pedidos.
+async function listaDeliverymen(l) {
+  const out = [];
+  for (let page = 1; page <= 1000; page++) {
+    const j = await get(l, '/deliverymen', { page, pageSize: 100 });
+    for (const d of j.data) out.push({ id: d.id, nome: String(d.name || '').trim() || `Entregador ${d.id}`, cpf: d.cpf || null, pix: (d.pixKeys || [])[0] || null });
+    if (!j.data.length || out.length >= j.total) return out;
+  }
+  return out;
+}
 async function entregadores(l, dias = 80) {
+  try { return await listaDeliverymen(l); } catch (e) { if (!/erro 403/.test(e.message)) throw e; }
   const ate = new Date(), de = new Date(ate.getTime() - dias * 864e5), por = new Map();
   for (const o of await pedidos(l, de.toISOString(), ate.toISOString()))
     if (o.deliveryman?.id != null && !por.has(o.deliveryman.id)) por.set(o.deliveryman.id, String(o.deliveryman.name || '').trim() || `Entregador ${o.deliveryman.id}`);

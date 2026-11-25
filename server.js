@@ -969,6 +969,7 @@ app.post('/entregadores/:id', so((r) => editaMotoboy(r.user)), (req, res) => {
 // por e-mail e para a pasta do Google Drive, com o título "DD-MM-AAAA - MOTOBOYS". O fluxo por fechamento segue disponível.
 // Centro de custo: o nome curto da loja (LESTE, DIRCEU, SUL...).
 const centroDa = (l) => lojaCurta(l.nome).replace(/centro de distribui[cç][aã]o\s*/i, '').replace(/\s+ativa$/i, '').trim().toUpperCase();
+const CONF_HORA = '12'; // corte da conferência geral: 12h do 1º dia até 12h do dia do pagamento
 const cacheConf = new Map(); // `${loja}|${data}` -> { em, resumo } (5 min; "Atualizar do Agilizone" ignora)
 async function lojaNoDia(l, d, renova) {
   const ref = AG.diasReferencia(calendarioDa(l), d);
@@ -979,23 +980,35 @@ async function lojaNoDia(l, d, renova) {
   let c = cacheConf.get(k);
   if (renova || !c || Date.now() - c.em > 5 * 60e3) {
     try {
-      const h = String(VIRADA_H).padStart(2, '0');
-      const orders = await AGZ_API.pedidos(l, `${base.ini}T${h}:00:00-03:00`, `${AG.soma(base.fim, 1)}T${h}:00:00-03:00`);
-      c = { em: Date.now(), resumo: AGZ_API.paraImportacao(orders, { tz: TZ, de: base.ini, ate: base.fim }).resumo };
+      // Mesmo filtro usado no Agilizone: do 1º dia de referência às 12h até o dia do pagamento às 12h (Teresina).
+      const orders = await AGZ_API.pedidos(l, `${base.ini}T${CONF_HORA}:00:00-03:00`, `${d}T${CONF_HORA}:00:00-03:00`);
+      c = { em: Date.now(), resumo: AGZ_API.paraImportacao(orders, { tz: TZ }).resumo };
       cacheConf.set(k, c);
     } catch (e) { return { ...base, erro: e.message }; }
   }
+  // Resumo importado: o valor a pagar vem dele (taxas + ocorrências − já pago); os pedidos da API servem de conferência.
+  const cr = db.prepare('SELECT * FROM conf_resumo WHERE pagamento = ? AND loja_id = ?').get(d, l.id);
+  const res = cr ? new Map(JSON.parse(cr.linhas).map((r) => [semAcento(r.entregador).trim(), r])) : null;
+  base.resumo = cr ? { arquivo: cr.arquivo, em: cr.em } : null;
   base.itens = c.resumo.map((r) => {
     const id = motoboyDoAgilizone(l, r.agzId, r.entregador), m = db.prepare('SELECT * FROM motoboys WHERE id = ?').get(id), pix = pixCadastro(l.id, id);
-    const falta = [!m.nome_completo && 'nome completo', !CONF.docValido(m.cpf) && 'CPF/CNPJ'].filter(Boolean);
-    return { m: { ...m, pix: pix?.pix, identidade: pix?.agz_id }, pedidos: r.pedidos, valor: r.total, falta, semPix: !pix?.pix };
+    const rr = res?.get(semAcento(r.entregador).trim());
+    if (rr) res.delete(semAcento(r.entregador).trim());
+    const falta = [!m.nome_completo && 'nome completo', !CONF.docValido(m.cpf) && 'CPF/CNPJ', res && !rr && 'linha no Resumo'].filter(Boolean);
+    const valorRes = rr ? rr.total + rr.ocorrencias - rr.pago : null;
+    return { m: { ...m, pix: pix?.pix, identidade: pix?.agz_id }, pedidos: r.pedidos, valorApi: r.total, rr, valor: rr ? valorRes : r.total, falta, semPix: !pix?.pix };
   }).sort((a, b) => nomeEnt(a.m).localeCompare(nomeEnt(b.m), 'pt-BR'));
+  base.soNoResumo = res ? [...res.values()].filter((r) => r.total + r.ocorrencias - r.pago > 0).map((r) => r.entregador) : []; // no Resumo, sem pedido no período da API
   return base;
 }
 async function conferenciaDoDia(d, renova) {
   const lojas = db.prepare('SELECT * FROM lojas ORDER BY nome').all();
   return (await Promise.all(lojas.map((l) => lojaNoDia(l, d, renova)))).filter(Boolean);
 }
+const bloqueiosDo = (dia) => dia.flatMap((x) => { const lj = lojaCurta(x.loja.nome); return x.erro ? [`${lj}: ${x.erro}`] : [
+  ...(x.resumo ? [] : [`${lj}: importe o Resumo de entregas (.csv) na aba da loja`]),
+  ...x.soNoResumo.map((n) => `${n} (${lj}): está no Resumo, mas não tem pedido no período da API`),
+  ...x.itens.filter((i) => i.falta.length && (i.valor > 0 || i.falta.includes('linha no Resumo'))).map((i) => `${nomeEnt(i.m)} (${lj}): falta ${i.falta.join(' e ')}`)]; });
 const linhasPlanilha = (dia) => dia.flatMap((x) => x.itens.filter((i) => i.valor > 0).map((i) => ({ nome: nomeEnt(i.m), doc: i.m.cpf, centro: centroDa(x.loja), valor: i.valor })));
 const envioDo = (d) => db.prepare('SELECT e.*, u.nome por FROM envios e LEFT JOIN usuarios u ON u.id = e.enviado_por WHERE pagamento = ?').get(d);
 const dataOk = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '') && !isNaN(Date.parse(d));
@@ -1007,8 +1020,7 @@ app.get('/conferencia', so((r) => confere(r.user)), async (req, res, next) => { 
   const dia = await conferenciaDoDia(d, req.query.renova === '1'), env = envioDo(d);
   const aba = dia.find((x) => String(x.loja.id) === req.query.aba) ? req.query.aba : 'geral';
   const total = dia.reduce((s, x) => s + x.itens.reduce((t, i) => t + i.valor, 0), 0), nEnt = dia.reduce((s, x) => s + x.itens.length, 0);
-  const bloqueios = dia.flatMap((x) => [...(x.erro ? [`${lojaCurta(x.loja.nome)}: ${x.erro}`] : []), ...x.itens.filter((i) => i.falta.length && i.valor > 0).map((i) => `${nomeEnt(i.m)} (${lojaCurta(x.loja.nome)}): falta ${i.falta.join(' e ')}`)]);
-  const semPix = dia.reduce((s, x) => s + x.itens.filter((i) => i.semPix).length, 0);
+  const bloqueios = bloqueiosDo(dia);  const semPix = dia.reduce((s, x) => s + x.itens.filter((i) => i.semPix).length, 0);
   const url = (o) => '/conferencia?' + new URLSearchParams({ d, aba, ...o });
   const dlg = (x, i) => { const m = i.m, k = `c-${x.loja.id}-${m.id}`; return html`<button type="button" class="btn btn-sec btn-sm" data-abre="${k}">Editar</button>
 <dialog id="${k}" class="dlg sheet ent-sheet" aria-labelledby="${k}-t"><h2 id="${k}-t">Editar · ${nomeEnt(m)}</h2><p>${x.loja.nome} · no Agilizone: ${m.nome}</p>
@@ -1017,16 +1029,18 @@ app.get('/conferencia', so((r) => confere(r.user)), async (req, res, next) => { 
 <div class="field"><label for="${k}-c">CPF ou CNPJ</label><input id="${k}-c" name="cpf" value="${m.cpf ? CONF.docFmt(m.cpf) : ''}" inputmode="numeric" maxlength="18" required autocomplete="off"><p class="hint">11 números (CPF) ou 14 (CNPJ).</p></div>
 <input type="hidden" name="nascimento" value="${m.nascimento || ''}"><div class="field"><label for="${k}-p">Chave Pix</label><input id="${k}-p" name="pix" value="${m.pix || ''}" required maxlength="120" autocomplete="off"></div>
 ${m.identidade ? '' : html`<p class="bad-t">Identidade pendente: vínculo pelo id do Agilizone não confirmado.</p>`}<div class="acoes-f"><button type="button" class="btn btn-ghost" data-fecha>Cancelar</button><button class="btn btn-pri" ${m.identidade ? '' : 'disabled'}>Salvar</button></div></form></dialog>`; };
-  const tabLoja = (x) => html`<section class="card"><div class="card-h"><div class="t"><h2>${x.loja.nome}</h2><p>Pedidos de ${dataFmt(x.ini)} a ${dataFmt(x.fim)} · centro de custo ${centroDa(x.loja)}</p></div></div>
-${x.erro ? html`<div class="card-b"><div class="alert bad">${icone('erro')}<div>${x.erro}</div></div></div>` : html`<div class="tw"><table><thead><tr><th>Entregador</th><th>CPF/CNPJ</th><th class="n">Pedidos</th><th class="n">Valor</th><th>Situação</th><th class="n">Ação</th></tr></thead><tbody>
-${x.itens.map((i) => html`<tr><th scope="row">${nomeEnt(i.m)}${i.m.nome_completo && i.m.nome_completo !== i.m.nome ? html`<small class="mut">Agilizone: ${i.m.nome}</small>` : ''}</th><td>${i.m.cpf ? CONF.docFmt(i.m.cpf) : '—'}</td><td class="n">${i.pedidos}</td><td class="n">${brl(i.valor)}</td>
+  const tabLoja = (x) => html`<section class="card"><div class="card-h"><div class="t"><h2>${x.loja.nome}</h2><p>Pedidos de ${dataFmt(x.ini)} ${CONF_HORA}h a ${dataFmt(d)} ${CONF_HORA}h · centro de custo ${centroDa(x.loja)}</p></div></div>
+${env ? '' : html`<form method="post" action="/conferencia/resumo" enctype="multipart/form-data" class="card-b linha-form" data-carregando="Lendo o Resumo…"><input type="hidden" name="d" value="${d}"><input type="hidden" name="loja" value="${x.loja.id}"><div class="field"><label for="res-${x.loja.id}">Resumo de entregas por entregador (.csv) ${x.resumo ? html`<span class="badge ok">Importado: ${x.resumo.arquivo || 'Resumo'} · ${quando(x.resumo.em)}</span>` : html`<span class="badge bad">Falta importar</span>`}</label><input id="res-${x.loja.id}" name="resumo" type="file" accept=".csv" required><p class="hint">No Agilizone: Relatório de Pedidos com o filtro ${dataFmt(x.ini)} ${CONF_HORA}:00 a ${dataFmt(d)} ${CONF_HORA}:00 › Resumo de entregas por entregador › Exportar Resumo. O valor a pagar vem dele (com ocorrências e o já pago).</p></div><button class="btn btn-sec">${icone('subir', 'sm')} ${x.resumo ? 'Trocar Resumo' : 'Importar Resumo'}</button></form>`}
+${x.soNoResumo.length ? html`<div class="card-b"><div class="alert bad">${icone('alerta')}<div>No Resumo, mas sem pedidos no período da API: ${x.soNoResumo.join(', ')}. Confira o filtro de datas do Resumo.</div></div></div>` : ''}
+${x.erro ? html`<div class="card-b"><div class="alert bad">${icone('erro')}<div>${x.erro}</div></div></div>` : html`<div class="tw"><table><thead><tr><th>Entregador</th><th>CPF/CNPJ</th><th class="n">Pedidos</th><th class="n">Pedidos (API)</th><th class="n">Ocorrências</th><th class="n">Já pago</th><th class="n">A pagar</th><th>Situação</th><th class="n">Ação</th></tr></thead><tbody>
+${x.itens.map((i) => html`<tr><th scope="row">${nomeEnt(i.m)}${i.m.nome_completo && i.m.nome_completo !== i.m.nome ? html`<small class="mut">Agilizone: ${i.m.nome}</small>` : ''}</th><td>${i.m.cpf ? CONF.docFmt(i.m.cpf) : '—'}</td><td class="n">${i.pedidos}</td><td class="n">${brl(i.valorApi)}${i.rr && i.rr.total !== i.valorApi ? html`<small class="bad-t">Resumo: ${brl(i.rr.total)}</small>` : ''}</td><td class="n">${i.rr?.ocorrencias ? brl(i.rr.ocorrencias) : '—'}</td><td class="n">${i.rr?.pago ? brl(-i.rr.pago) : '—'}</td><td class="n"><b>${brl(i.valor)}</b></td>
 <td>${i.falta.length ? html`<span class="badge bad">Falta ${i.falta.join(' e ')}</span>` : i.semPix ? html`<span class="badge warn">Sem Pix</span>` : html`<span class="badge ok">OK</span>`}</td><td class="n">${dlg(x, i)}</td></tr>`)}
-${x.itens.length ? '' : html`<tr><td colspan="6">Nenhum pedido entregue no período.</td></tr>`}</tbody>
-<tfoot><tr><th>Total</th><td></td><td class="n">${x.itens.reduce((s, i) => s + i.pedidos, 0)}</td><td class="n"><b>${brl(x.itens.reduce((s, i) => s + i.valor, 0))}</b></td><td colspan="2"></td></tr></tfoot></table></div>`}</section>`;
+${x.itens.length ? '' : html`<tr><td colspan="9">Nenhum pedido entregue no período.</td></tr>`}</tbody>
+<tfoot><tr><th>Total</th><td></td><td class="n">${x.itens.reduce((s, i) => s + i.pedidos, 0)}</td><td class="n">${brl(x.itens.reduce((s, i) => s + i.valorApi, 0))}</td><td colspan="2"></td><td class="n"><b>${brl(x.itens.reduce((s, i) => s + i.valor, 0))}</b></td><td colspan="2"></td></tr></tfoot></table></div>`}</section>`;
   const geral = html`<section class="card"><div class="card-h"><div class="t"><h2>Resumo geral · pagamento de ${diaLongo(d)}</h2><p>${dia.length} loja(s) · ${nEnt} entregador(es) · total ${brl(total)}</p></div></div>
 <div class="tw"><table><thead><tr><th>Loja</th><th>Período</th><th class="n">Entregadores</th><th class="n">Valor</th><th>Situação</th></tr></thead><tbody>
-${dia.map((x) => { const pend = x.itens.filter((i) => i.falta.length && i.valor > 0).length; return html`<tr><th scope="row"><a href="${url({ aba: x.loja.id })}">${lojaCurta(x.loja.nome)}</a></th><td>${dataFmt(x.ini)} a ${dataFmt(x.fim)}</td><td class="n">${x.itens.length}</td><td class="n">${brl(x.itens.reduce((s, i) => s + i.valor, 0))}</td>
-<td>${x.erro ? html`<span class="badge bad">Erro no Agilizone</span>` : pend ? html`<span class="badge bad">${pend} cadastro(s) incompleto(s)</span>` : html`<span class="badge ok">OK</span>`}</td></tr>`; })}
+${dia.map((x) => { const pend = bloqueiosDo([x]).length; return html`<tr><th scope="row"><a href="${url({ aba: x.loja.id })}">${lojaCurta(x.loja.nome)}</a></th><td>${dataFmt(x.ini)} ${CONF_HORA}h a ${dataFmt(d)} ${CONF_HORA}h</td><td class="n">${x.itens.length}</td><td class="n">${brl(x.itens.reduce((s, i) => s + i.valor, 0))}</td>
+<td>${x.erro ? html`<span class="badge bad">Erro no Agilizone</span>` : !x.resumo ? html`<span class="badge bad">Falta o Resumo</span>` : pend ? html`<span class="badge bad">${pend} pendência(s)</span>` : html`<span class="badge ok">OK</span>`}</td></tr>`; })}
 ${dia.length ? '' : html`<tr><td colspan="5">Nenhuma loja paga neste dia.</td></tr>`}</tbody><tfoot><tr><th>Total</th><td></td><td class="n">${nEnt}</td><td class="n"><b>${brl(total)}</b></td><td></td></tr></tfoot></table></div></section>
 ${bloqueios.length ? html`<div class="alert bad" role="alert">${icone('alerta')}<div><b>Corrija antes de enviar (${bloqueios.length})</b><ul>${bloqueios.map((b) => html`<li>${b}</li>`)}</ul></div></div>` : ''}
 ${semPix ? html`<div class="alert warn">${icone('info')}<div>${semPix} entregador(es) sem chave Pix cadastrada. Não impede o envio (a planilha não leva o Pix).</div></div>` : ''}`;
@@ -1039,10 +1053,23 @@ ${semPix ? html`<div class="alert warn">${icone('info')}<div>${semPix} entregado
   res.send(page(req, { titulo: 'Conferência geral', compacto: true, eyebrow: 'Pagamento de entregadores', sub: `Pagamento de ${diaLongo(d)} · ${env ? 'Enviado' : 'Em conferência'}`,
     acoes: html`<a class="btn btn-sec" href="${url({ renova: '1' })}" data-carregando="Buscando no Agilizone…">Atualizar do Agilizone</a>` }, html`
 <nav class="pills" aria-label="Dia de pagamento">${datas.map((x) => html`<a href="/conferencia?d=${x}" class="${x === d ? 'on' : ''}">${dataFmt(x).slice(0, 5)} ${diaLongo(x).split(' ')[0]}${envioDo(x) ? ' ✓' : ''}</a>`)}<form method="get" class="linha-form" style="display:inline-flex"><label class="sr" for="c-d">Outra data</label><input id="c-d" type="date" name="d" value="${d}"><button class="btn btn-ghost btn-sm">Ir</button></form></nav>
-<nav class="seg" aria-label="Abas"><a href="${url({ aba: 'geral' })}" class="${aba === 'geral' ? 'on' : ''}">Geral</a>${dia.map((x) => html`<a href="${url({ aba: x.loja.id })}" class="${aba === String(x.loja.id) ? 'on' : ''}">${lojaCurta(x.loja.nome)}${x.erro || x.itens.some((i) => i.falta.length && i.valor > 0) ? html`<span class="c">!</span>` : ''}</a>`)}</nav>
+<nav class="seg" aria-label="Abas"><a href="${url({ aba: 'geral' })}" class="${aba === 'geral' ? 'on' : ''}">Geral</a>${dia.map((x) => html`<a href="${url({ aba: x.loja.id })}" class="${aba === String(x.loja.id) ? 'on' : ''}">${lojaCurta(x.loja.nome)}${bloqueiosDo([x]).length ? html`<span class="c">!</span>` : ''}</a>`)}</nav>
 ${aba === 'geral' ? geral : tabLoja(dia.find((x) => String(x.loja.id) === aba))}
 ${envio}`));
 } catch (e) { next(e); } });
+
+app.post('/conferencia/resumo', so((r) => confere(r.user)), (req, res, next) => umResumo(req, res, (e) => { try {
+  const d = String(req.body.d || ''), l = db.prepare('SELECT * FROM lojas WHERE id = ?').get(Number(req.body.loja)), url = `/conferencia?d=${d}&aba=${l?.id}`;
+  if (e) return volta(res, url, 'erro', 'Arquivo inválido ou grande demais.');
+  if (!dataOk(d) || !l) throw falha('Loja ou data inválida.');
+  if (envioDo(d)) return volta(res, url, 'erro', 'Este pagamento já foi enviado.');
+  if (!req.file) return volta(res, url, 'erro', 'Escolha o arquivo do Resumo (.csv).');
+  let linhas; try { linhas = lerResumo(req.file.buffer); } catch (er) { return volta(res, url, 'erro', er.message); }
+  db.prepare('INSERT INTO conf_resumo (pagamento, loja_id, linhas, arquivo, por) VALUES (?,?,?,?,?) ON CONFLICT DO UPDATE SET linhas = excluded.linhas, arquivo = excluded.arquivo, por = excluded.por, em = datetime(\'now\',\'localtime\')')
+    .run(d, l.id, JSON.stringify(linhas), nomeArq(req.file.originalname), req.user.id);
+  log(req.user.id, 'conferencia', `Resumo de ${l.nome} para ${dataFmt(d)} importado: ${linhas.length} entregadores`);
+  volta(res, url, 'ok', `Resumo importado: ${linhas.length} entregadores. Confira a coluna "A pagar".`);
+} catch (er) { next(er); } }));
 
 app.get('/conferencia/planilha', so((r) => confere(r.user)), async (req, res, next) => { try {
   const d = String(req.query.d || '');
@@ -1063,8 +1090,8 @@ app.post('/conferencia/enviar', so((r) => confere(r.user)), async (req, res, nex
   if (envioDo(d)) return volta(res, url, 'erro', 'Este pagamento já foi enviado.');
   if (req.body.ok !== '1') return volta(res, url, 'erro', 'Marque que conferiu todas as lojas antes de enviar.');
   const dia = await conferenciaDoDia(d, true); // envia com os dados mais recentes do Agilizone
-  const erros = dia.filter((x) => x.erro), incompletos = dia.flatMap((x) => x.itens.filter((i) => i.falta.length && i.valor > 0));
-  if (erros.length || incompletos.length) return volta(res, url, 'erro', `Nada foi enviado: ${erros.length ? `${erros.length} loja(s) com erro no Agilizone` : `${incompletos.length} cadastro(s) incompleto(s)`}. Confira e tente de novo.`);
+  const pend = bloqueiosDo(dia);
+  if (pend.length) return volta(res, url, 'erro', `Nada foi enviado: ${pend.length} pendência(s), ex.: ${pend[0]}. Confira e tente de novo.`);
   const linhas = linhasPlanilha(dia), total = linhas.reduce((s, l) => s + l.valor, 0), titulo = CONF.titulo(d), buf = CONF.planilha(d, linhas);
   if (!linhas.length) return volta(res, url, 'erro', 'Nenhum valor a pagar neste dia.');
   const para = listaEmails(cfg('email_para'));

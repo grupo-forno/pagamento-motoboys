@@ -51,7 +51,7 @@ test('conferente: vê todas as lojas, completa o cadastro (CNPJ) e envia a plani
   assert.strictEqual((await get(ck, '/')).headers.get('location'), '/conferencia');
   let h = await (await get(ck, `/conferencia?d=${D}`)).text();
   assert.ok(h.includes('Resumo geral'), 'aba geral');
-  assert.ok(h.includes('cadastro(s) incompleto(s)'), 'bloqueia sem nome completo/CPF');
+  assert.ok(h.includes('falta nome completo'), 'bloqueia sem nome completo/CPF');
   assert.ok(/<button class="btn btn-pri" disabled>/.test(h), 'envio bloqueado');
   // completa o cadastro (um com CNPJ); os mesmos ids do Agilizone aparecem em todas as lojas do teste
   for (const [agz, nome, doc] of [[7, 'Kevin Souza Lima', '077.900.303-96'], [8, 'Marcos Transportes LTDA', '12.345.678/0001-99']]) {
@@ -60,6 +60,14 @@ test('conferente: vê todas as lojas, completa o cadastro (CNPJ) e envia a plani
     assert.match(loc, /dados salvos/, loc);
   }
   assert.match(await post(ck, '/entregadores/1', { loja: sul.id, nome_completo: 'Só', cpf: '123', pix: 'a@b.com' }), /CPF deve ter 11|nome completo|não encontrado/);
+  assert.match(await post(ck, '/conferencia/enviar', { d: D, ok: '1' }), /Resumo/, 'sem Resumo não envia');
+  // Resumo de cada loja: Kevin com 1 ocorrência de R$ 2,50 (o valor a pagar vem do Resumo)
+  const csv = 'Entregador;Pedidos;Soma das taxas de entrega;Ocorrências;Ocorrências + Taxas;Pago\nKevin;2;17,50;1;20,00;0,00\nMarcos;1;6,00;0;6,00;0,00\n';
+  for (const { id } of db.prepare('SELECT id FROM lojas').all()) {
+    const fd = new FormData(); fd.set('d', D); fd.set('loja', id); fd.set('resumo', new Blob([csv]), 'resumo.csv');
+    const loc = decodeURIComponent((await fetch(B + '/conferencia/resumo', { method: 'POST', headers: { cookie: ck }, body: fd, redirect: 'manual' })).headers.get('location'));
+    assert.match(loc, /Resumo importado: 2/, loc);
+  }
   h = await (await get(ck, `/entregadores?ver=todas`)).text();
   assert.ok(h.includes('12.345.678/0001-99') && h.includes('Marcos Transportes LTDA'), 'lista todas as lojas com CNPJ');
   const loc = await post(ck, '/conferencia/enviar', { d: D, ok: '1' });
@@ -67,12 +75,12 @@ test('conferente: vê todas as lojas, completa o cadastro (CNPJ) e envia a plani
   const e = db.prepare('SELECT * FROM envios WHERE pagamento = ?').get(D);
   const nLojas = db.prepare('SELECT COUNT(*) n FROM lojas').get().n; // todas pagam na segunda
   assert.strictEqual(e.linhas, 2 * nLojas);
-  assert.strictEqual(e.total, 2350 * nLojas);
+  assert.strictEqual(e.total, 2600 * nLojas);
   const r = await get(ck, `/conferencia/planilha?d=${D}`);
   assert.match(r.headers.get('content-disposition'), /23-11-2026 - MOTOBOYS\.xlsx/);
   const linhas = XLSX.utils.sheet_to_json(XLSX.read(Buffer.from(await r.arrayBuffer())).Sheets.Planilha1, { header: 1, raw: false });
   assert.deepStrictEqual(linhas[0], ['VENCIMENTO', 'NOME', 'CPF/CNPJ', 'DESCRIÇÃO', 'CATEGORIA', 'CENTRO DE CUSTO', 'VALOR']);
-  assert.ok(linhas.some((l) => JSON.stringify(l) === JSON.stringify(['23/11/2026', 'KEVIN SOUZA LIMA', '077.900.303-96', 'Motoboys Sul', 'Motoboys', 'SUL', '-17.50'])), JSON.stringify(linhas));
+  assert.ok(linhas.some((l) => JSON.stringify(l) === JSON.stringify(['23/11/2026', 'KEVIN SOUZA LIMA', '077.900.303-96', 'Motoboys Sul', 'Motoboys', 'SUL', '-20.00'])), JSON.stringify(linhas));
   assert.ok(linhas.some((l) => l[2] === '12.345.678/0001-99' && l[5] === 'LESTE' && l[3] === 'Motoboys Leste'), 'centro de custo da Leste');
   assert.match(await post(ck, '/conferencia/enviar', { d: D, ok: '1' }), /já foi enviado/);
 });

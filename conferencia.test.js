@@ -1,0 +1,78 @@
+// Conferência geral: todas as lojas do dia, cadastro com nome completo e CPF/CNPJ, planilha no modelo e envio.
+const { test, before, after } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), http = require('node:http');
+const { spawn } = require('node:child_process');
+const XLSX = require('xlsx');
+
+const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-conf-'));
+process.env.DATA_DIR = DIR;
+const { db, hashSenha } = require('./db');
+const { variaveis } = require('./agilizone');
+const CONF = require('./conferencia');
+const PORT = 4700 + Math.floor(Math.random() * 90), B = `http://127.0.0.1:${PORT}`;
+const D = '2026-11-23'; // segunda: SUL paga sex/sab/dom
+let srv, mock, sul;
+
+before(async () => {
+  mock = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.url.startsWith('/auth/token')) return res.end(JSON.stringify({ access_token: 'tok', expires_in: 86400 }));
+    const de = new Date(new URL(req.url, 'http://x').searchParams.get('from')).getTime();
+    const o = (id, e, fee, h) => ({ id, orderDisplayNumber: id, status: 'COMPLETED', deliveryman: e, deliverymanFee: fee, createdAt: new Date(de + h * 36e5).toISOString() });
+    const data = [o('a1', { id: 7, name: 'Kevin' }, 7.5, 3), o('a2', { id: 7, name: 'Kevin' }, 10, 30), o('a3', { id: 8, name: 'Marcos' }, 6, 4)];
+    res.end(JSON.stringify({ data, page: 1, pageSize: 100, total: data.length }));
+  });
+  await new Promise((ok) => mock.listen(0, '127.0.0.1', ok));
+  sul = db.prepare("SELECT * FROM lojas WHERE nome LIKE '%SUL'").get();
+  const v = variaveis(sul);
+  const creds = Object.fromEntries(db.prepare('SELECT * FROM lojas').all().flatMap((l) => [[variaveis(l).id, 'cid'], [variaveis(l).secret, 's']])); // todas conectadas (Agilizone falso)
+  db.prepare("INSERT INTO config (chave, valor) VALUES ('email_para', 'fin@exemplo.com')").run();
+  db.prepare('INSERT INTO usuarios (nome, login, senha, perfil) VALUES (?,?,?,?)').run('Conf', 'conf', hashSenha('senha12345'), 'conferente');
+  srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '0', SYNC_ENTREGADORES: '0', EMAIL_SO_ARQUIVO: '1', AGILIZONE_URL: `http://127.0.0.1:${mock.address().port}`, ...creds } });
+  srv.stderr.on('data', (d) => process.stderr.write(d));
+  await new Promise((ok, erro) => { srv.stdout.on('data', (d) => String(d).includes('Pagamento Entregadores') && ok()); srv.on('exit', erro); });
+});
+after(async () => { await new Promise((ok) => { srv.on('exit', ok); srv.kill(); }); mock.close(); db.close(); try { fs.rmSync(DIR, { recursive: true, force: true }); } catch {} });
+
+const entra = async () => (await fetch(`${B}/login`, { method: 'POST', body: new URLSearchParams({ login: 'conf', senha: 'senha12345' }), redirect: 'manual' })).headers.get('set-cookie').split(';')[0];
+const get = (ck, url) => fetch(B + url, { headers: { cookie: ck }, redirect: 'manual' });
+const post = async (ck, url, dados) => decodeURIComponent((await fetch(B + url, { method: 'POST', headers: { cookie: ck }, body: new URLSearchParams(dados), redirect: 'manual' })).headers.get('location') || '');
+
+test('formata CPF/CNPJ e título', () => {
+  assert.strictEqual(CONF.docFmt('07790030396'), '077.900.303-96');
+  assert.strictEqual(CONF.docFmt('12345678000199'), '12.345.678/0001-99');
+  assert.strictEqual(CONF.titulo(D), '23-11-2026 - MOTOBOYS');
+  assert.ok(!CONF.docValido('123'));
+});
+
+test('conferente: vê todas as lojas, completa o cadastro (CNPJ) e envia a planilha no modelo', async () => {
+  const ck = await entra();
+  assert.strictEqual((await get(ck, '/')).headers.get('location'), '/conferencia');
+  let h = await (await get(ck, `/conferencia?d=${D}`)).text();
+  assert.ok(h.includes('Resumo geral'), 'aba geral');
+  assert.ok(h.includes('cadastro(s) incompleto(s)'), 'bloqueia sem nome completo/CPF');
+  assert.ok(/<button class="btn btn-pri" disabled>/.test(h), 'envio bloqueado');
+  // completa o cadastro (um com CNPJ); os mesmos ids do Agilizone aparecem em todas as lojas do teste
+  for (const [agz, nome, doc] of [[7, 'Kevin Souza Lima', '077.900.303-96'], [8, 'Marcos Transportes LTDA', '12.345.678/0001-99']]) {
+    const x = db.prepare('SELECT motoboy_id id, loja_id FROM entregador_pix WHERE agz_id = ?').get(String(agz));
+    const loc = await post(ck, `/entregadores/${x.id}`, { loja: x.loja_id, volta: 'conferencia', d: D, aba: 'geral', nome_completo: nome, cpf: doc, pix: `${agz}@pix.com` });
+    assert.match(loc, /dados salvos/, loc);
+  }
+  assert.match(await post(ck, '/entregadores/1', { loja: sul.id, nome_completo: 'Só', cpf: '123', pix: 'a@b.com' }), /CPF deve ter 11|nome completo|não encontrado/);
+  h = await (await get(ck, `/entregadores?ver=todas`)).text();
+  assert.ok(h.includes('12.345.678/0001-99') && h.includes('Marcos Transportes LTDA'), 'lista todas as lojas com CNPJ');
+  const loc = await post(ck, '/conferencia/enviar', { d: D, ok: '1' });
+  assert.match(loc, /enviado por e-mail/, loc);
+  const e = db.prepare('SELECT * FROM envios WHERE pagamento = ?').get(D);
+  const nLojas = db.prepare('SELECT COUNT(*) n FROM lojas').get().n; // todas pagam na segunda
+  assert.strictEqual(e.linhas, 2 * nLojas);
+  assert.strictEqual(e.total, 2350 * nLojas);
+  const r = await get(ck, `/conferencia/planilha?d=${D}`);
+  assert.match(r.headers.get('content-disposition'), /23-11-2026 - MOTOBOYS\.xlsx/);
+  const linhas = XLSX.utils.sheet_to_json(XLSX.read(Buffer.from(await r.arrayBuffer())).Sheets.Planilha1, { header: 1, raw: false });
+  assert.deepStrictEqual(linhas[0], ['VENCIMENTO', 'NOME', 'CPF/CNPJ', 'DESCRIÇÃO', 'CATEGORIA', 'CENTRO DE CUSTO', 'VALOR']);
+  assert.ok(linhas.some((l) => JSON.stringify(l) === JSON.stringify(['23/11/2026', 'KEVIN SOUZA LIMA', '077.900.303-96', 'Motoboys Sul', 'Motoboys', 'SUL', '-17.50'])), JSON.stringify(linhas));
+  assert.ok(linhas.some((l) => l[2] === '12.345.678/0001-99' && l[5] === 'LESTE' && l[3] === 'Motoboys Leste'), 'centro de custo da Leste');
+  assert.match(await post(ck, '/conferencia/enviar', { d: D, ok: '1' }), /já foi enviado/);
+});

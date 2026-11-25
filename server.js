@@ -3,11 +3,12 @@ const multer = require('multer');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { db, UPLOADS, hashSenha, confereSenha, log, tx } = require('./db');
+const { db, DIR, UPLOADS, hashSenha, confereSenha, log, tx } = require('./db');
 const XLSX = require('xlsx');
 const { lerRelatorio, lerResumo, valorDigitado, pixValido, FILTRO_HORA, VIRADA_H } = require('./importar');
 const AGZ_API = require('./agilizone');
 const AG = require('./agenda');
+const CONF = require('./conferencia');
 const revisao = (...campos) => crypto.createHash('sha1').update(JSON.stringify(campos)).digest('hex').slice(0, 12);
 const revLinha = (l) => revisao(l.nome, l.pix || '', l.obs || '');
 const MSG_ALTERADO = 'foi alterado por outra pessoa (ou em outra aba) depois que você abriu esta tela. Nada foi salvo: recarregue, confira e edite de novo.';
@@ -35,7 +36,7 @@ app.get('/favicon.ico', (req, res) => res.redirect(301, '/marca/favicon.png'));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send('User-agent: *\nDisallow: /\n'));
 app.use('/marca', express.static(path.join(__dirname, 'public'), { maxAge: '1h' })); // logos do Grupo Forno
 
-const PERFIS = { admin: 'TI / Admin', gestao: 'Gestão', financeiro: 'Financeiro', despachante: 'Despachante' };
+const PERFIS = { admin: 'TI / Admin', gestao: 'Gestão', financeiro: 'Financeiro', despachante: 'Despachante', conferente: 'Conferência geral' };
 const STATUS = { rascunho: 'Em conferência', enviado: 'Aguardando aprovação', pago: 'Aprovado, a pagar' }; // 'pago' no banco = aprovado pelo financeiro (não quer dizer pago)
 // Situação mostrada ao usuário (texto sempre presente; a cor só reforça).
 const filhoDe = (id) => db.prepare('SELECT id FROM fechamentos WHERE origem_id = ? ORDER BY id DESC').get(id)?.id;
@@ -73,7 +74,7 @@ ${lk}` : '')) ? qq.ok : '', erro: qq.erro && qq.k === assina('erro', qq.erro) ? 
   const marca = html`<a class="brand" href="/" aria-label="Grupo Forno · Pagamento de entregadores"><img class="logo-h" src="/marca/logo.png" alt=""><span class="marca-t"><b>Entregadores</b><small>Grupo Forno</small></span></a>`;
   // Sucesso de ação pontual: aviso temporário. Erro: fica na página (ou junto ao campo, quando a tela trata).
   const flash = html`${q.ok ? html`<div class="toast" role="status">${icone('ok')}<span>${q.ok}${lk ? html` <a class="toast-a" href="${lk.split('	')[0]}">${lk.split('	')[1] || 'Abrir'}</a>` : ''}</span><button type="button" class="icon-btn" data-fecha-toast aria-label="Fechar aviso">${icone('erro', 'sm')}</button></div>` : ''}${q.erro && !o.erroNoCampo ? html`<div class="alert bad" role="alert">${icone('erro')}<div>${q.erro}</div></div>` : ''}`;
-  const desp = u?.perfil === 'despachante', financeiro = u?.perfil === 'financeiro' || o.financeiro || p === '/pagar';
+  const desp = u?.perfil === 'despachante', conf = u?.perfil === 'conferente', financeiro = u?.perfil === 'financeiro' || o.financeiro || p === '/pagar';
   const emFech = p === '/' || p.startsWith('/fechamentos');
   return html`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#df6d2a">
 <title>${o.titulo} · Entregadores Forno Paulista</title>
@@ -81,9 +82,9 @@ ${lk}` : '')) ? qq.ok : '', erro: qq.erro && qq.k === assina('erro', qq.erro) ? 
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>${new Raw(CSS)}</style><link rel="stylesheet" href="/marca/marca.css?v=${versao('/marca/marca.css')}">${o.css ? html`<link rel="stylesheet" href="${o.css}?v=${versao(o.css)}">` : ''}</head>
 ${u ? html`<body class="${o.largura || ''} ${desp ? 'despachante operacional' : financeiro ? 'financeiro operacional' : ['admin', 'gestao'].includes(u.perfil) ? 'admin operacional' : ''}"><a class="pular" href="#conteudo">Pular para o conteúdo</a><div class="app"><aside class="side" id="menu-lateral"><div class="side-top">${marca}<button type="button" class="icon-btn recolher" data-recolher aria-label="Recolher ou expandir o menu" title="Recolher/expandir menu">${icone('painel')}</button></div>
-<nav class="tabs" aria-label="Menu">${desp ? html`${aba('/', 'pin', 'Pendências', emFech)}${aba('/entregadores', 'moto', 'Entregadores', p.startsWith('/entregadores'))}`
+<nav class="tabs" aria-label="Menu">${conf ? html`${aba('/conferencia', 'caixa', 'Conferência', p.startsWith('/conferencia'))}${aba('/entregadores', 'moto', 'Entregadores', p.startsWith('/entregadores'))}` : desp ? html`${aba('/', 'pin', 'Pendências', emFech)}${aba('/entregadores', 'moto', 'Entregadores', p.startsWith('/entregadores'))}`
     : html`${aba('/', 'caixa', u.perfil === 'financeiro' ? 'Para aprovar' : 'Fechamentos', emFech)}${decideFin(u) ? aba('/pagar', 'carteira', 'Pagamentos', p.startsWith('/pagar')) : ''}`}
-${u.perfil === 'admin' ? html`${aba('/usuarios', 'capacete', 'Usuários', p.startsWith('/usuarios'))}${aba('/entregadores', 'moto', 'Entregadores', p.startsWith('/entregadores'))}${aba('/config', 'ajustes', 'Configurações', p.startsWith('/config'))}` : ''}</nav>
+${u.perfil === 'admin' ? html`${aba('/conferencia', 'enviar', 'Conferência geral', p.startsWith('/conferencia'))}${aba('/usuarios', 'capacete', 'Usuários', p.startsWith('/usuarios'))}${aba('/entregadores', 'moto', 'Entregadores', p.startsWith('/entregadores'))}${aba('/config', 'ajustes', 'Configurações', p.startsWith('/config'))}` : ''}</nav>
 <div class="side-arte" aria-hidden="true"></div><div class="side-user"><div class="who">${avatar(u.nome)}<div class="tx"><b>${u.nome}</b><small>${PERFIS[u.perfil]}${u.loja ? ` · ${lojaCurta(u.loja)}` : ''}</small></div></div>
 <form method="post" action="/logout"><button title="Sair do sistema">${icone('sair', 'sm')}<span class="tx">Sair</span></button></form></div></aside>
 <div class="veu" data-fecha-menu aria-hidden="true"></div>
@@ -155,7 +156,8 @@ const podeEditar = (u, f) => f.status === 'rascunho' && !f.arquivado_em && (u.pe
 const decideFin = (u) => ['admin', 'financeiro'].includes(u.perfil); // aprova/devolve (o estado do fechamento é conferido na ação)
 const podeDevolver = (u, f) => f.status === 'enviado' && decideFin(u);
 const podeReenviar = (u, f) => f.status !== 'rascunho' && (['admin', 'financeiro'].includes(u.perfil) || (u.perfil === 'despachante' && u.loja_id === f.loja_id));
-const editaMotoboy = (u) => ['admin', 'despachante'].includes(u.perfil);
+const editaMotoboy = (u) => ['admin', 'despachante', 'conferente'].includes(u.perfil);
+const confere = (u) => ['admin', 'conferente'].includes(u.perfil); // conferência geral (todas as lojas)
 const so = (cond) => (req, res, next) => (cond(req) ? next() : next(falha('Sem permissão para esta ação.', 403)));
 
 const carregaF = (id) => db.prepare(`SELECT f.*, l.nome loja, u.nome autor, ue.nome enviou FROM fechamentos f JOIN lojas l ON l.id = f.loja_id
@@ -669,6 +671,7 @@ function checklistAdmin() {
 app.get('/', (req, res) => {
   if (req.user.perfil === 'despachante') return pendenciasDespachante(req, res);
   if (req.user.perfil === 'financeiro') return filaFinanceiro(req, res);
+  if (req.user.perfil === 'conferente') return res.redirect('/conferencia');
   const u = req.user, hoje = agora().data;
   const doUsuario = fechamentosDe(u);
   const todos = doUsuario.filter((f) => !f.arquivado_em), arquivados = doUsuario.filter((f) => f.arquivado_em);
@@ -880,7 +883,7 @@ async function sincronizaEntregadores(l, dias) {
   const lista = await AGZ_API.entregadores(l, dias), antes = db.prepare('SELECT COUNT(*) n FROM motoboys').get().n;
   for (const e of lista) {
     const id = motoboyDoAgilizone(l, e.id, e.nome), cpf = String(e.cpf || '').replace(/\D/g, '');
-    if (cpf.length === 11) db.prepare("UPDATE motoboys SET cpf = ? WHERE id = ? AND IFNULL(cpf, '') = ''").run(cpf, id);
+    if (cpf.length === 11 || cpf.length === 14) db.prepare("UPDATE motoboys SET cpf = ? WHERE id = ? AND IFNULL(cpf, '') = ''").run(cpf, id);
     if (e.pix && pixValido(e.pix) && !pixCadastro(l.id, id)?.pix) salvaPixCadastro(l.id, id, e.pix, null); // só preenche vazio; nunca sobrescreve
   }
   sincronizado.set(l.id, Date.now());
@@ -900,32 +903,36 @@ async function sincronizaTodas(dias) {
 const entregadoresDaLoja = (lojaId) => db.prepare(`SELECT m.*, p.pix, p.pix_em, p.pix_por, p.agz_id identidade FROM motoboys m LEFT JOIN entregador_pix p ON p.motoboy_id = m.id AND p.loja_id = ?1 WHERE ativo = 1 AND m.id IN (
   SELECT motoboy_id FROM loja_motoboys WHERE loja_id = ?1 UNION SELECT motoboy_id FROM pedidos WHERE loja_id = ?1 AND motoboy_id IS NOT NULL) ORDER BY nome COLLATE NOCASE`).all(lojaId);
 function lojaEntregadores(req) {
-  const u = req.user, lojas = u.perfil === 'admin' ? db.prepare('SELECT * FROM lojas ORDER BY nome').all() : db.prepare('SELECT * FROM lojas WHERE id = ?').all(u.loja_id);
+  const u = req.user, lojas = ['admin', 'conferente'].includes(u.perfil) ? db.prepare('SELECT * FROM lojas ORDER BY nome').all() : db.prepare('SELECT * FROM lojas WHERE id = ?').all(u.loja_id);
+  const todas = lojas.length > 1 && (req.query.ver ?? req.body?.ver) === 'todas';
   const solicitado = req.query.loja ?? req.body?.loja;
   const l = solicitado ? lojas.find((x) => x.id === Number(solicitado)) : lojas[0];
   if (!l) throw falha('Loja não encontrada.', 404);
-  return { lojas, l };
+  return { lojas, l, todas };
 }
+const urlEntregadores = (req, l, todas) => '/entregadores?' + new URLSearchParams({ loja: l.id, ver: todas ? 'todas' : '', f: req.body.f === 'sem' ? 'sem' : '', q: String(req.body.q || '').slice(0, 120) });
+const nomeEnt = (m) => m.nome_completo || m.nome; // nome completo (planilha) ou apelido do Agilizone
 app.get('/entregadores', so((r) => editaMotoboy(r.user)), (req, res) => {
-  const u = req.user, { lojas, l } = lojaEntregadores(req), conectada = AGZ_API.configurada(l), v = AGZ_API.variaveis(l);
-  if (conectada && Date.now() - (sincronizado.get(l.id) || 0) > 10 * 60e3) { // abrir a página também atualiza (sem travar a tela)
-    sincronizado.set(l.id, Date.now());
-    sincronizaEntregadores(l, 3).catch((e) => console.error(`Entregadores de ${l.nome}: ${e.message}`));
+  const u = req.user, { lojas, l, todas } = lojaEntregadores(req), conectada = !todas && AGZ_API.configurada(l);
+  for (const x of todas ? lojas : [l]) if (AGZ_API.configurada(x) && Date.now() - (sincronizado.get(x.id) || 0) > 10 * 60e3) { // abrir a página também atualiza (sem travar a tela)
+    sincronizado.set(x.id, Date.now());
+    sincronizaEntregadores(x, 3).catch((e) => console.error(`Entregadores de ${x.nome}: ${e.message}`));
   }
-  const todos = entregadoresDaLoja(l.id), sem = todos.filter((m) => !m.pix), soSem = req.query.f === 'sem';
+  const todos = (todas ? lojas : [l]).flatMap((x) => entregadoresDaLoja(x.id).map((m) => ({ ...m, loja: x }))).sort((a, b) => nomeEnt(a).localeCompare(nomeEnt(b), 'pt-BR'));
+  const soSem = req.query.f === 'sem', pend = (m) => !m.pix || !m.nome_completo || !CONF.docValido(m.cpf), sem = todos.filter(pend);
   const busca = String(req.query.q || '').trim().slice(0, 120);
-  const lista = (soSem ? sem : todos).filter((m) => semAcento(m.nome).includes(semAcento(busca)));
-  const qs = (o = {}) => '/entregadores?' + new URLSearchParams({ loja: l.id, f: soSem ? 'sem' : '', q: busca, ...o });
-  const linha = (m) => html`<tr><th scope="row">${m.nome}<small class="mut">${l.nome}${m.identidade ? '' : ' · Identidade pendente'}</small></th><td>${m.cpf ? mascaraPix(m.cpf) : '—'}</td><td>${m.nascimento ? m.nascimento.split('-').reverse().join('/') : '—'}</td><td>${mascaraPix(m.pix)}</td><td class="n"><button type="button" class="btn btn-sec btn-sm" data-abre="pix-ed-${m.id}">Editar Pix</button>
-<dialog id="pix-ed-${m.id}" class="dlg sheet ent-sheet" aria-labelledby="pix-t-${m.id}"><h2 id="pix-t-${m.id}">Editar Pix · ${m.nome}</h2><p>${l.nome}</p><p class="hint">Usado nas próximas importações desta loja. Fechamentos enviados preservam a chave registrada.</p>
-<form method="post" action="/entregadores/${m.id}"><input type="hidden" name="loja" value="${l.id}"><input type="hidden" name="f" value="${soSem ? 'sem' : ''}"><input type="hidden" name="q" value="${busca}"><div class="field"><label for="cpf-ed-${m.id}">CPF</label><input id="cpf-ed-${m.id}" name="cpf" value="${m.cpf || ''}" inputmode="numeric" maxlength="14" autocomplete="off"></div><div class="field"><label for="nasc-ed-${m.id}">Data de nascimento</label><input id="nasc-ed-${m.id}" name="nascimento" type="date" value="${m.nascimento || ''}"></div><div class="field"><label for="pix-ed-c-${m.id}">Chave Pix</label><input id="pix-ed-c-${m.id}" name="pix" value="${m.pix || ''}" required maxlength="120" autocomplete="off"><p class="hint">CPF, CNPJ, celular, e-mail ou chave aleatória.</p></div>
-${m.identidade ? '' : html`<p class="bad-t">Identidade pendente. Confirme o vínculo pelo id do Agilizone antes de cadastrar.</p>`}<div class="acoes-f"><button type="button" class="btn btn-ghost" data-fecha>Cancelar</button><button class="btn btn-pri" ${m.identidade ? '' : 'disabled'}>Salvar Pix</button></div></form></dialog></td></tr>`;
-  res.send(page(req, { titulo: 'Entregadores', compacto: true, eyebrow: 'Cadastro', sub: l.nome,
+  const lista = (soSem ? sem : todos).filter((m) => semAcento(`${m.nome} ${m.nome_completo || ''}`).includes(semAcento(busca)));
+  const qs = (o = {}) => '/entregadores?' + new URLSearchParams({ loja: l.id, ver: todas ? 'todas' : '', f: soSem ? 'sem' : '', q: busca, ...o });
+  const linha = (m) => { const k = `${m.loja.id}-${m.id}`; return html`<tr><th scope="row">${nomeEnt(m)}<small class="mut">${m.nome_completo && m.nome_completo !== m.nome ? `Agilizone: ${m.nome} · ` : ''}${lojaCurta(m.loja.nome)}${m.nome_completo ? '' : ' · Falta nome completo'}${m.identidade ? '' : ' · Identidade pendente'}</small></th><td>${m.cpf ? CONF.docFmt(m.cpf) : html`<span class="bad-t">Falta</span>`}</td><td>${m.nascimento ? m.nascimento.split('-').reverse().join('/') : '—'}</td><td>${m.pix ? mascaraPix(m.pix) : html`<span class="bad-t">Falta</span>`}</td><td class="n"><button type="button" class="btn btn-sec btn-sm" data-abre="pix-ed-${k}">Editar</button>
+<dialog id="pix-ed-${k}" class="dlg sheet ent-sheet" aria-labelledby="pix-t-${k}"><h2 id="pix-t-${k}">Editar · ${nomeEnt(m)}</h2><p>${m.loja.nome} · no Agilizone: ${m.nome}</p><p class="hint">O Pix vale para as próximas importações desta loja. Nome completo e CPF/CNPJ valem para todas as lojas e vão na planilha.</p>
+<form method="post" action="/entregadores/${m.id}"><input type="hidden" name="loja" value="${m.loja.id}"><input type="hidden" name="ver" value="${todas ? 'todas' : ''}"><input type="hidden" name="f" value="${soSem ? 'sem' : ''}"><input type="hidden" name="q" value="${busca}"><div class="field"><label for="nome-ed-${k}">Nome completo</label><input id="nome-ed-${k}" name="nome_completo" value="${m.nome_completo || ''}" placeholder="${m.nome}" maxlength="120" autocomplete="off"><p class="hint">Como no documento. Vai na planilha do financeiro.</p></div><div class="field"><label for="cpf-ed-${k}">CPF ou CNPJ</label><input id="cpf-ed-${k}" name="cpf" value="${m.cpf ? CONF.docFmt(m.cpf) : ''}" inputmode="numeric" maxlength="18" autocomplete="off"><p class="hint">11 números (CPF) ou 14 (CNPJ).</p></div><div class="field"><label for="nasc-ed-${k}">Data de nascimento</label><input id="nasc-ed-${k}" name="nascimento" type="date" value="${m.nascimento || ''}"></div><div class="field"><label for="pix-ed-c-${k}">Chave Pix</label><input id="pix-ed-c-${k}" name="pix" value="${m.pix || ''}" required maxlength="120" autocomplete="off"><p class="hint">CPF, CNPJ, celular, e-mail ou chave aleatória.</p></div>
+${m.identidade ? '' : html`<p class="bad-t">Identidade pendente. Confirme o vínculo pelo id do Agilizone antes de cadastrar.</p>`}<div class="acoes-f"><button type="button" class="btn btn-ghost" data-fecha>Cancelar</button><button class="btn btn-pri" ${m.identidade ? '' : 'disabled'}>Salvar</button></div></form></dialog></td></tr>`; };
+  res.send(page(req, { titulo: 'Entregadores', compacto: true, eyebrow: 'Cadastro', sub: todas ? 'Todas as lojas' : l.nome,
     acoes: conectada ? html`<form method="post" action="/entregadores/atualizar" data-carregando="Buscando no Agilizone…"><input type="hidden" name="loja" value="${l.id}"><input type="hidden" name="f" value="${soSem ? 'sem' : ''}"><input type="hidden" name="q" value="${busca}"><button class="btn btn-sec">Atualizar do Agilizone</button></form>` : '' }, html`
-${lojas.length > 1 ? html`<nav class="pills" aria-label="Loja">${lojas.map((x) => html`<a href="${qs({ loja: x.id })}" class="${x.id === l.id ? 'on' : ''}">${lojaCurta(x.nome)}</a>`)}</nav>` : ''}
-<section class="card"><div class="card-h"><div class="t"><h2>${todos.length} entregadores · ${sem.length} sem chave Pix</h2><p>Chaves cadastradas por loja, para as próximas importações.</p></div></div>
-<div class="card-b"><form method="get" class="linha-form"><input type="hidden" name="loja" value="${l.id}"><div class="field"><label for="ent-busca">Buscar por nome</label><input id="ent-busca" name="q" type="search" value="${busca}" placeholder="Nome do entregador"></div><label><input type="checkbox" name="f" value="sem" ${soSem ? 'checked' : ''}> Sem chave Pix</label><button class="btn btn-sec">Filtrar</button><a class="btn btn-ghost" href="${qs({q: '', f: ''})}">Limpar</a></form></div>
-<div class="tw"><table><thead><tr><th>Entregador e loja</th><th>CPF</th><th>Nascimento</th><th>Chave Pix</th><th class="n">Ação</th></tr></thead><tbody>${lista.map(linha)}${lista.length ? '' : html`<tr><td colspan="5">Nenhum entregador com estes filtros.</td></tr>`}</tbody></table></div></section>`));
+${lojas.length > 1 ? html`<nav class="pills" aria-label="Loja"><a href="${qs({ ver: 'todas' })}" class="${todas ? 'on' : ''}">Todas</a>${lojas.map((x) => html`<a href="${qs({ loja: x.id, ver: '' })}" class="${!todas && x.id === l.id ? 'on' : ''}">${lojaCurta(x.nome)}</a>`)}</nav>` : ''}
+<section class="card"><div class="card-h"><div class="t"><h2>${todos.length} entregadores · ${sem.length} com cadastro incompleto</h2><p>Nome completo e CPF/CNPJ vão na planilha do financeiro; a chave Pix é por loja.</p></div></div>
+<div class="card-b"><form method="get" class="linha-form"><input type="hidden" name="loja" value="${l.id}"><input type="hidden" name="ver" value="${todas ? 'todas' : ''}"><div class="field"><label for="ent-busca">Buscar por nome</label><input id="ent-busca" name="q" type="search" value="${busca}" placeholder="Nome do entregador"></div><label><input type="checkbox" name="f" value="sem" ${soSem ? 'checked' : ''}> Cadastro incompleto (sem nome completo, CPF/CNPJ ou Pix)</label><button class="btn btn-sec">Filtrar</button><a class="btn btn-ghost" href="${qs({q: '', f: ''})}">Limpar</a></form></div>
+<div class="tw"><table><thead><tr><th>Entregador e loja</th><th>CPF/CNPJ</th><th>Nascimento</th><th>Chave Pix</th><th class="n">Ação</th></tr></thead><tbody>${lista.map(linha)}${lista.length ? '' : html`<tr><td colspan="5">Nenhum entregador com estes filtros.</td></tr>`}</tbody></table></div></section>`));
 });
 app.post('/entregadores/atualizar', so((r) => editaMotoboy(r.user)), async (req, res, next) => {
   const { l } = lojaEntregadores(req), url = '/entregadores?' + new URLSearchParams({loja:l.id, f:req.body.f === 'sem' ? 'sem' : '', q:String(req.body.q || '').slice(0,120)});
@@ -934,19 +941,21 @@ app.post('/entregadores/atualizar', so((r) => editaMotoboy(r.user)), async (req,
   catch (e) { if (!e.publico) return next(e); volta(res, url, 'erro', e.message); }
 });
 app.post('/entregadores/:id', so((r) => editaMotoboy(r.user)), (req, res) => {
-  const { l } = lojaEntregadores(req), url = '/entregadores?' + new URLSearchParams({loja:l.id, f:req.body.f === 'sem' ? 'sem' : '', q:String(req.body.q || '').slice(0,120)});
+  const { l, todas } = lojaEntregadores(req), url = req.body.volta === 'conferencia' && confere(req.user) ? `/conferencia?d=${encodeURIComponent(String(req.body.d || ''))}&aba=${encodeURIComponent(String(req.body.aba || ''))}` : urlEntregadores(req, l, todas);
   const m = entregadoresDaLoja(l.id).find((x) => x.id === Number(req.params.id));
   if (!m) throw falha('Entregador não encontrado nesta loja.', 404);
   const pix = String(req.body.pix || '').trim();
   if (!pixValido(pix)) return volta(res, url, 'erro', `${m.nome}: chave PIX inválida. Use CPF, CNPJ, celular (com ou sem +55), e-mail ou chave aleatória.`);
   const cpf = String(req.body.cpf || '').replace(/\D/g, ''), nasc = String(req.body.nascimento || '').trim();
-  if (cpf && cpf.length !== 11) return volta(res, url, 'erro', `${m.nome}: CPF deve ter 11 números.`);
+  const nomeC = String(req.body.nome_completo ?? m.nome_completo ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  if (cpf && !CONF.docValido(cpf)) return volta(res, url, 'erro', `${m.nome}: CPF deve ter 11 números e CNPJ 14.`);
+  if (nomeC && nomeC.split(' ').length < 2) return volta(res, url, 'erro', `${m.nome}: informe o nome completo (nome e sobrenome).`);
   if (nasc && (!/^\d{4}-\d{2}-\d{2}$/.test(nasc) || isNaN(Date.parse(nasc)))) return volta(res, url, 'erro', `${m.nome}: data de nascimento inválida.`);
   if (!m.identidade) return volta(res, url, 'erro', 'Identidade pendente: este entregador precisa de vínculo pelo id do Agilizone. Nenhuma chave foi associada pelo nome.');
-  const dadosMudaram = cpf !== (m.cpf || '') || nasc !== (m.nascimento || '');
+  const dadosMudaram = cpf !== (m.cpf || '') || nasc !== (m.nascimento || '') || nomeC !== (m.nome_completo || '');
   if (pix === m.pix && !dadosMudaram) return volta(res, url, 'ok', `${m.nome}: sem mudanças.`);
   tx(() => {
-  if (dadosMudaram) { db.prepare('UPDATE motoboys SET cpf = ?, nascimento = ? WHERE id = ?').run(cpf || null, nasc || null, m.id); log(req.user.id, 'entregadores', `CPF/nascimento de ${m.nome} atualizados`); }
+  if (dadosMudaram) { db.prepare('UPDATE motoboys SET cpf = ?, nascimento = ?, nome_completo = ? WHERE id = ?').run(cpf || null, nasc || null, nomeC || null, m.id); log(req.user.id, 'entregadores', `Cadastro de ${m.nome} atualizado (nome completo, CPF/CNPJ, nascimento)`); }
   if (pix !== m.pix) {
   salvaPixCadastro(l.id, m.id, pix, req.user.id);
   log(req.user.id, 'entregadores', `PIX de ${m.nome} (${l.nome}) ${m.pix ? `alterado de ${m.pix} para ${pix}` : `cadastrado: ${pix}`}`);
@@ -954,6 +963,132 @@ app.post('/entregadores/:id', so((r) => editaMotoboy(r.user)), (req, res) => {
   });
   volta(res, url, 'ok', `${m.nome}: dados salvos.`);
 });
+
+// ---- Conferência geral: todas as lojas de um dia de pagamento, numa planilha só ----
+// Uma pessoa confere tudo (aba Geral + uma aba por loja), e o envio manda a planilha no modelo do financeiro
+// por e-mail e para a pasta do Google Drive, com o título "DD-MM-AAAA - MOTOBOYS". O fluxo por fechamento segue disponível.
+// Centro de custo: o nome curto da loja (LESTE, DIRCEU, SUL...).
+const centroDa = (l) => lojaCurta(l.nome).replace(/centro de distribui[cç][aã]o\s*/i, '').replace(/\s+ativa$/i, '').trim().toUpperCase();
+const cacheConf = new Map(); // `${loja}|${data}` -> { em, resumo } (5 min; "Atualizar do Agilizone" ignora)
+async function lojaNoDia(l, d, renova) {
+  const ref = AG.diasReferencia(calendarioDa(l), d);
+  if (!ref) return null; // a loja não paga nesse dia
+  const base = { loja: l, ini: ref[0], fim: ref[ref.length - 1], itens: [], erro: '' };
+  if (!AGZ_API.configurada(l)) return { ...base, erro: 'Loja sem credenciais do Agilizone (Configurações > Lojas).' };
+  const k = `${l.id}|${d}`;
+  let c = cacheConf.get(k);
+  if (renova || !c || Date.now() - c.em > 5 * 60e3) {
+    try {
+      const h = String(VIRADA_H).padStart(2, '0');
+      const orders = await AGZ_API.pedidos(l, `${base.ini}T${h}:00:00-03:00`, `${AG.soma(base.fim, 1)}T${h}:00:00-03:00`);
+      c = { em: Date.now(), resumo: AGZ_API.paraImportacao(orders, { tz: TZ, de: base.ini, ate: base.fim }).resumo };
+      cacheConf.set(k, c);
+    } catch (e) { return { ...base, erro: e.message }; }
+  }
+  base.itens = c.resumo.map((r) => {
+    const id = motoboyDoAgilizone(l, r.agzId, r.entregador), m = db.prepare('SELECT * FROM motoboys WHERE id = ?').get(id), pix = pixCadastro(l.id, id);
+    const falta = [!m.nome_completo && 'nome completo', !CONF.docValido(m.cpf) && 'CPF/CNPJ'].filter(Boolean);
+    return { m: { ...m, pix: pix?.pix, identidade: pix?.agz_id }, pedidos: r.pedidos, valor: r.total, falta, semPix: !pix?.pix };
+  }).sort((a, b) => nomeEnt(a.m).localeCompare(nomeEnt(b.m), 'pt-BR'));
+  return base;
+}
+async function conferenciaDoDia(d, renova) {
+  const lojas = db.prepare('SELECT * FROM lojas ORDER BY nome').all();
+  return (await Promise.all(lojas.map((l) => lojaNoDia(l, d, renova)))).filter(Boolean);
+}
+const linhasPlanilha = (dia) => dia.flatMap((x) => x.itens.filter((i) => i.valor > 0).map((i) => ({ nome: nomeEnt(i.m), doc: i.m.cpf, centro: centroDa(x.loja), valor: i.valor })));
+const envioDo = (d) => db.prepare('SELECT e.*, u.nome por FROM envios e LEFT JOIN usuarios u ON u.id = e.enviado_por WHERE pagamento = ?').get(d);
+const dataOk = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '') && !isNaN(Date.parse(d));
+
+app.get('/conferencia', so((r) => confere(r.user)), async (req, res, next) => { try {
+  const hoje = agora().data, lojas = db.prepare('SELECT * FROM lojas ORDER BY nome').all();
+  const datas = [...new Set(agenda(lojas, AG.soma(hoje, -10), AG.soma(hoje, 7)).map((p) => p.pagamento))].sort();
+  const d = dataOk(req.query.d) ? req.query.d : datas.find((x) => x >= hoje && !envioDo(x)) || datas.find((x) => x >= hoje) || hoje;
+  const dia = await conferenciaDoDia(d, req.query.renova === '1'), env = envioDo(d);
+  const aba = dia.find((x) => String(x.loja.id) === req.query.aba) ? req.query.aba : 'geral';
+  const total = dia.reduce((s, x) => s + x.itens.reduce((t, i) => t + i.valor, 0), 0), nEnt = dia.reduce((s, x) => s + x.itens.length, 0);
+  const bloqueios = dia.flatMap((x) => [...(x.erro ? [`${lojaCurta(x.loja.nome)}: ${x.erro}`] : []), ...x.itens.filter((i) => i.falta.length && i.valor > 0).map((i) => `${nomeEnt(i.m)} (${lojaCurta(x.loja.nome)}): falta ${i.falta.join(' e ')}`)]);
+  const semPix = dia.reduce((s, x) => s + x.itens.filter((i) => i.semPix).length, 0);
+  const url = (o) => '/conferencia?' + new URLSearchParams({ d, aba, ...o });
+  const dlg = (x, i) => { const m = i.m, k = `c-${x.loja.id}-${m.id}`; return html`<button type="button" class="btn btn-sec btn-sm" data-abre="${k}">Editar</button>
+<dialog id="${k}" class="dlg sheet ent-sheet" aria-labelledby="${k}-t"><h2 id="${k}-t">Editar · ${nomeEnt(m)}</h2><p>${x.loja.nome} · no Agilizone: ${m.nome}</p>
+<form method="post" action="/entregadores/${m.id}"><input type="hidden" name="loja" value="${x.loja.id}"><input type="hidden" name="volta" value="conferencia"><input type="hidden" name="d" value="${d}"><input type="hidden" name="aba" value="${aba}">
+<div class="field"><label for="${k}-n">Nome completo</label><input id="${k}-n" name="nome_completo" value="${m.nome_completo || ''}" placeholder="${m.nome}" maxlength="120" required autocomplete="off"></div>
+<div class="field"><label for="${k}-c">CPF ou CNPJ</label><input id="${k}-c" name="cpf" value="${m.cpf ? CONF.docFmt(m.cpf) : ''}" inputmode="numeric" maxlength="18" required autocomplete="off"><p class="hint">11 números (CPF) ou 14 (CNPJ).</p></div>
+<input type="hidden" name="nascimento" value="${m.nascimento || ''}"><div class="field"><label for="${k}-p">Chave Pix</label><input id="${k}-p" name="pix" value="${m.pix || ''}" required maxlength="120" autocomplete="off"></div>
+${m.identidade ? '' : html`<p class="bad-t">Identidade pendente: vínculo pelo id do Agilizone não confirmado.</p>`}<div class="acoes-f"><button type="button" class="btn btn-ghost" data-fecha>Cancelar</button><button class="btn btn-pri" ${m.identidade ? '' : 'disabled'}>Salvar</button></div></form></dialog>`; };
+  const tabLoja = (x) => html`<section class="card"><div class="card-h"><div class="t"><h2>${x.loja.nome}</h2><p>Pedidos de ${dataFmt(x.ini)} a ${dataFmt(x.fim)} · centro de custo ${centroDa(x.loja)}</p></div></div>
+${x.erro ? html`<div class="card-b"><div class="alert bad">${icone('erro')}<div>${x.erro}</div></div></div>` : html`<div class="tw"><table><thead><tr><th>Entregador</th><th>CPF/CNPJ</th><th class="n">Pedidos</th><th class="n">Valor</th><th>Situação</th><th class="n">Ação</th></tr></thead><tbody>
+${x.itens.map((i) => html`<tr><th scope="row">${nomeEnt(i.m)}${i.m.nome_completo && i.m.nome_completo !== i.m.nome ? html`<small class="mut">Agilizone: ${i.m.nome}</small>` : ''}</th><td>${i.m.cpf ? CONF.docFmt(i.m.cpf) : '—'}</td><td class="n">${i.pedidos}</td><td class="n">${brl(i.valor)}</td>
+<td>${i.falta.length ? html`<span class="badge bad">Falta ${i.falta.join(' e ')}</span>` : i.semPix ? html`<span class="badge warn">Sem Pix</span>` : html`<span class="badge ok">OK</span>`}</td><td class="n">${dlg(x, i)}</td></tr>`)}
+${x.itens.length ? '' : html`<tr><td colspan="6">Nenhum pedido entregue no período.</td></tr>`}</tbody>
+<tfoot><tr><th>Total</th><td></td><td class="n">${x.itens.reduce((s, i) => s + i.pedidos, 0)}</td><td class="n"><b>${brl(x.itens.reduce((s, i) => s + i.valor, 0))}</b></td><td colspan="2"></td></tr></tfoot></table></div>`}</section>`;
+  const geral = html`<section class="card"><div class="card-h"><div class="t"><h2>Resumo geral · pagamento de ${diaLongo(d)}</h2><p>${dia.length} loja(s) · ${nEnt} entregador(es) · total ${brl(total)}</p></div></div>
+<div class="tw"><table><thead><tr><th>Loja</th><th>Período</th><th class="n">Entregadores</th><th class="n">Valor</th><th>Situação</th></tr></thead><tbody>
+${dia.map((x) => { const pend = x.itens.filter((i) => i.falta.length && i.valor > 0).length; return html`<tr><th scope="row"><a href="${url({ aba: x.loja.id })}">${lojaCurta(x.loja.nome)}</a></th><td>${dataFmt(x.ini)} a ${dataFmt(x.fim)}</td><td class="n">${x.itens.length}</td><td class="n">${brl(x.itens.reduce((s, i) => s + i.valor, 0))}</td>
+<td>${x.erro ? html`<span class="badge bad">Erro no Agilizone</span>` : pend ? html`<span class="badge bad">${pend} cadastro(s) incompleto(s)</span>` : html`<span class="badge ok">OK</span>`}</td></tr>`; })}
+${dia.length ? '' : html`<tr><td colspan="5">Nenhuma loja paga neste dia.</td></tr>`}</tbody><tfoot><tr><th>Total</th><td></td><td class="n">${nEnt}</td><td class="n"><b>${brl(total)}</b></td><td></td></tr></tfoot></table></div></section>
+${bloqueios.length ? html`<div class="alert bad" role="alert">${icone('alerta')}<div><b>Corrija antes de enviar (${bloqueios.length})</b><ul>${bloqueios.map((b) => html`<li>${b}</li>`)}</ul></div></div>` : ''}
+${semPix ? html`<div class="alert warn">${icone('info')}<div>${semPix} entregador(es) sem chave Pix cadastrada. Não impede o envio (a planilha não leva o Pix).</div></div>` : ''}`;
+  const semDrive = !cfg('drive_pasta') || !cfg('drive_credencial');
+  const envio = env ? html`<section class="card"><div class="card-h"><span class="hico pri">${icone('check')}</span><div class="t"><h2>Enviado</h2><p>${quando(env.enviado_em)}${env.por ? ` por ${env.por}` : ''} · ${env.linhas} linhas · ${brl(env.total)}${env.para ? ` · e-mail para ${env.para}` : ''}</p></div></div>
+<div class="card-f"><a class="btn btn-sec" href="/conferencia/planilha?d=${d}">${icone('baixar')} Baixar planilha</a>${env.drive_id ? html`<a class="btn btn-ghost" href="https://drive.google.com/file/d/${env.drive_id}/view" target="_blank" rel="noopener">Abrir no Drive</a>` : html`<form method="post" action="/conferencia/drive"><input type="hidden" name="d" value="${d}"><button class="btn btn-pri">${icone('subir')} Enviar ao Drive</button></form>`}</div></section>`
+    : html`<form method="post" action="/conferencia/enviar" class="card" data-carregando="Enviando…"><input type="hidden" name="d" value="${d}"><div class="card-h"><span class="hico pri">${icone('enviar')}</span><div class="t"><h2>Enviar ${CONF.titulo(d)}</h2><p>Gera a planilha no modelo do financeiro, manda por e-mail para ${listaEmails(cfg('email_para')).join(', ') || 'os destinatários (não configurados)'}${semDrive ? '' : ' e sobe na pasta do Google Drive'}.</p></div></div>
+<div class="card-b">${semDrive ? html`<div class="alert warn">${icone('alerta')}<div>Google Drive não configurado (Configurações > Google Drive): a planilha vai só por e-mail.</div></div>` : ''}<label class="check"><input type="checkbox" name="ok" value="1" required ${bloqueios.length ? 'disabled' : ''}> Conferi todas as lojas e os valores estão corretos.</label></div>
+<div class="card-f"><a class="btn btn-sec" href="/conferencia/planilha?d=${d}">${icone('baixar')} Baixar planilha (prévia)</a><button class="btn btn-pri" ${bloqueios.length || !nEnt ? 'disabled' : ''}>${icone('enviar')} Enviar</button></div></form>`;
+  res.send(page(req, { titulo: 'Conferência geral', compacto: true, eyebrow: 'Pagamento de entregadores', sub: `Pagamento de ${diaLongo(d)} · ${env ? 'Enviado' : 'Em conferência'}`,
+    acoes: html`<a class="btn btn-sec" href="${url({ renova: '1' })}" data-carregando="Buscando no Agilizone…">Atualizar do Agilizone</a>` }, html`
+<nav class="pills" aria-label="Dia de pagamento">${datas.map((x) => html`<a href="/conferencia?d=${x}" class="${x === d ? 'on' : ''}">${dataFmt(x).slice(0, 5)} ${diaLongo(x).split(' ')[0]}${envioDo(x) ? ' ✓' : ''}</a>`)}<form method="get" class="linha-form" style="display:inline-flex"><label class="sr" for="c-d">Outra data</label><input id="c-d" type="date" name="d" value="${d}"><button class="btn btn-ghost btn-sm">Ir</button></form></nav>
+<nav class="seg" aria-label="Abas"><a href="${url({ aba: 'geral' })}" class="${aba === 'geral' ? 'on' : ''}">Geral</a>${dia.map((x) => html`<a href="${url({ aba: x.loja.id })}" class="${aba === String(x.loja.id) ? 'on' : ''}">${lojaCurta(x.loja.nome)}${x.erro || x.itens.some((i) => i.falta.length && i.valor > 0) ? html`<span class="c">!</span>` : ''}</a>`)}</nav>
+${aba === 'geral' ? geral : tabLoja(dia.find((x) => String(x.loja.id) === aba))}
+${envio}`));
+} catch (e) { next(e); } });
+
+app.get('/conferencia/planilha', so((r) => confere(r.user)), async (req, res, next) => { try {
+  const d = String(req.query.d || '');
+  if (!dataOk(d)) throw falha('Data inválida.');
+  const buf = envioDo(d) && fs.existsSync(arqEnvio(d)) ? fs.readFileSync(arqEnvio(d)) : CONF.planilha(d, linhasPlanilha(await conferenciaDoDia(d)));
+  res.attachment(`${CONF.titulo(d)}.xlsx`).type('xlsx').send(buf);
+} catch (e) { next(e); } });
+
+const arqEnvio = (d) => path.join(DIR, 'envios', `${d}.xlsx`); // a planilha exatamente como foi enviada
+async function subirEnvioDrive(d, buf, u) {
+  const r = await CONF.subirDrive({ credencial: cfg('drive_credencial'), pasta: cfg('drive_pasta'), nome: `${CONF.titulo(d)}.xlsx`, buffer: buf, mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  db.prepare('UPDATE envios SET drive_id = ? WHERE pagamento = ?').run(r.id, d);
+  log(u.id, 'conferencia', `${CONF.titulo(d)} enviado ao Google Drive`);
+}
+app.post('/conferencia/enviar', so((r) => confere(r.user)), async (req, res, next) => { try {
+  const d = String(req.body.d || ''), url = `/conferencia?d=${d}`;
+  if (!dataOk(d)) throw falha('Data inválida.');
+  if (envioDo(d)) return volta(res, url, 'erro', 'Este pagamento já foi enviado.');
+  if (req.body.ok !== '1') return volta(res, url, 'erro', 'Marque que conferiu todas as lojas antes de enviar.');
+  const dia = await conferenciaDoDia(d, true); // envia com os dados mais recentes do Agilizone
+  const erros = dia.filter((x) => x.erro), incompletos = dia.flatMap((x) => x.itens.filter((i) => i.falta.length && i.valor > 0));
+  if (erros.length || incompletos.length) return volta(res, url, 'erro', `Nada foi enviado: ${erros.length ? `${erros.length} loja(s) com erro no Agilizone` : `${incompletos.length} cadastro(s) incompleto(s)`}. Confira e tente de novo.`);
+  const linhas = linhasPlanilha(dia), total = linhas.reduce((s, l) => s + l.valor, 0), titulo = CONF.titulo(d), buf = CONF.planilha(d, linhas);
+  if (!linhas.length) return volta(res, url, 'erro', 'Nenhum valor a pagar neste dia.');
+  const para = listaEmails(cfg('email_para'));
+  if (!para.length) return volta(res, url, 'erro', 'Nada foi enviado: cadastre os destinatários em Configurações > E-mail.');
+  const corpo = `Pagamento dos entregadores de ${diaLongo(d)}.\n\n${dia.map((x) => `${lojaCurta(x.loja.nome)} (${dataFmt(x.ini)} a ${dataFmt(x.fim)}): ${x.itens.filter((i) => i.valor > 0).length} entregadores, ${brl(x.itens.reduce((s, i) => s + i.valor, 0))}`).join('\n')}\n\nTotal: ${brl(total)} (${linhas.length} linhas)\nConferido por ${req.user.nome}. Planilha em anexo.`;
+  try {
+    const r = await enviarEmail({ to: para.join(', '), subject: titulo, text: corpo, attachments: [{ filename: `${titulo}.xlsx`, content: buf }] });
+    if (r.salvo && process.env.EMAIL_SO_ARQUIVO !== '1') return volta(res, url, 'erro', 'Nada foi enviado: servidor de e-mail não configurado (Configurações > E-mail). Baixe a planilha enquanto isso.');
+  } catch (e) { return volta(res, url, 'erro', `Nada foi enviado: o servidor de e-mail recusou (${e.message}).`); }
+  fs.mkdirSync(path.dirname(arqEnvio(d)), { recursive: true });
+  fs.writeFileSync(arqEnvio(d), buf);
+  db.prepare('INSERT INTO envios (pagamento, arquivo, total, linhas, para, enviado_por) VALUES (?,?,?,?,?,?)').run(d, `${titulo}.xlsx`, total, linhas.length, para.join(', '), req.user.id);
+  log(req.user.id, 'conferencia', `Enviou ${titulo}: ${linhas.length} linhas, ${brl(total)}, para ${para.join(', ')}`);
+  if (!cfg('drive_pasta') || !cfg('drive_credencial')) return volta(res, url, 'ok', `${titulo} enviado por e-mail. Google Drive não configurado.`);
+  try { await subirEnvioDrive(d, buf, req.user); volta(res, url, 'ok', `${titulo} enviado por e-mail e salvo no Google Drive.`); }
+  catch (e) { volta(res, url, 'erro', `E-mail enviado, mas o Drive falhou: ${e.message} Use "Enviar ao Drive" para tentar de novo.`); }
+} catch (e) { next(e); } });
+app.post('/conferencia/drive', so((r) => confere(r.user)), async (req, res, next) => { try {
+  const d = String(req.body.d || ''), url = `/conferencia?d=${d}`;
+  if (!dataOk(d) || !envioDo(d)) throw falha('Envio não encontrado.');
+  if (!cfg('drive_pasta') || !cfg('drive_credencial')) return volta(res, url, 'erro', 'Configure o Google Drive em Configurações.');
+  try { await subirEnvioDrive(d, fs.readFileSync(arqEnvio(d)), req.user); volta(res, url, 'ok', 'Planilha salva no Google Drive.'); }
+  catch (e) { volta(res, url, 'erro', e.message); }
+} catch (e) { next(e); } });
 
 // ---- Importação direto da API do Agilizone (alternativa ao envio dos arquivos) ----
 // Entregador do Agilizone -> cadastro por loja e id; nunca herda Pix pelo nome.
@@ -1724,8 +1859,8 @@ function telaConfig(req, res, ctx = {}) {
   const v = (k) => cfg(k), val = (k) => ctx.valores?.[k] ?? cfg(k), erros = ctx.erros || {}, lojas = db.prepare('SELECT l.*, (SELECT COUNT(*) FROM fechamentos WHERE loja_id = l.id) n FROM lojas l ORDER BY nome').all();
   const ultimosAlertas = db.prepare("SELECT acao, quando FROM log WHERE ref = 'alertas' ORDER BY id DESC LIMIT 15").all();
   const temSenha = !!v('smtp_pass'), semSmtp = !v('smtp_host');
-  const aba = ctx.aba || (['email', 'alertas', 'lojas', 'entregadores'].includes(req.query.aba) ? req.query.aba : 'email');
-  const nav = html`<nav class="seg abas-cfg" aria-label="Seções das configurações">${[['email', 'E-mail'], ['alertas', 'Alertas'], ['lojas', 'Lojas e pagamentos'], ['entregadores', 'Entregadores']].map(([k, t]) => html`<a href="/config?aba=${k}" class="${k === aba ? 'on' : ''}" ${k === aba ? new Raw('aria-current="page"') : ''}>${t}${k === 'email' && semSmtp ? html`<span class="c" title="Falta configurar o servidor de e-mail">!</span>` : ''}</a>`)}</nav>`;
+  const aba = ctx.aba || (['email', 'alertas', 'lojas', 'entregadores', 'drive'].includes(req.query.aba) ? req.query.aba : 'email');
+  const nav = html`<nav class="seg abas-cfg" aria-label="Seções das configurações">${[['email', 'E-mail'], ['alertas', 'Alertas'], ['lojas', 'Lojas e pagamentos'], ['entregadores', 'Entregadores'], ['drive', 'Google Drive']].map(([k, t]) => html`<a href="/config?aba=${k}" class="${k === aba ? 'on' : ''}" ${k === aba ? new Raw('aria-current="page"') : ''}>${t}${k === 'email' && semSmtp ? html`<span class="c" title="Falta configurar o servidor de e-mail">!</span>` : ''}</a>`)}</nav>`;
   const ultimoTeste = db.prepare("SELECT acao, quando FROM log WHERE ref = 'config' AND acao LIKE 'Teste de e-mail%' ORDER BY id DESC LIMIT 1").get(), nDest = listaEmails(v('email_para')).length;
   const errC = (c) => (erros[c] ? html`<div class="erro-campo" id="e-${c}" role="alert">${icone('erro', 'sm')} <span>${erros[c]}</span></div>` : ''), invC = (c) => (erros[c] ? new Raw(`aria-invalid="true" aria-describedby="e-${c}"`) : '');
   const estadoEmail = html`<section class="cfg-estado" aria-label="Situação do e-mail"><div><span class="rot">Servidor de e-mail (salvo)</span>${semSmtp ? html`<span class="badge warn">Não configurado</span>` : html`<span class="badge ok">${v('smtp_host')}</span>`}</div>
@@ -1791,7 +1926,18 @@ ${lojas.map((l) => { const p = `l${l.id}`, dados = ctx.abrir === p ? ctx.valores
 <div class="cfg-agz">${agzStatus(l)}<p class="hint">As credenciais ficam no servidor e seus nomes vêm do nome da loja: ao renomear, ajuste as variáveis (${AGZ_API.variaveis(l).id} e ${AGZ_API.variaveis(l).secret}) ou a integração para de funcionar.</p>${AGZ_API.configurada(l) ? html`<form method="post" action="/config/lojas/${l.id}/agilizone"><button class="btn btn-sec">${icone('check', 'sm')} Testar conexão com o Agilizone</button></form>` : ''}</div></dialog>`; })}
 <dialog id="dlg-nl" class="dlg sheet ent-sheet" aria-labelledby="t-nl" ${ctx.abrir === 'nl' ? new Raw('data-abrir') : ''}><h2 id="t-nl">Nova loja</h2><p>Depois de criar, defina as credenciais do Agilizone no servidor.</p><form method="post" action="/config/lojas" data-guarda>${calCampos('nl', ctx.abrir === 'nl' ? ctx.valores.nome : '', ctx.abrir === 'nl' ? ctx.valores.calendario : AG.PADRAO)}
 <div class="acoes-f"><button type="button" class="btn btn-ghost" data-fecha>Cancelar</button><button class="btn btn-pri">${icone('mais', 'sm')} Adicionar loja</button></div></form></dialog>`;
-  res.status(ctx.status || 200).send(page(req, { titulo: 'Configurações', compacto: true, eyebrow: 'Administração', sub: 'E-mail da solicitação de pagamento, alertas, lojas e entregadores. Só o suporte vê esta tela.', css: '/marca/admin.css', js: '/marca/admin.js' }, html`${nav}${aba === 'alertas' ? alertas : aba === 'lojas' ? lojasTab : aba === 'entregadores' ? entTab : email}`));
+  let cred = ''; try { const c = JSON.parse(v('drive_credencial')); cred = c.client_email || (c.refresh_token ? `usuário autorizado (${c.client_id?.slice(0, 12)}…)` : ''); } catch (_) {}
+  const driveTab = html`<form method="post" action="/config/drive" class="card cfg-estreito" data-guarda><div class="card-h"><span class="hico pri">${icone('subir')}</span><div class="t"><h2>Google Drive</h2><p>A Conferência geral salva a planilha "DD-MM-AAAA - MOTOBOYS" nesta pasta ao enviar.</p></div></div><div class="card-b">
+<p class="cfg-sit ${cred && v('drive_pasta') ? 'ok' : 'warn'}" role="status"><b>Situação:</b> ${cred && v('drive_pasta') ? `configurado · credencial ${cred}` : 'não configurado: a planilha vai só por e-mail.'}</p>
+<details class="alert fold" style="display:block;margin-bottom:16px"><summary>${icone('info')} <b style="display:inline">Como configurar (pasta de terceiros)</b> ${icone('chevron', 'chev')}</summary><ol style="margin:10px 0 0 22px;padding:0;line-height:1.7">
+<li>No Google Cloud, ative a <b>Google Drive API</b> no projeto.</li>
+<li><b>Se a pasta está num Drive compartilhado:</b> crie uma <b>conta de serviço</b>, gere a chave JSON e peça ao dono para adicionar o e-mail da conta de serviço como <b>Editor/Administrador de conteúdo</b>.</li>
+<li><b>Se é uma pasta comum de outra pessoa ("Compartilhados comigo"):</b> conta de serviço não funciona (não tem espaço próprio). Use um usuário do domínio que tenha acesso de <b>Editor</b> à pasta: crie um ID do cliente OAuth e gere um refresh_token com escopo drive; cole o JSON <code>{"type":"authorized_user","client_id":"…","client_secret":"…","refresh_token":"…"}</code>.</li>
+<li>Cole abaixo o link da pasta e a credencial. Salve e use <b>Testar</b>.</li></ol></details>
+<div class="field"><label for="drive_pasta">Link ou ID da pasta</label><input id="drive_pasta" name="drive_pasta" value="${v('drive_pasta')}" placeholder="https://drive.google.com/drive/folders/…"></div>
+<div class="field"><label for="drive_credencial">Credencial (JSON)</label><textarea id="drive_credencial" name="drive_credencial" style="min-height:90px" placeholder="${cred ? '•••••••• (mantida)' : '{ "type": "service_account", … }'}"></textarea><p class="hint">${cred ? 'Deixe vazio para manter a atual.' : 'O conteúdo do arquivo .json.'}</p></div></div>
+<div class="card-f"><button class="btn btn-pri">${icone('check')} Salvar</button><button class="btn btn-sec" formaction="/config/drive/teste">Testar</button></div></form>`;
+  res.status(ctx.status || 200).send(page(req, { titulo: 'Configurações', compacto: true, eyebrow: 'Administração', sub: 'E-mail da solicitação de pagamento, alertas, lojas e entregadores. Só o suporte vê esta tela.', css: '/marca/admin.css', js: '/marca/admin.js' }, html`${nav}${aba === 'alertas' ? alertas : aba === 'lojas' ? lojasTab : aba === 'entregadores' ? entTab : aba === 'drive' ? driveTab : email}`));
 }
 app.get('/config', so((r) => r.user.perfil === 'admin'), (req, res) => telaConfig(req, res));
 
@@ -1811,6 +1957,29 @@ app.post('/config', so((r) => r.user.perfil === 'admin'), (req, res) => {
   volta(res, '/config?aba=email', 'ok', 'Configurações salvas. Use "Enviar teste" para conferir.');
 });
 
+function salvaDrive(req) {
+  const pasta = CONF.pastaId(req.body.drive_pasta), cred = String(req.body.drive_credencial || '').trim();
+  if (cred) {
+    let c; try { c = JSON.parse(cred); } catch { throw falha('Credencial inválida: cole o conteúdo do arquivo JSON.'); }
+    if (!(c.type === 'service_account' && c.private_key && c.client_email) && !(c.refresh_token && c.client_id && c.client_secret)) throw falha('Credencial inválida: use o JSON da conta de serviço ou de usuário autorizado (client_id, client_secret, refresh_token).');
+  }
+  const set = db.prepare('INSERT INTO config (chave, valor) VALUES (?, ?) ON CONFLICT (chave) DO UPDATE SET valor = excluded.valor');
+  set.run('drive_pasta', pasta);
+  if (cred) set.run('drive_credencial', cred);
+  log(req.user.id, 'config', `Google Drive salvo (pasta ${pasta || 'nenhuma'}${cred ? '; credencial alterada' : ''})`);
+}
+app.post('/config/drive', so((r) => r.user.perfil === 'admin'), (req, res) => {
+  try { salvaDrive(req); } catch (e) { if (!e.publico) throw e; return volta(res, '/config?aba=drive', 'erro', e.message); }
+  volta(res, '/config?aba=drive', 'ok', 'Google Drive salvo. Use "Testar" para conferir.');
+});
+app.post('/config/drive/teste', so((r) => r.user.perfil === 'admin'), async (req, res) => {
+  try {
+    salvaDrive(req);
+    const r = await CONF.subirDrive({ credencial: cfg('drive_credencial'), pasta: cfg('drive_pasta'), nome: 'TESTE - MOTOBOYS (pode apagar).txt', buffer: Buffer.from('Teste do sistema de entregadores.'), mime: 'text/plain' });
+    log(req.user.id, 'config', 'Teste do Google Drive: arquivo criado');
+    volta(res, '/config?aba=drive', 'ok', `Funcionou: arquivo de teste criado na pasta (id ${r.id}). Pode apagá-lo.`);
+  } catch (e) { volta(res, '/config?aba=drive', 'erro', e.message); }
+});
 app.post('/config/teste', so((r) => r.user.perfil === 'admin'), async (req, res) => {
   const para = String(req.body.para || '').trim();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(para)) return telaConfig(req, res, { erros: { teste: 'E-mail inválido: informe um endereço completo.' }, valores: { para }, status: 422 });

@@ -10,7 +10,7 @@ fs.mkdirSync(UPLOADS, { recursive: true });
 const db = new DatabaseSync(path.join(DIR, 'motoboys.db'));
 const USUARIOS = (nome) => `CREATE TABLE IF NOT EXISTS ${nome} (
   id INTEGER PRIMARY KEY, nome TEXT NOT NULL, login TEXT NOT NULL UNIQUE COLLATE NOCASE, senha TEXT NOT NULL,
-  perfil TEXT NOT NULL CHECK (perfil IN ('admin','gestao','financeiro','despachante','motoboy')),
+  perfil TEXT NOT NULL CHECK (perfil IN ('admin','gestao','financeiro','despachante','motoboy','conferente')),
   loja_id INTEGER REFERENCES lojas, ativo INTEGER NOT NULL DEFAULT 1, email TEXT,
   motoboy_id INTEGER UNIQUE REFERENCES motoboys);`;
 // ativo = 0 quando o fechamento é arquivado: o índice pedidos_validos impede o mesmo pedido em dois fechamentos válidos.
@@ -126,6 +126,13 @@ function recria(nome, criar) {
   console.log(`Banco atualizado para a nova versão (${nome}).`);
 }
 if (!temColuna('pedidos', 'ativo')) recria('pedidos', PEDIDOS);
+// Perfil "conferente" (conferência geral de todas as lojas): amplia o CHECK de perfil.
+if (!db.prepare("SELECT sql FROM sqlite_master WHERE name = 'usuarios'").get().sql.includes("'conferente'")) recria('usuarios', USUARIOS);
+// Nome completo (vai na planilha; o "nome" segue o apelido do Agilizone). cpf guarda CPF (11) ou CNPJ (14 dígitos).
+if (!temColuna('motoboys', 'nome_completo')) db.exec('ALTER TABLE motoboys ADD COLUMN nome_completo TEXT');
+// Conferência geral: um envio por data de pagamento (todas as lojas juntas), com a planilha gerada.
+db.exec(`CREATE TABLE IF NOT EXISTS envios (id INTEGER PRIMARY KEY, pagamento TEXT NOT NULL UNIQUE, arquivo TEXT NOT NULL,
+  total INTEGER NOT NULL, linhas INTEGER NOT NULL, para TEXT, drive_id TEXT, enviado_em TEXT NOT NULL DEFAULT (datetime('now','localtime')), enviado_por INTEGER);`);
 if (!temColuna('ajustes', 'substituido_em')) recria('ajustes', AJUSTES);
 db.exec('CREATE INDEX IF NOT EXISTS pedidos_fechamento ON pedidos (fechamento_id)'); // soma dos pedidos por fechamento sem varrer a tabela inteira (listas ficavam em dezenas de segundos)
 db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS pedidos_validos ON pedidos (loja_id, chave) WHERE ativo = 1;

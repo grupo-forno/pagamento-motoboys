@@ -50,7 +50,7 @@ test('conferente: vê todas as lojas, completa o cadastro (CNPJ) e envia a plani
   const ck = await entra();
   assert.strictEqual((await get(ck, '/')).headers.get('location'), '/conferencia');
   let h = await (await get(ck, `/conferencia?d=${D}`)).text();
-  assert.ok(h.includes('Resumo geral'), 'aba geral');
+  assert.ok(h.includes('Lojas que pagam') && h.includes('Automático'), 'aba geral');
   assert.ok(h.includes('falta nome completo'), 'bloqueia sem nome completo/CPF');
   assert.ok(/<button class="btn btn-pri" disabled>/.test(h), 'envio bloqueado');
   // completa o cadastro (um com CNPJ); os mesmos ids do Agilizone aparecem em todas as lojas do teste
@@ -60,7 +60,6 @@ test('conferente: vê todas as lojas, completa o cadastro (CNPJ) e envia a plani
     assert.match(loc, /dados salvos/, loc);
   }
   assert.match(await post(ck, '/entregadores/1', { loja: sul.id, nome_completo: 'Só', cpf: '123', pix: 'a@b.com' }), /CPF deve ter 11|nome completo|não encontrado/);
-  assert.match(await post(ck, '/conferencia/enviar', { d: D, ok: '1' }), /Resumo/, 'sem Resumo não envia');
   // Resumo de cada loja: Kevin com 1 ocorrência de R$ 2,50 (o valor a pagar vem do Resumo)
   const csv = 'Entregador;Pedidos;Soma das taxas de entrega;Ocorrências;Ocorrências + Taxas;Pago\nKevin;2;17,50;1;20,00;0,00\nMarcos;1;6,00;0;6,00;0,00\n';
   for (const { id } of db.prepare('SELECT id FROM lojas').all()) {
@@ -68,6 +67,9 @@ test('conferente: vê todas as lojas, completa o cadastro (CNPJ) e envia a plani
     const loc = decodeURIComponent((await fetch(B + '/conferencia/resumo', { method: 'POST', headers: { cookie: ck }, body: fd, redirect: 'manual' })).headers.get('location'));
     assert.match(loc, /Resumo importado: 2/, loc);
   }
+  const um = db.prepare('SELECT id FROM lojas LIMIT 1').get().id; // remover volta ao automático; reimporta em seguida
+  assert.match(await post(ck, '/conferencia/resumo/remover', { d: D, loja: um }), /voltaram ao automático/);
+  { const fd = new FormData(); fd.set('d', D); fd.set('loja', um); fd.set('resumo', new Blob([csv]), 'resumo.csv'); await fetch(B + '/conferencia/resumo', { method: 'POST', headers: { cookie: ck }, body: fd, redirect: 'manual' }); }
   h = await (await get(ck, `/entregadores?ver=todas`)).text();
   assert.ok(h.includes('12.345.678/0001-99') && h.includes('Marcos Transportes LTDA'), 'lista todas as lojas com CNPJ');
   const loc = await post(ck, '/conferencia/enviar', { d: D, ok: '1' });

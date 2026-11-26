@@ -184,7 +184,7 @@ async function ocorrencias(storeId, de, ate, manual, ids = []) {
       r = await chama(url, { headers: { Authorization: `Bearer ${tk}`, Accept: 'application/json' } });
       if (!(r.status === 401 && painelLogin() && t === 0)) break; // token vencido: loga de novo e repete
     }
-    if (r.status === 401 || r.status === 403) throw erro('O painel do Agilizone recusou o acesso às ocorrências desta loja (token expirado ou usuário sem acesso).');
+    if (r.status === 401 || r.status === 403) throw erro(`O painel do Agilizone recusou o acesso às ocorrências (erro ${r.status}, storeId ${storeId}): o usuário do painel não tem acesso a esta loja ou o storeId não é o do painel. Confira em Configurações > Lojas.`);
     if (!r.ok) throw erro(`O painel do Agilizone não respondeu às ocorrências (erro ${r.status}: ${(await r.text()).replace(/\s+/g, ' ').slice(0, 160)}). Confira o storeId da loja em Configurações > Lojas.`);
     const lista = await r.json();
     return Array.isArray(lista) ? lista : lista.content || [];

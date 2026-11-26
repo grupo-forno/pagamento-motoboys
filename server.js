@@ -1023,10 +1023,11 @@ async function conferenciaDoDia(d, renova) {
   return (await Promise.all(lojas.map((l) => lojaNoDia(l, d, renova)))).filter(Boolean);
 }
 const bloqueiosDo = (dia) => dia.flatMap((x) => { const lj = lojaCurta(x.loja.nome); return x.erro ? [`${lj}: ${x.erro}`] : [
-  ...(x.erroOc && !x.resumo ? [`${lj}: ocorrências não carregadas: ${x.erroOc}`] : []),
   ...x.ocSemPedido.map(([id, o]) => `${lj}: ocorrência de ${brl(o.valor)} para o entregador ${id} do Agilizone, que não tem pedido no período`),
   ...x.soNoResumo.map((n) => `${n} (${lj}): está no Resumo, mas não tem pedido no período da API`),
   ...x.itens.filter((i) => i.falta.length && (i.valor > 0 || i.falta.includes('linha no Resumo'))).map((i) => `${nomeEnt(i.m)} (${lj}): falta ${i.falta.join(' e ')}`)]; });
+// Lojas cujas ocorrências o painel não entregou (sem Resumo manual): não bloqueia, mas exige confirmação explícita no envio.
+const semOcorrencias = (dia) => dia.filter((x) => x.erroOc && !x.resumo);
 const linhasPlanilha = (dia) => dia.flatMap((x) => x.itens.filter((i) => i.valor > 0).map((i) => ({ nome: nomeEnt(i.m), doc: i.m.cpf, centro: centroDa(x.loja), valor: i.valor })));
 const envioDo = (d) => db.prepare('SELECT e.*, u.nome por FROM envios e LEFT JOIN usuarios u ON u.id = e.enviado_por WHERE pagamento = ?').get(d);
 const dataOk = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '') && !isNaN(Date.parse(d));
@@ -1076,7 +1077,8 @@ ${semPix ? html`<div class="alert warn">${icone('info')}<div>${semPix} entregado
   const envio = env ? html`<section class="card"><div class="card-h"><span class="hico pri">${icone('check')}</span><div class="t"><h2>Enviado</h2><p>${quando(env.enviado_em)}${env.por ? ` por ${env.por}` : ''} · ${env.linhas} linhas · ${brl(env.total)}${env.para ? ` · e-mail para ${env.para}` : ''}</p></div></div>
 <div class="card-f"><a class="btn btn-sec" href="/conferencia/planilha?d=${d}">${icone('baixar')} Baixar planilha</a>${env.drive_id ? html`<a class="btn btn-ghost" href="https://drive.google.com/file/d/${env.drive_id}/view" target="_blank" rel="noopener">Abrir no Drive</a>` : html`<form method="post" action="/conferencia/drive"><input type="hidden" name="d" value="${d}"><button class="btn btn-pri">${icone('subir')} Enviar ao Drive</button></form>`}</div></section>`
     : html`<form method="post" action="/conferencia/enviar" class="card" data-carregando="Enviando…"><input type="hidden" name="d" value="${d}"><div class="card-h"><span class="hico pri">${icone('enviar')}</span><div class="t"><h2>Enviar ${CONF.titulo(d)}</h2><p>Gera a planilha no modelo do financeiro, manda por e-mail para ${listaEmails(cfg('email_para')).join(', ') || 'os destinatários (não configurados)'}${semDrive ? '' : ' e sobe na pasta do Google Drive'}.</p></div></div>
-<div class="card-b">${semDrive ? html`<div class="alert warn">${icone('alerta')}<div>Google Drive não configurado (Configurações > Google Drive): a planilha vai só por e-mail.</div></div>` : ''}<label class="check"><input type="checkbox" name="ok" value="1" required ${bloqueios.length ? 'disabled' : ''}> Conferi todas as lojas e os valores estão corretos.</label></div>
+<div class="card-b">${semDrive ? html`<div class="alert warn">${icone('alerta')}<div>Google Drive não configurado (Configurações > Google Drive): a planilha vai só por e-mail.</div></div>` : ''}<label class="check"><input type="checkbox" name="ok" value="1" required ${bloqueios.length ? 'disabled' : ''}> Conferi todas as lojas e os valores estão corretos.</label>
+${semOcorrencias(dia).length ? html`<label class="check"><input type="checkbox" name="sem_oc" value="1" required ${bloqueios.length ? 'disabled' : ''}> <span>Sem ocorrências em <b>${semOcorrencias(dia).map((x) => lojaCurta(x.loja.nome)).join(', ')}</b>: o painel do Agilizone não respondeu. Confirmo que não há ocorrências a pagar nelas neste período (ou que lanço à parte).</span></label>` : ''}</div>
 <div class="card-f"><a class="btn btn-sec" href="/conferencia/planilha?d=${d}">${icone('baixar')} Baixar planilha (prévia)</a><button class="btn btn-pri" ${bloqueios.length || !nEnt ? 'disabled' : ''}>${icone('enviar')} Enviar</button></div></form>`;
   res.send(page(req, { titulo: 'Conferência geral', compacto: true, eyebrow: 'Pagamento de entregadores', sub: `Pagamento de ${diaLongo(d)} · ${env ? 'Enviado' : 'Em conferência'}`,
     acoes: html`<a class="btn btn-sec" href="${url({ renova: '1' })}" data-carregando="Buscando no Agilizone…">Atualizar do Agilizone</a>` }, html`
@@ -1125,13 +1127,15 @@ app.post('/conferencia/enviar', so((r) => confere(r.user)), async (req, res, nex
   if (envioDo(d)) return volta(res, url, 'erro', 'Este pagamento já foi enviado.');
   if (req.body.ok !== '1') return volta(res, url, 'erro', 'Marque que conferiu todas as lojas antes de enviar.');
   const dia = await conferenciaDoDia(d, true); // envia com os dados mais recentes do Agilizone
+  const semOc = semOcorrencias(dia);
+  if (semOc.length && req.body.sem_oc !== '1') return volta(res, url, 'erro', `Nada foi enviado: confirme que não há ocorrências em ${semOc.map((x) => lojaCurta(x.loja.nome)).join(', ')} (o painel do Agilizone não respondeu).`);
   const pend = bloqueiosDo(dia);
   if (pend.length) return volta(res, url, 'erro', `Nada foi enviado: ${pend.length} pendência(s), ex.: ${pend[0]}. Confira e tente de novo.`);
   const linhas = linhasPlanilha(dia), total = linhas.reduce((s, l) => s + l.valor, 0), titulo = CONF.titulo(d), buf = CONF.planilha(d, linhas);
   if (!linhas.length) return volta(res, url, 'erro', 'Nenhum valor a pagar neste dia.');
   const para = listaEmails(cfg('email_para'));
   if (!para.length) return volta(res, url, 'erro', 'Nada foi enviado: cadastre os destinatários em Configurações > E-mail.');
-  const corpo = `Pagamento dos entregadores de ${diaLongo(d)}.\n\n${dia.map((x) => `${lojaCurta(x.loja.nome)} (${dataFmt(x.ini)} a ${dataFmt(x.fim)}): ${x.itens.filter((i) => i.valor > 0).length} entregadores, ${brl(x.itens.reduce((s, i) => s + i.valor, 0))}`).join('\n')}\n\nTotal: ${brl(total)} (${linhas.length} linhas)\nConferido por ${req.user.nome}. Planilha em anexo.`;
+  const corpo = `Pagamento dos entregadores de ${diaLongo(d)}.\n\n${dia.map((x) => `${lojaCurta(x.loja.nome)} (${dataFmt(x.ini)} a ${dataFmt(x.fim)}): ${x.itens.filter((i) => i.valor > 0).length} entregadores, ${brl(x.itens.reduce((s, i) => s + i.valor, 0))}`).join('\n')}\n\nTotal: ${brl(total)} (${linhas.length} linhas)${semOc.length ? `\nATENÇÃO: sem ocorrências (painel do Agilizone indisponível): ${semOc.map((x) => lojaCurta(x.loja.nome)).join(', ')}.` : ''}\nConferido por ${req.user.nome}. Planilha em anexo.`;
   try {
     const r = await enviarEmail({ to: para.join(', '), subject: titulo, text: corpo, attachments: [{ filename: `${titulo}.xlsx`, content: buf }] });
     if (r.salvo && process.env.EMAIL_SO_ARQUIVO !== '1') return volta(res, url, 'erro', 'Nada foi enviado: servidor de e-mail não configurado (Configurações > E-mail). Baixe a planilha enquanto isso.');

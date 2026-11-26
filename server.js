@@ -152,30 +152,44 @@ apiDrive.use((req, res, next) => {
   if (!crypto.timingSafeEqual(a, b)) return res.status(401).json({ erro: 'Não autorizado.' });
   next();
 });
-apiDrive.get('/pendentes', (req, res) => res.json({ pendentes: db.prepare('SELECT fechamento_id id, arquivo, tentativas FROM drive_fila WHERE drive_id IS NULL ORDER BY criado_em, fechamento_id LIMIT 50').all()
-  .map((p) => ({ ...p, download: `/api/drive/fechamentos/${p.id}/xlsx` })) }));
-apiDrive.get('/fechamentos/:id/xlsx', (req, res) => {
-  const q = db.prepare('SELECT * FROM drive_fila WHERE fechamento_id = ?').get(Number(req.params.id)), f = q && carregaF(q.fechamento_id);
-  if (!f) return res.status(404).json({ erro: 'Fechamento não encontrado na fila.' });
-  const buf = xlsxFechamento(f, grade(f));
-  res.set({ 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': `attachment; filename="${q.arquivo}"`, 'X-Arquivo': q.arquivo, 'X-Content-SHA256': crypto.createHash('sha256').update(buf).digest('hex') }).send(buf);
+// Duas filas, uma chave por item: "f12" = fechamento 12 (fluxo por loja); "c3" = envio 3 da Conferência geral (todas as lojas juntas).
+const nomeDriveEnvio = (e) => `${e.pagamento.split('-').reverse().join('-')}-motoboys${e.id}.xlsx`;
+const enfileiraEnvio = (e) => db.prepare('INSERT OR IGNORE INTO drive_fila_envios (envio_id, arquivo) VALUES (?, ?)').run(e.id, nomeDriveEnvio(e));
+const FILAS = { f: { tabela: 'drive_fila', col: 'fechamento_id', ref: (id) => `f:${id}` }, c: { tabela: 'drive_fila_envios', col: 'envio_id', ref: () => 'conferencia' } };
+const itemDrive = (chave) => {
+  const m = /^([fc])(\d+)$/.exec(chave), F = m && FILAS[m[1]], id = m && Number(m[2]), q = F && db.prepare(`SELECT * FROM ${F.tabela} WHERE ${F.col} = ?`).get(id);
+  return q ? { F, id, chave, q } : null;
+};
+const urlDrive = (chave) => `/api/drive/itens/${chave}`;
+apiDrive.get('/pendentes', (req, res) => res.json({ pendentes: [
+  ...db.prepare('SELECT fechamento_id id, arquivo, tentativas, criado_em FROM drive_fila WHERE drive_id IS NULL').all().map((p) => ({ ...p, chave: `f${p.id}` })),
+  ...db.prepare('SELECT envio_id id, arquivo, tentativas, criado_em FROM drive_fila_envios WHERE drive_id IS NULL').all().map((p) => ({ ...p, chave: `c${p.id}` })),
+].sort((a, b) => a.criado_em.localeCompare(b.criado_em) || a.chave.localeCompare(b.chave)).slice(0, 50)
+  .map(({ criado_em, id, ...p }) => ({ id: p.chave, ...p, download: `${urlDrive(p.chave)}/xlsx`, confirmar: `${urlDrive(p.chave)}/confirmar`, falha: `${urlDrive(p.chave)}/falha` })) }));
+apiDrive.get('/itens/:chave/xlsx', (req, res) => {
+  const it = itemDrive(req.params.chave);
+  let buf = null;
+  if (it?.chave[0] === 'f') { const f = carregaF(it.id); buf = f && xlsxFechamento(f, grade(f)); }
+  else if (it) { const e = db.prepare('SELECT pagamento FROM envios WHERE id = ?').get(it.id); buf = e && fs.existsSync(arqEnvio(e.pagamento)) ? fs.readFileSync(arqEnvio(e.pagamento)) : null; } // exatamente a planilha enviada por e-mail
+  if (!buf) return res.status(404).json({ erro: 'Item não encontrado na fila.' });
+  res.set({ 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': `attachment; filename="${it.q.arquivo}"`, 'X-Arquivo': it.q.arquivo, 'X-Content-SHA256': crypto.createHash('sha256').update(buf).digest('hex') }).send(buf);
 });
 // Confirmação idempotente: repetir devolve 200 e mantém o primeiro ID gravado.
-apiDrive.post('/fechamentos/:id/confirmar', express.json({ limit: '10kb' }), (req, res) => {
-  const id = Number(req.params.id), q = db.prepare('SELECT * FROM drive_fila WHERE fechamento_id = ?').get(id), driveId = String(req.body?.driveId || '');
-  if (!q) return res.status(404).json({ erro: 'Fechamento não encontrado na fila.' });
+apiDrive.post('/itens/:chave/confirmar', express.json({ limit: '10kb' }), (req, res) => {
+  const it = itemDrive(req.params.chave), driveId = String(req.body?.driveId || '');
+  if (!it) return res.status(404).json({ erro: 'Item não encontrado na fila.' });
   if (!/^[\w-]{10,100}$/.test(driveId)) return res.status(400).json({ erro: 'driveId inválido.' });
-  if (q.drive_id) return res.json({ ok: true, repetido: true, driveId: q.drive_id });
-  db.prepare("UPDATE drive_fila SET drive_id = ?, gravado_em = datetime('now','localtime'), erro = NULL WHERE fechamento_id = ? AND drive_id IS NULL").run(driveId, id);
-  log(null, `f:${id}`, `Planilha ${q.arquivo} gravada na pasta do Google Drive`);
+  if (it.q.drive_id) return res.json({ ok: true, repetido: true, driveId: it.q.drive_id });
+  db.prepare(`UPDATE ${it.F.tabela} SET drive_id = ?, gravado_em = datetime('now','localtime'), erro = NULL WHERE ${it.F.col} = ? AND drive_id IS NULL`).run(driveId, it.id);
+  log(null, it.F.ref(it.id), `Planilha ${it.q.arquivo} gravada na pasta do Google Drive`);
   res.json({ ok: true, repetido: false, driveId });
 });
-// Falha informada pelo script: o fechamento continua pendente; só registra o motivo (e no histórico, se mudou).
-apiDrive.post('/fechamentos/:id/falha', express.json({ limit: '10kb' }), (req, res) => {
-  const id = Number(req.params.id), q = db.prepare('SELECT * FROM drive_fila WHERE fechamento_id = ?').get(id), erro = String(req.body?.erro || 'erro').slice(0, 300);
-  if (!q) return res.status(404).json({ erro: 'Fechamento não encontrado na fila.' });
-  db.prepare('UPDATE drive_fila SET tentativas = tentativas + 1, erro = ? WHERE fechamento_id = ? AND drive_id IS NULL').run(erro, id);
-  if (!q.drive_id && q.erro !== erro) log(null, `f:${id}`, `Gravação no Google Drive falhou (segue pendente): ${erro}`);
+// Falha informada pelo script: o item continua pendente; só registra o motivo (e no histórico, se mudou).
+apiDrive.post('/itens/:chave/falha', express.json({ limit: '10kb' }), (req, res) => {
+  const it = itemDrive(req.params.chave), erro = String(req.body?.erro || 'erro').slice(0, 300);
+  if (!it) return res.status(404).json({ erro: 'Item não encontrado na fila.' });
+  db.prepare(`UPDATE ${it.F.tabela} SET tentativas = tentativas + 1, erro = ? WHERE ${it.F.col} = ? AND drive_id IS NULL`).run(erro, it.id);
+  if (!it.q.drive_id && it.q.erro !== erro) log(null, it.F.ref(it.id), `Gravação no Google Drive falhou (segue pendente): ${erro}`);
   res.json({ ok: true });
 });
 app.use('/api/drive', apiDrive);
@@ -1121,9 +1135,10 @@ ${dia.map((x) => { const pend = bloqueiosDo([x]).length; return html`<tr><th sco
 ${dia.length ? '' : html`<tr><td colspan="6">Nenhuma loja paga neste dia.</td></tr>`}</tbody><tfoot><tr><th>Total</th><td></td><td></td><td class="n">${nEnt}</td><td class="n"><b>${brl(total)}</b></td><td></td></tr></tfoot></table></div></section>
 ${bloqueios.length ? html`<div class="alert bad" role="alert">${icone('alerta')}<div><b>Corrija antes de enviar (${bloqueios.length})</b><ul>${bloqueios.map((b) => html`<li>${b}</li>`)}</ul></div></div>` : ''}
 ${semPix ? html`<div class="alert warn">${icone('info')}<div>${semPix} entregador(es) sem chave Pix cadastrada. Não impede o envio (a planilha não leva o Pix).</div></div>` : ''}`;
-  const semDrive = !cfg('drive_pasta') || !cfg('drive_credencial');
+  const semDrive = driveDestino() === 'sem', qe = env && db.prepare('SELECT * FROM drive_fila_envios WHERE envio_id = ?').get(env.id);
+  const idDrive = env && (env.drive_id || qe?.drive_id);
   const envio = env ? html`<section class="card"><div class="card-h"><span class="hico pri">${icone('check')}</span><div class="t"><h2>Enviado</h2><p>${quando(env.enviado_em)}${env.por ? ` por ${env.por}` : ''} · ${env.linhas} linhas · ${brl(env.total)}${env.para ? ` · e-mail para ${env.para}` : ''}</p></div></div>
-<div class="card-f"><a class="btn btn-sec" href="/conferencia/planilha?d=${d}">${icone('baixar')} Baixar planilha</a>${env.drive_id ? html`<a class="btn btn-ghost" href="https://drive.google.com/file/d/${env.drive_id}/view" target="_blank" rel="noopener">Abrir no Drive</a>` : html`<form method="post" action="/conferencia/drive"><input type="hidden" name="d" value="${d}"><button class="btn btn-pri">${icone('subir')} Enviar ao Drive</button></form>`}
+<div class="card-f"><a class="btn btn-sec" href="/conferencia/planilha?d=${d}">${icone('baixar')} Baixar planilha</a>${idDrive ? html`<a class="btn btn-ghost" href="https://drive.google.com/file/d/${idDrive}/view" target="_blank" rel="noopener">Abrir no Drive</a>` : qe ? html`<span class="badge warn">Na fila do Drive</span> <span class="mut small">${qe.erro ? `Última falha: ${qe.erro}. ` : ''}O Apps Script grava na pasta em até 5 minutos.</span>` : html`<form method="post" action="/conferencia/drive"><input type="hidden" name="d" value="${d}"><button class="btn btn-pri">${icone('subir')} Enviar ao Drive</button></form>`}
 <a class="btn btn-ghost" href="/conferencia/entregues">Ver entregues</a></div>
 <form method="post" action="/conferencia/reenviar" class="card-b" data-carregando="Enviando…"><input type="hidden" name="d" value="${d}"><div class="field"><label for="re-d">Reenviar a planilha enviada para</label><textarea id="re-d" name="para" required>${env.para || cfg('email_para') || ''}</textarea></div><button class="btn btn-sec">${icone('enviar', 'sm')} Reenviar</button></form></section>`
     : html`${TESTE_LOCAL ? html`<div class="alert warn" role="note">${icone('alerta')}<div><b>MODO TESTE LOCAL</b> Pode enviar com cadastros incompletos. O e-mail vai com [TESTE] no assunto, nada é registrado (dá para enviar de novo) e não sobe no Drive.</div></div>` : ''}<form method="post" action="/conferencia/enviar" class="card" data-carregando="Enviando…"><input type="hidden" name="d" value="${d}"><div class="card-h"><span class="hico pri">${icone('enviar')}</span><div class="t"><h2>${TESTE_LOCAL ? '[TESTE] ' : ''}Enviar ${CONF.titulo(d)}</h2><p>Gera a planilha no modelo do financeiro, manda por e-mail para ${listaEmails(cfg('email_para')).join(', ') || 'os destinatários (não configurados)'}${semDrive ? '' : ' e sobe na pasta do Google Drive'}.</p></div></div>
@@ -1166,6 +1181,8 @@ app.get('/conferencia/planilha', so((r) => confere(r.user)), async (req, res, ne
 } catch (e) { next(e); } });
 
 const arqEnvio = (d) => path.join(DIR, 'envios', `${d}.xlsx`); // a planilha exatamente como foi enviada
+// Destino no Drive: 'direto' (conta de serviço, Configurações > Google Drive), 'fila' (Apps Script busca; precisa de DRIVE_SCRIPT_SEGREDO) ou 'sem'.
+const driveDestino = () => (cfg('drive_pasta') && cfg('drive_credencial') ? 'direto' : (process.env.DRIVE_SCRIPT_SEGREDO || '').length >= 24 ? 'fila' : 'sem');
 async function subirEnvioDrive(d, buf, u) {
   const r = await CONF.subirDrive({ credencial: cfg('drive_credencial'), pasta: cfg('drive_pasta'), nome: `${CONF.titulo(d)}.xlsx`, buffer: buf, mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   db.prepare('UPDATE envios SET drive_id = ? WHERE pagamento = ?').run(r.id, d);
@@ -1174,9 +1191,11 @@ async function subirEnvioDrive(d, buf, u) {
 // Gera a planilha do dia e envia (e-mail + Drive). Serve à tela (user = quem conferiu) e ao fechamento automático (user = null).
 // Retorna { erro } (nada foi enviado) ou { titulo, linhas, total, para, drive: 'sem' | 'ok' | { erro } }.
 const emEnvio = new Set(); // evita enviar a mesma data duas vezes ao mesmo tempo (tela + automático)
-async function enviaFechamento(d, dia, user, { semOcConfirmado = false } = {}) {
+// emailTeste: teste do envio automático — manda SÓ para esse e-mail, com [TESTE] no assunto, sem registrar nada nem ir ao Drive (vale até para data já enviada).
+async function enviaFechamento(d, dia, user, { semOcConfirmado = false, emailTeste = '' } = {}) {
   if (emEnvio.has(d)) return { erro: 'Este pagamento está sendo enviado agora. Aguarde um instante e recarregue.' };
-  if (envioDo(d)) return { erro: 'Este pagamento já foi enviado.' };
+  if (!emailTeste && envioDo(d)) return { erro: 'Este pagamento já foi enviado.' };
+  const modoTeste = TESTE_LOCAL || !!emailTeste;
   emEnvio.add(d);
   try {
     const semOc = semOcorrencias(dia);
@@ -1185,20 +1204,22 @@ async function enviaFechamento(d, dia, user, { semOcConfirmado = false } = {}) {
     if (pend.length) return { erro: `Nada foi enviado: ${pend.length} pendência(s), ex.: ${pend[0]}. Confira e tente de novo.` };
     const linhas = linhasPlanilha(dia), total = linhas.reduce((s, l) => s + l.valor, 0), titulo = CONF.titulo(d), buf = CONF.planilha(d, linhas);
     if (!linhas.length) return { erro: 'Nenhum valor a pagar neste dia.' };
-    const para = listaEmails(cfg('email_para'));
+    const para = emailTeste ? [emailTeste] : listaEmails(cfg('email_para'));
     if (!para.length) return { erro: 'Nada foi enviado: cadastre os destinatários em Configurações > E-mail.' };
     const corpo = `Pagamento dos entregadores de ${diaLongo(d)}.\n\n${dia.map((x) => `${lojaCurta(x.loja.nome)} (${dataFmt(x.ini)} a ${dataFmt(x.fim)}): ${x.itens.filter((i) => i.valor > 0).length} entregadores, ${brl(x.itens.reduce((s, i) => s + i.valor, 0))}`).join('\n')}\n\nTotal: ${brl(total)} (${linhas.length} linhas)${semOc.length ? `\nATENÇÃO: sem ocorrências (painel do Agilizone indisponível): ${semOc.map((x) => lojaCurta(x.loja.nome)).join(', ')}.` : ''}\n${user ? `Conferido por ${user.nome}.` : 'Gerado e enviado automaticamente pelo sistema, sem nenhuma pendência na conferência.'} Planilha em anexo.`;
     try {
-      const r = await enviarEmail({ to: para.join(', '), subject: `${TESTE_LOCAL ? '[TESTE] ' : ''}${titulo}`, text: `${TESTE_LOCAL ? '*** TESTE LOCAL: cadastros podem estar incompletos; não vale para pagamento. ***\n\n' : ''}${corpo}`, attachments: [{ filename: `${titulo}.xlsx`, content: buf }] });
+      const r = await enviarEmail({ to: para.join(', '), subject: `${modoTeste ? '[TESTE] ' : ''}${titulo}`, text: `${emailTeste ? '*** TESTE DO ENVIO AUTOMÁTICO: só este e-mail foi enviado (o financeiro não recebeu); não vale para pagamento. ***\n\n' : TESTE_LOCAL ? '*** TESTE LOCAL: cadastros podem estar incompletos; não vale para pagamento. ***\n\n' : ''}${corpo}`, attachments: [{ filename: `${titulo}.xlsx`, content: buf }] });
       if (r.salvo && process.env.EMAIL_SO_ARQUIVO !== '1') return { erro: 'Nada foi enviado: servidor de e-mail não configurado (Configurações > E-mail). Baixe a planilha enquanto isso.' };
     } catch (e) { return { erro: `Nada foi enviado: o servidor de e-mail recusou (${e.message}).` }; }
-    if (TESTE_LOCAL) return { titulo, linhas: linhas.length, total, para, teste: true, drive: 'sem' }; // teste: nada é registrado nem vai ao Drive
+    if (modoTeste) return { titulo, linhas: linhas.length, total, para, teste: true, drive: 'sem' }; // teste: nada é registrado nem vai ao Drive
     fs.mkdirSync(path.dirname(arqEnvio(d)), { recursive: true });
     fs.writeFileSync(arqEnvio(d), buf);
-    db.prepare('INSERT INTO envios (pagamento, arquivo, total, linhas, para, enviado_por) VALUES (?,?,?,?,?,?)').run(d, `${titulo}.xlsx`, total, linhas.length, para.join(', '), user?.id ?? null);
+    const envioId = Number(db.prepare('INSERT INTO envios (pagamento, arquivo, total, linhas, para, enviado_por) VALUES (?,?,?,?,?,?)').run(d, `${titulo}.xlsx`, total, linhas.length, para.join(', '), user?.id ?? null).lastInsertRowid);
     log(user?.id ?? null, 'conferencia', `${user ? 'Enviou' : 'Enviou automaticamente'} ${titulo}: ${linhas.length} linhas, ${brl(total)}, para ${para.join(', ')}`);
     const ok = { titulo, linhas: linhas.length, total, para };
-    if (!cfg('drive_pasta') || !cfg('drive_credencial')) return { ...ok, drive: 'sem' };
+    const destino = driveDestino();
+    if (destino === 'sem') return { ...ok, drive: 'sem' };
+    if (destino === 'fila') { enfileiraEnvio({ id: envioId, pagamento: d }); return { ...ok, drive: 'fila' }; } // o Apps Script grava na pasta
     try { await subirEnvioDrive(d, buf, user); return { ...ok, drive: 'ok' }; } catch (e) { return { ...ok, drive: { erro: e.message } }; }
   } finally { emEnvio.delete(d); }
 }
@@ -1212,6 +1233,7 @@ app.post('/conferencia/enviar', so((r) => confere(r.user)), async (req, res, nex
   if (r.teste) return volta(res, url, 'ok', `TESTE enviado por e-mail para ${r.para.join(', ')} (${r.linhas} linhas, ${brl(r.total)}). Nada foi registrado: pode enviar de novo.`);
   if (r.drive === 'sem') return volta(res, url, 'ok', `${r.titulo} enviado por e-mail. Google Drive não configurado.`);
   if (r.drive === 'ok') return volta(res, url, 'ok', `${r.titulo} enviado por e-mail e salvo no Google Drive.`);
+  if (r.drive === 'fila') return volta(res, url, 'ok', `${r.titulo} enviado por e-mail. A planilha entrou na fila e o Apps Script grava na pasta do Drive em até 5 minutos.`);
   volta(res, url, 'erro', `E-mail enviado, mas o Drive falhou: ${r.drive.erro} Use "Enviar ao Drive" para tentar de novo.`);
 } catch (e) { next(e); } });
 // Reenvio de um pagamento já entregue: manda de novo a planilha exatamente como foi enviada (sem recalcular nada).
@@ -1229,11 +1251,11 @@ app.post('/conferencia/reenviar', so((r) => confere(r.user)), async (req, res, n
   volta(res, volt, 'ok', `${titulo} reenviado para ${para.join(', ')}.`);
 } catch (e) { next(e); } });
 app.get('/conferencia/entregues', so((r) => confere(r.user)), (req, res) => {
-  const lista = db.prepare('SELECT e.*, u.nome por FROM envios e LEFT JOIN usuarios u ON u.id = e.enviado_por ORDER BY e.pagamento DESC LIMIT 100').all();
+  const lista = db.prepare('SELECT e.*, u.nome por, COALESCE(e.drive_id, q.drive_id) drive, q.envio_id IS NOT NULL AND q.drive_id IS NULL na_fila FROM envios e LEFT JOIN usuarios u ON u.id = e.enviado_por LEFT JOIN drive_fila_envios q ON q.envio_id = e.id ORDER BY e.pagamento DESC LIMIT 100').all();
   res.send(page(req, { titulo: 'Entregues', compacto: true, eyebrow: 'Pagamento de entregadores', sub: 'Planilhas já enviadas ao financeiro',
     acoes: html`<a class="btn btn-sec" href="/conferencia">Em conferência</a>` }, html`
 <section class="card"><div class="tw"><table><thead><tr><th>Pagamento</th><th>Enviado</th><th>Por</th><th class="n">Linhas</th><th class="n">Total</th><th>Drive</th><th class="n">Ações</th></tr></thead><tbody>
-${lista.map((e) => html`<tr><th scope="row">${diaLongo(e.pagamento)}<small class="mut">${e.arquivo}</small></th><td>${quando(e.enviado_em)}<small class="mut">${e.para}</small></td><td>${e.por || 'Automático'}</td><td class="n">${e.linhas}</td><td class="n">${brl(e.total)}</td><td>${e.drive_id ? html`<a href="https://drive.google.com/file/d/${e.drive_id}/view" target="_blank" rel="noopener">Abrir</a>` : '—'}</td>
+${lista.map((e) => html`<tr><th scope="row">${diaLongo(e.pagamento)}<small class="mut">${e.arquivo}</small></th><td>${quando(e.enviado_em)}<small class="mut">${e.para}</small></td><td>${e.por || 'Automático'}</td><td class="n">${e.linhas}</td><td class="n">${brl(e.total)}</td><td>${e.drive ? html`<a href="https://drive.google.com/file/d/${e.drive}/view" target="_blank" rel="noopener">Abrir</a>` : e.na_fila ? html`<span class="badge warn">Na fila</span>` : '—'}</td>
 <td class="n"><a class="btn btn-sec btn-sm" href="/conferencia?d=${e.pagamento}">Abrir</a> <a class="btn btn-ghost btn-sm" href="/conferencia/planilha?d=${e.pagamento}">Baixar</a>
 <details class="fold"><summary class="mut small">Reenviar</summary><form method="post" action="/conferencia/reenviar" data-carregando="Enviando…"><input type="hidden" name="d" value="${e.pagamento}"><input type="hidden" name="volta" value="entregues"><div class="field"><label class="sr" for="re-${e.pagamento}">Reenviar para</label><textarea id="re-${e.pagamento}" name="para" required>${e.para || cfg('email_para') || ''}</textarea></div><button class="btn btn-pri btn-sm">${icone('enviar', 'sm')} Reenviar</button></form></details></td></tr>`)}
 ${lista.length ? '' : html`<tr><td colspan="7">Nenhum pagamento enviado ainda.</td></tr>`}</tbody></table></div></section>`));
@@ -1241,7 +1263,14 @@ ${lista.length ? '' : html`<tr><td colspan="7">Nenhum pagamento enviado ainda.</
 app.post('/conferencia/drive', so((r) => confere(r.user)), async (req, res, next) => { try {
   const d = String(req.body.d || ''), url = `/conferencia?d=${d}`;
   if (!dataOk(d) || !envioDo(d)) throw falha('Envio não encontrado.');
-  if (!cfg('drive_pasta') || !cfg('drive_credencial')) return volta(res, url, 'erro', 'Configure o Google Drive em Configurações.');
+  const destino = driveDestino();
+  if (destino === 'sem') return volta(res, url, 'erro', 'Drive não configurado: defina DRIVE_SCRIPT_SEGREDO no servidor (Apps Script) ou configure o Google Drive em Configurações.');
+  if (destino === 'fila') { // coloca na fila (ou devolve à fila, limpando o erro anterior); idempotente
+    const e = envioDo(d), q = db.prepare('SELECT drive_id FROM drive_fila_envios WHERE envio_id = ?').get(e.id);
+    if (q?.drive_id) return volta(res, url, 'ok', 'Esta planilha já foi gravada no Drive.');
+    enfileiraEnvio(e); db.prepare('UPDATE drive_fila_envios SET erro = NULL WHERE envio_id = ?').run(e.id);
+    return volta(res, url, 'ok', 'Planilha na fila: o Apps Script grava na pasta do Drive em até 5 minutos.');
+  }
   try { await subirEnvioDrive(d, fs.readFileSync(arqEnvio(d)), req.user); volta(res, url, 'ok', 'Planilha salva no Google Drive.'); }
   catch (e) { volta(res, url, 'erro', e.message); }
 } catch (e) { next(e); } });
@@ -2068,10 +2097,19 @@ ${ultimosAlertas.length ? html`<details class="fold" style="margin-top:8px"><sum
 <input type="time" name="hora_fechamento" value="${v('hora_fechamento') || '06:00'}" aria-label="Horário do envio automático" style="width:120px"></div>
 <div class="fgrid"><div class="field"><label for="hora_corte">Pedidos contados até</label><input id="hora_corte" name="hora_corte" type="time" value="${v('hora_corte') || '05:00'}" required style="width:120px"><p class="hint">Hora do dia do pagamento em que o período termina (começa às 12:00 do 1º dia de referência). O envio precisa ser depois dela.</p></div>
 <div class="field"><label for="auto_email_para">Enviar a planilha para</label><textarea id="auto_email_para" name="email_para" style="min-height:70px" placeholder="financeiro@grupofornopaulista.com">${v('email_para')}</textarea><p class="hint">Um ou mais e-mails, um por linha ou separados por vírgula. Vale para o envio automático e o manual.</p></div></div>
-<details class="fold" style="margin-bottom:12px" ${tgOk ? '' : 'open'}><summary class="mut small">${icone('chevron', 'chev')} Como criar o bot do Telegram</summary><ol style="margin:8px 0 0 22px;line-height:1.7"><li>No Telegram, abra <b>@BotFather</b>, envie <b>/newbot</b> e siga os passos. Ele devolve o <b>token</b>.</li><li>Abra o seu bot e envie <b>oi</b> (para um grupo: adicione o bot ao grupo e escreva algo).</li><li>Cole o token abaixo e clique em <b>Descobrir chat</b>: o sistema lista o ID. Cole-o em Chat ID e salve.</li><li>Use <b>Enviar teste</b> para conferir.</li></ol></details>
+<details class="fold" style="margin-bottom:12px" ${tgOk ? '' : 'open'}><summary class="mut small">${icone('chevron', 'chev')} Como criar o bot do Telegram</summary><ol style="margin:8px 0 0 22px;line-height:1.7"><li>No Telegram, abra <b>@BotFather</b>, envie <b>/newbot</b> e siga os passos. Ele devolve o <b>token</b>.</li><li>Cole o token abaixo e clique em <b>Salvar</b>.</li><li>Clique em <b>Gerar link de cadastro</b>. Quem abrir o link e tocar em <b>Iniciar</b> no Telegram é cadastrado sozinho para receber os alertas (envie o link a quem deve receber). Para sair, a pessoa envia <b>/parar</b>.</li><li>Use <b>Enviar teste</b> para conferir.</li></ol></details>
 <div class="fgrid"><div class="field"><label for="telegram_token">Token do bot</label><input id="telegram_token" name="telegram_token" type="password" placeholder="${temToken ? '•••••••• (mantido)' : '123456789:AAxxxxxxxx'}" autocomplete="new-password"><p class="hint">${temToken ? 'Deixe vazio para manter o atual.' : 'Fica só no servidor.'}</p></div>
-<div class="field"><label for="telegram_chat">Chat ID</label><input id="telegram_chat" name="telegram_chat" value="${v('telegram_chat')}" inputmode="numeric" placeholder="123456789" autocomplete="off"></div></div>
-<div class="field"><label for="d_sim">Simular um fechamento</label><div style="display:flex;gap:8px;flex-wrap:wrap"><input id="d_sim" name="d_sim" type="date" value="${agora().data}"><button class="btn btn-sec" formaction="/config/automacao/simular">Simular (não envia nada)</button></div><p class="hint">Roda a conferência da data e avisa no Telegram se estaria tudo certo ou o que está faltando.</p></div></div>
+<div class="field"><label for="telegram_chat">Chat IDs cadastrados</label><input id="telegram_chat" name="telegram_chat" value="${v('telegram_chat')}" placeholder="preenchido pelo link de cadastro" autocomplete="off"><p class="hint">${(() => { const n = TG.nomes(), l = TG.ids(); return l.length ? `Recebem os alertas: ${l.map((id) => n[id] || id).join(', ')}.` : 'Ninguém cadastrado ainda. Vários IDs separados por vírgula.'; })()}</p></div></div>
+${(() => { const u = v('telegram_bot_user'), c = v('telegram_convite'), lk = temToken && u && c ? `https://t.me/${u}?start=${c}` : '';
+  return html`<div class="field"><label for="tg_link">Link de cadastro</label>${lk ? html`<input id="tg_link" value="${lk}" readonly onfocus="this.select()"><p class="hint">Mande este link a quem deve receber os alertas: ao abrir e tocar em Iniciar, a pessoa entra sozinha (em até 15 segundos). O link é secreto; se vazar, gere um novo.</p>` : html`<p class="hint">${temToken ? 'Clique em "Gerar link de cadastro".' : 'Salve o token do bot primeiro.'}</p>`}
+<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-sec" formaction="/config/automacao/link">${lk ? 'Atualizar' : 'Gerar link de cadastro'}</button>${lk ? html`<button class="btn btn-ghost" formaction="/config/automacao/link-novo">Gerar novo link (invalida o antigo)</button>` : ''}</div></div>`; })()}
+<div class="field"><label for="d_sim">Simular um fechamento</label><div style="display:flex;gap:8px;flex-wrap:wrap"><input id="d_sim" name="d_sim" type="date" value="${agora().data}"><button class="btn btn-sec" formaction="/config/automacao/simular">Simular (não envia nada)</button></div><p class="hint">Roda a conferência da data e avisa no Telegram se estaria tudo certo ou o que está faltando.</p></div>
+${(() => { let ta = null; try { ta = JSON.parse(v('teste_auto') || 'null'); } catch {} const hojeA = agora().data, ult = agenda(lojasAtivas(), AG.soma(hojeA, -10), hojeA).map((p) => p.pagamento).sort().pop() || hojeA;
+  return html`<div class="field"><label>Teste automático agendado (hoje)</label>
+${ta && !ta.feito ? html`<p class="cfg-sit ok" role="status">Agendado para hoje às <b>${ta.hora}</b>: fechamento de ${dataFmt(ta.data)}, e-mail de teste só para <b>${ta.email}</b>.</p>` : ta?.feito ? html`<p class="mut small">Último teste rodou em ${ta.feito.replace(/^(\d{4})-(\d{2})-(\d{2})/, '$3/$2/$1')} (fechamento de ${dataFmt(ta.data)}). O resultado foi para o Telegram e ficou no histórico.</p>` : ''}
+<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end"><div><label class="mut small" for="teste_data">Pagamento a testar</label><input id="teste_data" name="teste_data" type="date" value="${ta?.data || ult}"></div><div><label class="mut small" for="teste_hora">Hora de hoje</label><input id="teste_hora" name="teste_hora" type="time" value="${ta?.hora || '17:30'}"></div><div style="flex:1;min-width:220px"><label class="mut small" for="teste_email">Enviar o teste só para</label><input id="teste_email" name="teste_email" type="email" value="${ta?.email || req.user.email || ''}" autocomplete="off"></div></div>
+<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-sec" formaction="/config/automacao/agendar-teste">Agendar teste</button>${ta && !ta.feito ? html`<button class="btn btn-ghost" formaction="/config/automacao/cancelar-teste">Cancelar teste</button>` : ''}</div>
+<p class="hint">Na hora marcada o sistema faz tudo como no dia real (puxa o Agilizone, confere, gera a planilha), mas manda o e-mail só para o endereço acima, com [TESTE] no assunto, sem registrar nada e sem o financeiro receber. O resultado vem no Telegram.</p></div>`; })()}</div>
 <div class="card-f"><button class="btn btn-pri">${icone('check')} Salvar</button><button class="btn btn-sec" formaction="/config/automacao/teste">${icone('enviar', 'sm')} Enviar teste</button><button class="btn btn-ghost" formaction="/config/automacao/descobrir">Descobrir chat</button></div></form>`;
   const calCampos = (p, nome, cal, travaNome = false) => {
     const er = (c) => (erros[c] && ctx.abrir === p ? html`<div class="erro-campo" id="${p}-e-${c}" role="alert">${icone('erro', 'sm')} <span>${erros[c]}</span></div>` : ''), iv = (c) => (erros[c] && ctx.abrir === p ? new Raw(`aria-invalid="true" aria-describedby="${p}-e-${c}"`) : '');
@@ -2244,10 +2282,10 @@ function salvaAutomacao(req) {
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(hora) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(corte)) throw falha('Horário inválido.');
   if (hora < corte) throw falha(`O envio (${hora}) não pode ser antes do horário de corte dos pedidos (${corte}).`);
   if (invalido) throw falha(`E-mail inválido: ${invalido}. Use e-mails completos, um por linha ou separados por vírgula.`);
-  if (chat && !/^-?\d+$/.test(chat)) throw falha('Chat ID inválido: só números (o de grupo começa com -).');
+  if (chat && !/^-?\d+([\s,;]+-?\d+)*$/.test(chat)) throw falha('Chat ID inválido: só números, separados por vírgula (o de grupo começa com -).');
   if (tk && !/^\d+:[\w-]{20,}$/.test(tk)) throw falha('Token do bot inválido: ele tem o formato 123456789:AAxxxxxxxx (do @BotFather).');
   const set = db.prepare('INSERT INTO config (chave, valor) VALUES (?, ?) ON CONFLICT (chave) DO UPDATE SET valor = excluded.valor');
-  tx(() => { set.run('auto_fechamento', b.auto_fechamento ? '1' : '0'); set.run('hora_fechamento', hora); set.run('hora_corte', corte); if (b.email_para !== undefined) set.run('email_para', emails.join(', ')); set.run('telegram_chat', chat); if (tk) set.run('telegram_token', tk); });
+  tx(() => { set.run('auto_fechamento', b.auto_fechamento ? '1' : '0'); set.run('hora_fechamento', hora); set.run('hora_corte', corte); if (b.email_para !== undefined) set.run('email_para', emails.join(', ')); set.run('telegram_chat', chat.split(/[\s,;]+/).filter(Boolean).join(',')); if (tk) { set.run('telegram_token', tk); set.run('telegram_bot_user', ''); set.run('telegram_offset', '0'); } });
   log(req.user.id, 'config', `Fechamento automático: ${b.auto_fechamento ? `ligado às ${hora}` : 'desligado'}; corte dos pedidos ${corte}; e-mails: ${emails.join(', ') || 'nenhum'}; Telegram: ${chat ? `chat ${chat}` : 'sem chat'}${tk ? '; token alterado' : ''}`);
 }
 const comAutomacao = (fn) => (req, res, next) => (async () => { // salva os campos do formulário e depois executa a ação do botão
@@ -2259,6 +2297,15 @@ app.post('/config/automacao/teste', so((r) => r.user.perfil === 'admin'), comAut
   const r = await TG.avisar('✅ Teste do sistema de pagamento de entregadores: o Telegram está recebendo os alertas.');
   volta(res, '/config?aba=alertas', r.enviado ? 'ok' : 'erro', r.enviado ? 'Mensagem de teste enviada. Confira no Telegram.' : `Não enviou: ${r.motivo}`);
 }));
+const geraLink = (novo) => comAutomacao(async (req, res) => {
+  try {
+    if (novo) TG.convite(true);
+    const l = await TG.link();
+    volta(res, '/config?aba=alertas', l ? 'ok' : 'erro', l ? (novo ? 'Novo link gerado: o anterior deixou de valer.' : 'Link de cadastro pronto: copie e mande a quem deve receber os alertas.') : 'Não consegui identificar o bot: confira o token.');
+  } catch (e) { volta(res, '/config?aba=alertas', 'erro', e.message); }
+});
+app.post('/config/automacao/link', so((r) => r.user.perfil === 'admin'), geraLink(false));
+app.post('/config/automacao/link-novo', so((r) => r.user.perfil === 'admin'), geraLink(true));
 app.post('/config/automacao/descobrir', so((r) => r.user.perfil === 'admin'), comAutomacao(async (req, res) => {
   try {
     const c = await TG.chats();
@@ -2272,6 +2319,19 @@ app.post('/config/automacao/simular', so((r) => r.user.perfil === 'admin'), comA
   const texto = r.problemas ? textoFalha(d, r.problemas, false).replace('⚠️', '🧪 SIMULAÇÃO ⚠️') : `🧪 SIMULAÇÃO: o fechamento de ${dataFmt(d)} estaria OK para enviar (nada foi enviado).\n${porLoja(r.dia)}`;
   const a = await TG.avisar(texto);
   volta(res, '/config?aba=alertas', r.problemas ? 'erro' : 'ok', r.problemas ? `Simulação: ${r.problemas.length} problema(s), ex.: ${r.problemas[0]}.${a.enviado ? ' Aviso enviado no Telegram.' : ''}` : `Simulação: tudo certo para enviar o fechamento de ${dataFmt(d)} (nada foi enviado).${a.enviado ? ' Aviso enviado no Telegram.' : ''}`);
+}));
+app.post('/config/automacao/agendar-teste', so((r) => r.user.perfil === 'admin'), comAutomacao((req, res) => {
+  const b = req.body, { data: hoje, hora: agoraH } = agora(), email = String(b.teste_email || '').trim().toLowerCase(), hora = String(b.teste_hora || ''), alvo = String(b.teste_data || '');
+  const erro = !dataOk(alvo) ? 'Escolha o pagamento a testar.' : !/^([01]\d|2[0-3]):[0-5]\d$/.test(hora) ? 'Horário inválido.' : hora <= agoraH ? `Esse horário já passou hoje (agora são ${agoraH}, hora de Teresina). Escolha um mais tarde.`
+    : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? 'Informe um e-mail válido para receber o teste.' : !TG.configurado() ? 'Configure o Telegram antes: é por lá que o resultado do teste chega.' : '';
+  if (erro) return volta(res, '/config?aba=alertas', 'erro', erro);
+  db.prepare("INSERT INTO config (chave, valor) VALUES ('teste_auto', ?) ON CONFLICT (chave) DO UPDATE SET valor = excluded.valor").run(JSON.stringify({ dia: hoje, hora, data: alvo, email }));
+  log(req.user.id, 'config', `Agendou teste do envio automático: hoje às ${hora}, pagamento ${dataFmt(alvo)}, e-mail só para ${email}`);
+  volta(res, '/config?aba=alertas', 'ok', `Teste agendado para hoje às ${hora}. O resultado chega no Telegram e o e-mail de teste só em ${email}.`);
+}));
+app.post('/config/automacao/cancelar-teste', so((r) => r.user.perfil === 'admin'), comAutomacao((req, res) => {
+  db.prepare("DELETE FROM config WHERE chave = 'teste_auto'").run();
+  volta(res, '/config?aba=alertas', 'ok', 'Teste cancelado.');
 }));
 app.post('/config/alertas', so((r) => r.user.perfil === 'admin'), (req, res) => {
   const b = req.body, set = db.prepare('INSERT INTO config (chave, valor) VALUES (?, ?) ON CONFLICT (chave) DO UPDATE SET valor = excluded.valor');
@@ -2338,7 +2398,7 @@ let fechando = false;
 const linkConf = (d) => (cfg('app_url') ? `\n${cfg('app_url').replace(/\/$/, '')}/conferencia?d=${d}` : '');
 const porLoja = (dia) => dia.map((x) => `• ${lojaCurta(x.loja.nome)}: ${x.itens.filter((i) => i.valor > 0).length} entregadores, ${brl(x.itens.reduce((s, i) => s + i.valor, 0))}`).join('\n');
 // Confere o dia e, sem pendências, envia. Retorna { problemas, dia } (nada enviado), { simulado, dia } ou { enviado, dia }.
-async function rodaFechamento(d, { simular = false } = {}) {
+async function rodaFechamento(d, { simular = false, emailTeste = '' } = {}) {
   let dia;
   try { dia = await conferenciaDoDia(d, true); } catch (e) { return { problemas: [`erro ao ler o Agilizone: ${e.message}`], dia: [] }; }
   const problemas = [...bloqueiosDo(dia), ...semOcorrencias(dia).map((x) => `${lojaCurta(x.loja.nome)}: ocorrências não carregadas (${x.erroOc})`)];
@@ -2346,11 +2406,42 @@ async function rodaFechamento(d, { simular = false } = {}) {
   else if (!linhasPlanilha(dia).length) problemas.push('não há valores a pagar neste dia');
   if (problemas.length) return { problemas, dia };
   if (simular) return { simulado: true, dia };
-  const r = await enviaFechamento(d, dia, null);
+  const r = await enviaFechamento(d, dia, null, { emailTeste });
   return r.erro ? { problemas: [r.erro], dia } : { enviado: r, dia };
 }
+// Teste agendado do envio automático (Configurações > Alertas): na hora marcada de HOJE roda o fluxo de verdade (puxa, confere, gera a
+// planilha), mas manda SÓ para o e-mail de teste, sem registrar nada, e avisa o resultado no Telegram. Roda uma única vez.
+async function testeAgendado() {
+  let t; try { t = JSON.parse(cfg('teste_auto') || 'null'); } catch { t = null; }
+  if (!t || t.feito || fechando || TESTE_LOCAL || process.env.ALERTAS === '0') return;
+  const { data, hora } = agora();
+  if (data !== t.dia || hora < t.hora) return;
+  fechando = true;
+  try {
+    db.prepare("INSERT INTO config (chave, valor) VALUES ('teste_auto', ?) ON CONFLICT (chave) DO UPDATE SET valor = excluded.valor").run(JSON.stringify({ ...t, feito: `${data} ${hora}` })); // marca antes: não repete
+    const r = await rodaFechamento(t.data, { emailTeste: t.email });
+    log(null, 'fechamento', `Teste agendado do envio automático (${dataFmt(t.data)}): ${r.enviado ? `e-mail de teste enviado para ${t.email}` : `falhou: ${r.problemas.join('; ').slice(0, 400)}`}`);
+    await TG.avisar(r.enviado ? `🧪 TESTE automático OK às ${hora}: ${r.enviado.titulo} (${r.enviado.linhas} linhas, ${brl(r.enviado.total)}) foi enviado só para ${t.email}. O financeiro não recebeu nada.\n${porLoja(r.dia)}`
+      : textoFalha(t.data, r.problemas, false).replace('⚠️', '🧪 TESTE ⚠️'));
+  } catch (e) {
+    console.error('teste agendado:', e);
+    await TG.avisar(`🧪 TESTE automático com erro inesperado: ${e.message}`);
+  } finally { fechando = false; }
+}
+setInterval(testeAgendado, Math.min(30e3, PASSO_FECHAMENTO)).unref();
+// Cadastro automático no Telegram: lê as mensagens do bot ("/start <código do link>" cadastra, "/parar" sai).
+let lendoTg = false;
+async function cadastroTelegram() {
+  if (lendoTg || TESTE_LOCAL || process.env.ALERTAS === '0' || !cfg('telegram_token')) return;
+  lendoTg = true;
+  try { for (const e of await TG.sincroniza()) log(null, 'config', `Telegram: ${e.nome} (${e.id}) ${e.acao} dos alertas`); }
+  catch (e) { /* sem rede ou token ruim: tenta de novo na próxima rodada */ }
+  finally { lendoTg = false; }
+}
+setInterval(cadastroTelegram, Math.min(15e3, PASSO_FECHAMENTO)).unref();
+setTimeout(cadastroTelegram, 5e3).unref();
 const textoFalha = (d, problemas, auto) => `⚠️ Fechamento ${auto ? 'automático ' : ''}de ${dataFmt(d)} NÃO foi enviado (${problemas.length} problema${problemas.length > 1 ? 's' : ''}):\n${problemas.slice(0, 8).map((p) => `• ${p}`).join('\n')}${problemas.length > 8 ? `\n… e mais ${problemas.length - 8}` : ''}\n\nNada foi enviado.${auto ? ' Tento de novo a cada 30 min; ou corrija e envie na Conferência.' : ''}${linkConf(d)}`;
-const textoOk = (e, dia) => `${e.drive?.erro ? '⚠️' : '✅'} ${e.titulo} enviado automaticamente\n${porLoja(dia)}\nTotal ${brl(e.total)} (${e.linhas} linhas)\nE-mail: ${e.para.join(', ')}\n${e.drive === 'ok' ? 'Salvo no Google Drive.' : e.drive === 'sem' ? 'Google Drive não configurado.' : `Drive FALHOU (${e.drive.erro}): use "Enviar ao Drive" na Conferência.`}`;
+const textoOk = (e, dia) => `${e.drive?.erro ? '⚠️' : '✅'} ${e.titulo} enviado automaticamente\n${porLoja(dia)}\nTotal ${brl(e.total)} (${e.linhas} linhas)\nE-mail: ${e.para.join(', ')}\n${e.drive === 'ok' ? 'Salvo no Google Drive.' : e.drive === 'fila' ? 'Na fila do Drive: o Apps Script grava na pasta em até 5 minutos.' : e.drive === 'sem' ? 'Google Drive não configurado.' : `Drive FALHOU (${e.drive.erro}): use "Enviar ao Drive" na Conferência.`}`;
 async function fechamentoAutomatico() {
   if (fechando || TESTE_LOCAL || process.env.ALERTAS === '0' || cfg('auto_fechamento') !== '1') return; // no modo teste local o automático não roda
   const { data: d, hora } = agora();

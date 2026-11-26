@@ -39,7 +39,7 @@ before(async () => {
   db.prepare("UPDATE lojas SET agz_store_id = '6a03160245f42a2cff69ab95'").run(); // storeId do painel (o da API oficial é outro)
   db.prepare("UPDATE lojas SET agz_store_id = '8afa395c-8fe9-454c-af3b-61fba2b7e08a' WHERE nome LIKE '%DOM SEVERINO%'").run(); // UUID da API: o sistema ignora e limpa
   db.prepare('INSERT INTO usuarios (nome, login, senha, perfil) VALUES (?,?,?,?)').run('Conf', 'conf', hashSenha('senha12345'), 'conferente');
-  srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '0', SYNC_ENTREGADORES: '0', EMAIL_SO_ARQUIVO: '1', AGILIZONE_URL: `http://127.0.0.1:${mock.address().port}`, AGILIZONE_LEDGER_URL: `http://127.0.0.1:${mock.address().port}`, AGILIZONE_AUTH_URL: `http://127.0.0.1:${mock.address().port}`, AGILIZONE_PAINEL_EMAIL: 'painel@exemplo.com', AGILIZONE_PAINEL_SENHA: 'segredo', ...creds } });
+  srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '0', SYNC_ENTREGADORES: '0', EMAIL_SO_ARQUIVO: '1', DRIVE_SCRIPT_SEGREDO: 'segredo-de-teste-com-mais-de-24-caracteres', AGILIZONE_URL: `http://127.0.0.1:${mock.address().port}`, AGILIZONE_LEDGER_URL: `http://127.0.0.1:${mock.address().port}`, AGILIZONE_AUTH_URL: `http://127.0.0.1:${mock.address().port}`, AGILIZONE_PAINEL_EMAIL: 'painel@exemplo.com', AGILIZONE_PAINEL_SENHA: 'segredo', ...creds } });
   srv.stderr.on('data', (d) => process.stderr.write(d));
   await new Promise((ok, erro) => { srv.stdout.on('data', (d) => String(d).includes('Pagamento Entregadores') && ok()); srv.on('exit', erro); });
 });
@@ -107,6 +107,11 @@ test('conferente: vê todas as lojas, completa o cadastro (CNPJ) e envia a plani
   assert.strictEqual(fm['G2'].z, '_-* #,##0.00_-;\\-* #,##0.00_-;_-* "-"??_-;_-@_-', 'formato contábil do modelo');
   assert.strictEqual(fm['A2'].z, 'dd/mm/yyyy');
   assert.match(await post(ck, '/conferencia/enviar', { d: D, ok: '1' }), /já foi enviado/);
+  // Drive via Apps Script: a planilha entra na fila com o nome DD-MM-AAAA-motoboys{ID do envio}.xlsx
+  assert.match(loc, /Apps Script grava na pasta/);
+  assert.strictEqual(db.prepare('SELECT arquivo FROM drive_fila_envios WHERE envio_id = ?').get(e.id).arquivo, `23-11-2026-motoboys${e.id}.xlsx`);
+  assert.ok((await (await get(ck, `/conferencia?d=${D}`)).text()).includes('Na fila do Drive'));
+  assert.match(await post(ck, '/conferencia/drive', { d: D }), /fila|já foi gravada/);
   // Entregues: lista o enviado e permite reenviar a mesma planilha; o período termina no corte (05:00 por padrão)
   const ent = await (await get(ck, '/conferencia/entregues')).text();
   assert.ok(ent.includes('23-11-2026 - MOTOBOYS') && ent.includes('Reenviar'), 'lista os entregues');

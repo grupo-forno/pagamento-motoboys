@@ -86,3 +86,25 @@ test('Configurações: teste do Telegram, descobrir chat e validação (o token 
   const tela = await (await fetch(`${B}/config?aba=alertas`, { headers: { cookie: ck } })).text();
   assert.ok(tela.includes('Fechamento automático e alertas no Telegram') && !tela.includes(TOKEN), 'tela sem o token');
 });
+
+test('teste agendado: roda o fluxo de verdade, manda só ao e-mail de teste, não registra nada e avisa no Telegram uma vez', async () => {
+  const ck = (await fetch(`${B}/login`, { method: 'POST', body: new URLSearchParams({ login: 'adm', senha: 'senha12345' }), redirect: 'manual' })).headers.get('set-cookie').split(';')[0];
+  const post = async (url, dados) => decodeURIComponent((await fetch(B + url, { method: 'POST', headers: { cookie: ck }, body: new URLSearchParams(dados), redirect: 'manual' })).headers.get('location') || '');
+  const base = { auto_fechamento: '1', hora_fechamento: '12:30', telegram_chat: '42', telegram_token: '', teste_data: D, teste_email: 'eu@exemplo.com' };
+  assert.match(await post('/config/automacao/agendar-teste', { ...base, teste_hora: '12:00' }), /já passou/); // agora = 13:00
+  assert.match(await post('/config/automacao/agendar-teste', { ...base, teste_hora: '13:30', teste_email: 'ruim' }), /e-mail válido/);
+  assert.match(await post('/config/automacao/agendar-teste', { ...base, teste_hora: '13:30' }), /Teste agendado para hoje às 13:30/);
+  assert.ok((await (await fetch(`${B}/config?aba=alertas`, { headers: { cookie: ck } })).text()).includes('Agendado para hoje às'), 'tela mostra o agendamento');
+  // na hora marcada (simulada: o relógio do teste está em 13:00, então marcamos 12:59 direto)
+  db.prepare("UPDATE config SET valor = ? WHERE chave = 'teste_auto'").run(JSON.stringify({ dia: D, hora: '12:59', data: D, email: 'eu@exemplo.com' }));
+  const antes = fs.readdirSync(path.join(DIR, 'emails')).length;
+  assert.ok(await espera(() => msgs.some((m) => /^🧪 TESTE automático OK/.test(m.text))), 'resultado no Telegram');
+  assert.strictEqual(envios().length, 1, 'não registra envio');
+  const novos = fs.readdirSync(path.join(DIR, 'emails')).slice(antes).map((f) => fs.readFileSync(path.join(DIR, 'emails', f), 'utf8'));
+  assert.strictEqual(novos.length, 1);
+  assert.match(novos[0], /Subject: \[TESTE\] 23-11-2026 - MOTOBOYS/);
+  assert.match(novos[0], /To: eu@exemplo.com/);
+  assert.ok(!novos[0].includes('fin@exemplo.com'), 'o financeiro não recebe');
+  await new Promise((r) => setTimeout(r, 1500));
+  assert.strictEqual(msgs.filter((m) => /^🧪 TESTE automático OK/.test(m.text)).length, 1, 'roda uma vez só');
+});

@@ -1,6 +1,7 @@
 /**
  * App Entregadores → pasta MOTOBOYS do Google Drive.
  *
+ * Grava a planilha da Conferência geral (uma por data de pagamento, todas as lojas juntas) e as dos fechamentos por loja.
  * A cada execução (acionador de 5 em 5 minutos) o script:
  *   1. pede ao app a lista de fechamentos pendentes;
  *   2. para cada um: se já existe na pasta um arquivo com o nome exato, só confirma; senão baixa o .xlsx,
@@ -40,8 +41,8 @@ function sincronizar() {
         gravados++;
       } catch (e) {
         falhas++;
-        console.error('Fechamento ' + p.id + ' (' + p.arquivo + ') segue pendente: ' + e.message);
-        avisarFalha_(cfg, p.id, e.message);
+        console.error('Item ' + p.id + ' (' + p.arquivo + ') segue pendente: ' + e.message);
+        avisarFalha_(cfg, p, e.message);
       }
     });
     console.log('Concluído: ' + gravados + ' confirmado(s), ' + falhas + ' com falha.');
@@ -53,7 +54,7 @@ function sincronizar() {
 /** Grava (ou reconhece) o arquivo de um fechamento e confirma ao app. Lança erro se algo não estiver certo. */
 function processar_(cfg, pasta, p) {
   var nome = String(p.arquivo || '');
-  if (!/^\d+$/.test(String(p.id)) || !NOME_VALIDO.test(nome)) throw new Error('item inválido recebido do app: ' + JSON.stringify(p));
+  if (!/^[fc]\d+$/.test(String(p.id)) || !NOME_VALIDO.test(nome) || !p.download || !p.confirmar) throw new Error('item inválido recebido do app: ' + JSON.stringify(p));
 
   // Nome exato já na pasta (gravação anterior cuja confirmação falhou, ou arquivo colocado à mão): não cria outro.
   var existentes = pasta.getFilesByName(nome);
@@ -61,7 +62,7 @@ function processar_(cfg, pasta, p) {
   if (arquivo && existentes.hasNext()) console.warn('Há mais de um arquivo chamado ' + nome + ' na pasta; usando o primeiro (' + arquivo.getId() + ').');
 
   if (!arquivo) {
-    var dl = chamar_(cfg, 'get', p.download || '/api/drive/fechamentos/' + p.id + '/xlsx');
+    var dl = chamar_(cfg, 'get', p.download);
     var blob = validarDownload_(dl, nome);
     arquivo = pasta.createFile(blob.setName(nome));
     console.log('Gravado ' + nome + ' (' + arquivo.getId() + ').');
@@ -70,7 +71,7 @@ function processar_(cfg, pasta, p) {
   }
 
   // Só confirma depois de gravado. Se falhar aqui, o próximo ciclo acha o nome e apenas confirma.
-  var conf = chamar_(cfg, 'post', '/api/drive/fechamentos/' + p.id + '/confirmar', { driveId: arquivo.getId() });
+  var conf = chamar_(cfg, 'post', p.confirmar, { driveId: arquivo.getId() });
   if (conf.getResponseCode() !== 200) throw new Error('confirmação recusada: HTTP ' + conf.getResponseCode() + ' ' + conf.getContentText().slice(0, 200));
 }
 
@@ -89,9 +90,10 @@ function validarDownload_(resp, nome) {
   return Utilities.newBlob(bytes, MIME_XLSX, nome);
 }
 
-function avisarFalha_(cfg, id, mensagem) {
+function avisarFalha_(cfg, p, mensagem) {
   try {
-    chamar_(cfg, 'post', '/api/drive/fechamentos/' + id + '/falha', { erro: mensagem });
+    if (!p.falha) return;
+    chamar_(cfg, 'post', p.falha, { erro: mensagem });
   } catch (e) {
     console.warn('Não consegui registrar a falha no app: ' + e.message);
   }

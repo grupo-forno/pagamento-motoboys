@@ -8,7 +8,8 @@ const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-drive-'));
 process.env.DATA_DIR = DIR;
 const { db } = require('./db');
 const SEGREDO = 'segredo-de-teste-com-mais-de-24-caracteres', PORT = 4800 + Math.floor(Math.random() * 90), B = `http://127.0.0.1:${PORT}`;
-let srv, fid;
+let srv, fid, eid;
+const PLANILHA = 'PK-conteudo-da-planilha-enviada';
 
 const api = (u, o = {}, seg = SEGREDO) => fetch(B + u, { ...o, headers: { ...(seg ? { authorization: `Bearer ${seg}` } : {}), ...(o.body ? { 'content-type': 'application/json' } : {}) } });
 const sobe = async (env) => {
@@ -22,6 +23,9 @@ before(() => {
   const loja = db.prepare('SELECT id FROM lojas LIMIT 1').get().id;
   fid = db.prepare("INSERT INTO fechamentos (loja_id, data_ini, data_fim, status, versao, pagamento) VALUES (?, '2026-11-20', '2026-11-22', 'enviado', 1, '2026-11-26')").run(loja).lastInsertRowid;
   db.prepare('INSERT INTO drive_fila (fechamento_id, arquivo) VALUES (?, ?)').run(fid, `26-11-2026-motoboys${fid}.xlsx`);
+  eid = Number(db.prepare("INSERT INTO envios (pagamento, arquivo, total, linhas) VALUES ('2026-11-18', 'x.xlsx', 100, 1)").run().lastInsertRowid);
+  db.prepare('INSERT INTO drive_fila_envios (envio_id, arquivo) VALUES (?, ?)').run(eid, `18-11-2026-motoboys${eid}.xlsx`);
+  fs.mkdirSync(path.join(DIR, 'envios'), { recursive: true }); fs.writeFileSync(path.join(DIR, 'envios', '2026-11-18.xlsx'), PLANILHA);
 });
 after(async () => { if (srv && srv.exitCode === null && srv.signalCode === null) await para(); db.close(); try { fs.rmSync(DIR, { recursive: true, force: true }); } catch {} });
 
@@ -36,25 +40,31 @@ test('autenticação, pendentes, download do .xlsx e confirmação repetível', 
   assert.strictEqual((await api('/api/drive/pendentes', {}, '')).status, 401, 'sem token');
   assert.strictEqual((await api('/api/drive/pendentes', {}, 'errado-errado-errado-errado-errado')).status, 401, 'token errado');
   const lista = await (await api('/api/drive/pendentes')).json();
-  assert.deepStrictEqual(lista.pendentes.map((p) => [p.id, p.arquivo]), [[fid, `26-11-2026-motoboys${fid}.xlsx`]]);
+  assert.deepStrictEqual(lista.pendentes.map((p) => [p.id, p.arquivo]).sort(), [[`c${eid}`, `18-11-2026-motoboys${eid}.xlsx`], [`f${fid}`, `26-11-2026-motoboys${fid}.xlsx`]]);
+  const pc = lista.pendentes.find((p) => p.id === `c${eid}`), pf = lista.pendentes.find((p) => p.id === `f${fid}`);
+  // Conferência geral: baixa exatamente a planilha enviada; confirma e sai da fila
+  const rc = await api(pc.download);
+  assert.strictEqual(Buffer.from(await rc.arrayBuffer()).toString(), PLANILHA);
+  assert.strictEqual((await api(pc.confirmar, { method: 'POST', body: JSON.stringify({ driveId: '1ConferenciaGeral123' }) })).status, 200);
+  assert.deepStrictEqual((await (await api('/api/drive/pendentes')).json()).pendentes.map((p) => p.id), [`f${fid}`]);
   // download: .xlsx de verdade (zip "PK"), com o mesmo SHA-256 informado no cabeçalho
-  const r = await api(lista.pendentes[0].download), buf = Buffer.from(await r.arrayBuffer());
+  const r = await api(pf.download), buf = Buffer.from(await r.arrayBuffer());
   assert.strictEqual(r.status, 200);
   assert.strictEqual(buf.subarray(0, 2).toString(), 'PK');
   assert.strictEqual(r.headers.get('x-content-sha256'), crypto.createHash('sha256').update(buf).digest('hex'));
   assert.strictEqual(r.headers.get('x-arquivo'), `26-11-2026-motoboys${fid}.xlsx`);
   // falha informada: continua pendente
-  assert.strictEqual((await api(`/api/drive/fechamentos/${fid}/falha`, { method: 'POST', body: JSON.stringify({ erro: 'Drive fora do ar' }) })).status, 200);
+  assert.strictEqual((await api(`/api/drive/itens/f${fid}/falha`, { method: 'POST', body: JSON.stringify({ erro: 'Drive fora do ar' }) })).status, 200);
   assert.strictEqual((await (await api('/api/drive/pendentes')).json()).pendentes[0].tentativas, 1);
   // confirmação inválida não grava; válida grava; repetida aceita e mantém o primeiro ID
-  assert.strictEqual((await api(`/api/drive/fechamentos/${fid}/confirmar`, { method: 'POST', body: JSON.stringify({ driveId: 'x' }) })).status, 400);
-  const c1 = await (await api(`/api/drive/fechamentos/${fid}/confirmar`, { method: 'POST', body: JSON.stringify({ driveId: '1AbCdEfGhIjKlMnOp' }) })).json();
+  assert.strictEqual((await api(`/api/drive/itens/f${fid}/confirmar`, { method: 'POST', body: JSON.stringify({ driveId: 'x' }) })).status, 400);
+  const c1 = await (await api(`/api/drive/itens/f${fid}/confirmar`, { method: 'POST', body: JSON.stringify({ driveId: '1AbCdEfGhIjKlMnOp' }) })).json();
   assert.deepStrictEqual(c1, { ok: true, repetido: false, driveId: '1AbCdEfGhIjKlMnOp' });
-  const c2 = await api(`/api/drive/fechamentos/${fid}/confirmar`, { method: 'POST', body: JSON.stringify({ driveId: '1OutroIdQualquer99' }) });
+  const c2 = await api(`/api/drive/itens/f${fid}/confirmar`, { method: 'POST', body: JSON.stringify({ driveId: '1OutroIdQualquer99' }) });
   assert.strictEqual(c2.status, 200);
   assert.deepStrictEqual(await c2.json(), { ok: true, repetido: true, driveId: '1AbCdEfGhIjKlMnOp' });
   assert.deepStrictEqual((await (await api('/api/drive/pendentes')).json()).pendentes, [], 'confirmado sai da fila');
-  assert.strictEqual((await api('/api/drive/fechamentos/99999/confirmar', { method: 'POST', body: JSON.stringify({ driveId: '1AbCdEfGhIjKlMnOp' }) })).status, 404);
+  assert.strictEqual((await api('/api/drive/itens/f99999/confirmar', { method: 'POST', body: JSON.stringify({ driveId: '1AbCdEfGhIjKlMnOp' }) })).status, 404);
   // a fila é persistente: reiniciar o servidor mantém o estado
   await para(); await sobe({ DRIVE_SCRIPT_SEGREDO: SEGREDO });
   assert.deepStrictEqual((await (await api('/api/drive/pendentes')).json()).pendentes, []);

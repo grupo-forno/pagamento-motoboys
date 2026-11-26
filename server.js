@@ -254,6 +254,11 @@ const COMO_EXPORTAR = html`<div class="passos">
 <div class="passo"><span class="n">4</span><p>Na mesma tela, clique no botão verde <b>Resumo de entregas por entregador</b> e depois em <b>Exportar Resumo</b>: baixa o <b>.csv</b> com o total certo de cada entregador.</p></div></div>`;
 
 // ---------- Calendário de pagamento ----------
+// Modo teste LOCAL: MODO_TESTE_LOCAL=1 no .env deixa enviar o fechamento com cadastro de entregador incompleto, para testar a planilha e o e-mail.
+// O e-mail sai com "[TESTE]" no assunto, nada é registrado (dá para reenviar), não sobe no Drive e o automático fica parado.
+// Ignorado em produção (NODE_ENV=production, que o Docker já define): não existe como ligar isso lá.
+const TESTE_LOCAL = process.env.MODO_TESTE_LOCAL === '1' && process.env.NODE_ENV !== 'production';
+if (TESTE_LOCAL) console.log('>>> MODO TESTE LOCAL: fechamento pode ser enviado com cadastros incompletos (e-mail com [TESTE], nada registrado).');
 const TZ = process.env.TZ_ALERTAS || 'America/Fortaleza'; // Teresina
 function agora() {
   if (process.env.AGORA_TESTE) { const [data, hora] = process.env.AGORA_TESTE.split(' '); return { data, hora }; } // só para testes: "2026-11-23 13:00"
@@ -1007,11 +1012,12 @@ async function lojaNoDia(l, d, renova) {
     const id = motoboyDoAgilizone(l, r.agzId, r.entregador), m = db.prepare('SELECT * FROM motoboys WHERE id = ?').get(id), pix = pixCadastro(l.id, id);
     const rr = res?.get(semAcento(r.entregador).trim());
     if (rr) res.delete(semAcento(r.entregador).trim());
-    const falta = [!m.nome_completo && 'nome completo', !CONF.docValido(m.cpf) && 'CPF/CNPJ', res && !rr && 'linha no Resumo'].filter(Boolean);
+    const incompleto = !m.nome_completo || !CONF.docValido(m.cpf); // no modo teste local deixa de bloquear
+    const falta = [!TESTE_LOCAL && !m.nome_completo && 'nome completo', !TESTE_LOCAL && !CONF.docValido(m.cpf) && 'CPF/CNPJ', res && !rr && 'linha no Resumo'].filter(Boolean);
     const valorRes = rr ? rr.total + rr.ocorrencias - rr.pago : null;
     const o = oc?.get(String(r.agzId)); if (o) oc.delete(String(r.agzId));
     const ocAuto = !rr && o ? o : null;
-    return { m: { ...m, pix: pix?.pix, identidade: pix?.agz_id }, pedidos: r.pedidos, valorApi: r.total, rr, ocAuto, valor: rr ? valorRes : r.total + (ocAuto?.valor || 0), falta, semPix: !pix?.pix };
+    return { m: { ...m, pix: pix?.pix, identidade: pix?.agz_id }, pedidos: r.pedidos, valorApi: r.total, rr, ocAuto, incompleto: TESTE_LOCAL && incompleto, valor: rr ? valorRes : r.total + (ocAuto?.valor || 0), falta, semPix: !pix?.pix };
   }).sort((a, b) => nomeEnt(a.m).localeCompare(nomeEnt(b.m), 'pt-BR'));
   base.ocSemPedido = !cr && oc ? [...oc.entries()].filter(([, o]) => o.valor) : []; // ocorrência de entregador sem pedido no período
   base.soNoResumo = res ? [...res.values()].filter((r) => r.total + r.ocorrencias - r.pago > 0).map((r) => r.entregador) : []; // no Resumo, sem pedido no período da API
@@ -1059,7 +1065,7 @@ ${Object.keys(x.excluidos).length ? html`<div class="card-b"><div class="alert w
 ${x.soNoResumo.length ? html`<div class="card-b"><div class="alert bad">${icone('alerta')}<div>No Resumo, mas sem pedidos no período da API: ${x.soNoResumo.join(', ')}. Confira o filtro de datas do Resumo.</div></div></div>` : ''}
 ${x.erro ? html`<div class="card-b"><div class="alert bad">${icone('erro')}<div>${x.erro}</div></div></div>` : html`<div class="tw"><table><thead><tr><th>Entregador</th><th>CPF/CNPJ</th><th class="n">Pedidos</th><th class="n">Taxas (API)</th>${comOc(x) ? html`<th class="n">Ocorrências</th><th class="n">Já pago</th>` : ''}<th class="n">A pagar</th><th>Situação</th><th class="n">Ação</th></tr></thead><tbody>
 ${x.itens.map((i) => html`<tr><th scope="row">${nomeEnt(i.m)}${i.m.nome_completo && i.m.nome_completo !== i.m.nome ? html`<small class="mut">Agilizone: ${i.m.nome}</small>` : ''}</th><td>${i.m.cpf ? CONF.docFmt(i.m.cpf) : '—'}</td><td class="n">${i.pedidos}</td><td class="n">${brl(i.valorApi)}${i.rr && i.rr.total !== i.valorApi ? html`<small class="bad-t">Resumo: ${brl(i.rr.total)}</small>` : ''}</td>${comOc(x) ? html`<td class="n">${i.rr?.ocorrencias ? brl(i.rr.ocorrencias) : i.ocAuto ? html`<span title="${i.ocAuto.itens.join(' · ')}">${brl(i.ocAuto.valor)} <small class="mut">(${i.ocAuto.qtd})</small></span>` : '—'}</td><td class="n">${i.rr?.pago ? brl(-i.rr.pago) : '—'}</td>` : ''}<td class="n"><b>${brl(i.valor)}</b></td>
-<td>${i.falta.length ? html`<span class="badge bad">Falta ${i.falta.join(' e ')}</span>` : i.semPix ? html`<span class="badge warn">Sem Pix</span>` : html`<span class="badge ok">OK</span>`}</td><td class="n">${dlg(x, i)}</td></tr>`)}
+<td>${i.falta.length ? html`<span class="badge bad">Falta ${i.falta.join(' e ')}</span>` : i.incompleto ? html`<span class="badge warn">Incompleto (teste)</span>` : i.semPix ? html`<span class="badge warn">Sem Pix</span>` : html`<span class="badge ok">OK</span>`}</td><td class="n">${dlg(x, i)}</td></tr>`)}
 ${x.itens.length ? '' : html`<tr><td colspan="9">Nenhum pedido entregue no período.</td></tr>`}</tbody>
 <tfoot><tr><th>Total</th><td></td><td class="n">${x.itens.reduce((s, i) => s + i.pedidos, 0)}</td><td class="n">${brl(x.itens.reduce((s, i) => s + i.valorApi, 0))}</td>${comOc(x) ? html`<td colspan="2"></td>` : ''}<td class="n"><b>${brl(x.itens.reduce((s, i) => s + i.valor, 0))}</b></td><td colspan="2"></td></tr></tfoot></table></div>`}</section>`;
   const lojasOk = dia.filter((x) => !bloqueiosDo([x]).length).length;
@@ -1075,7 +1081,7 @@ ${semPix ? html`<div class="alert warn">${icone('info')}<div>${semPix} entregado
   const semDrive = !cfg('drive_pasta') || !cfg('drive_credencial');
   const envio = env ? html`<section class="card"><div class="card-h"><span class="hico pri">${icone('check')}</span><div class="t"><h2>Enviado</h2><p>${quando(env.enviado_em)}${env.por ? ` por ${env.por}` : ''} · ${env.linhas} linhas · ${brl(env.total)}${env.para ? ` · e-mail para ${env.para}` : ''}</p></div></div>
 <div class="card-f"><a class="btn btn-sec" href="/conferencia/planilha?d=${d}">${icone('baixar')} Baixar planilha</a>${env.drive_id ? html`<a class="btn btn-ghost" href="https://drive.google.com/file/d/${env.drive_id}/view" target="_blank" rel="noopener">Abrir no Drive</a>` : html`<form method="post" action="/conferencia/drive"><input type="hidden" name="d" value="${d}"><button class="btn btn-pri">${icone('subir')} Enviar ao Drive</button></form>`}</div></section>`
-    : html`<form method="post" action="/conferencia/enviar" class="card" data-carregando="Enviando…"><input type="hidden" name="d" value="${d}"><div class="card-h"><span class="hico pri">${icone('enviar')}</span><div class="t"><h2>Enviar ${CONF.titulo(d)}</h2><p>Gera a planilha no modelo do financeiro, manda por e-mail para ${listaEmails(cfg('email_para')).join(', ') || 'os destinatários (não configurados)'}${semDrive ? '' : ' e sobe na pasta do Google Drive'}.</p></div></div>
+    : html`${TESTE_LOCAL ? html`<div class="alert warn" role="note">${icone('alerta')}<div><b>MODO TESTE LOCAL</b> Pode enviar com cadastros incompletos. O e-mail vai com [TESTE] no assunto, nada é registrado (dá para enviar de novo) e não sobe no Drive.</div></div>` : ''}<form method="post" action="/conferencia/enviar" class="card" data-carregando="Enviando…"><input type="hidden" name="d" value="${d}"><div class="card-h"><span class="hico pri">${icone('enviar')}</span><div class="t"><h2>${TESTE_LOCAL ? '[TESTE] ' : ''}Enviar ${CONF.titulo(d)}</h2><p>Gera a planilha no modelo do financeiro, manda por e-mail para ${listaEmails(cfg('email_para')).join(', ') || 'os destinatários (não configurados)'}${semDrive ? '' : ' e sobe na pasta do Google Drive'}.</p></div></div>
 <div class="card-b">${semDrive ? html`<div class="alert warn">${icone('alerta')}<div>Google Drive não configurado (Configurações > Google Drive): a planilha vai só por e-mail.</div></div>` : ''}<label class="check"><input type="checkbox" name="ok" value="1" required ${bloqueios.length ? 'disabled' : ''}> Conferi todas as lojas e os valores estão corretos.</label>
 ${semOcorrencias(dia).length ? html`<label class="check"><input type="checkbox" name="sem_oc" value="1" required ${bloqueios.length ? 'disabled' : ''}> <span>Sem ocorrências em <b>${semOcorrencias(dia).map((x) => lojaCurta(x.loja.nome)).join(', ')}</b>: o painel do Agilizone não respondeu. Confirmo que não há ocorrências a pagar nelas neste período (ou que lanço à parte).</span></label>` : ''}</div>
 <div class="card-f"><a class="btn btn-sec" href="/conferencia/planilha?d=${d}">${icone('baixar')} Baixar planilha (prévia)</a><button class="btn btn-pri" ${bloqueios.length || !nEnt ? 'disabled' : ''}>${icone('enviar')} Enviar</button></div></form>`;
@@ -1138,9 +1144,10 @@ async function enviaFechamento(d, dia, user, { semOcConfirmado = false } = {}) {
     if (!para.length) return { erro: 'Nada foi enviado: cadastre os destinatários em Configurações > E-mail.' };
     const corpo = `Pagamento dos entregadores de ${diaLongo(d)}.\n\n${dia.map((x) => `${lojaCurta(x.loja.nome)} (${dataFmt(x.ini)} a ${dataFmt(x.fim)}): ${x.itens.filter((i) => i.valor > 0).length} entregadores, ${brl(x.itens.reduce((s, i) => s + i.valor, 0))}`).join('\n')}\n\nTotal: ${brl(total)} (${linhas.length} linhas)${semOc.length ? `\nATENÇÃO: sem ocorrências (painel do Agilizone indisponível): ${semOc.map((x) => lojaCurta(x.loja.nome)).join(', ')}.` : ''}\n${user ? `Conferido por ${user.nome}.` : 'Gerado e enviado automaticamente pelo sistema, sem nenhuma pendência na conferência.'} Planilha em anexo.`;
     try {
-      const r = await enviarEmail({ to: para.join(', '), subject: titulo, text: corpo, attachments: [{ filename: `${titulo}.xlsx`, content: buf }] });
+      const r = await enviarEmail({ to: para.join(', '), subject: `${TESTE_LOCAL ? '[TESTE] ' : ''}${titulo}`, text: `${TESTE_LOCAL ? '*** TESTE LOCAL: cadastros podem estar incompletos; não vale para pagamento. ***\n\n' : ''}${corpo}`, attachments: [{ filename: `${titulo}.xlsx`, content: buf }] });
       if (r.salvo && process.env.EMAIL_SO_ARQUIVO !== '1') return { erro: 'Nada foi enviado: servidor de e-mail não configurado (Configurações > E-mail). Baixe a planilha enquanto isso.' };
     } catch (e) { return { erro: `Nada foi enviado: o servidor de e-mail recusou (${e.message}).` }; }
+    if (TESTE_LOCAL) return { titulo, linhas: linhas.length, total, para, teste: true, drive: 'sem' }; // teste: nada é registrado nem vai ao Drive
     fs.mkdirSync(path.dirname(arqEnvio(d)), { recursive: true });
     fs.writeFileSync(arqEnvio(d), buf);
     db.prepare('INSERT INTO envios (pagamento, arquivo, total, linhas, para, enviado_por) VALUES (?,?,?,?,?,?)').run(d, `${titulo}.xlsx`, total, linhas.length, para.join(', '), user?.id ?? null);
@@ -1157,6 +1164,7 @@ app.post('/conferencia/enviar', so((r) => confere(r.user)), async (req, res, nex
   if (req.body.ok !== '1') return volta(res, url, 'erro', 'Marque que conferiu todas as lojas antes de enviar.');
   const r = await enviaFechamento(d, await conferenciaDoDia(d, true), req.user, { semOcConfirmado: req.body.sem_oc === '1' }); // com os dados mais recentes do Agilizone
   if (r.erro) return volta(res, url, 'erro', r.erro);
+  if (r.teste) return volta(res, url, 'ok', `TESTE enviado por e-mail para ${r.para.join(', ')} (${r.linhas} linhas, ${brl(r.total)}). Nada foi registrado: pode enviar de novo.`);
   if (r.drive === 'sem') return volta(res, url, 'ok', `${r.titulo} enviado por e-mail. Google Drive não configurado.`);
   if (r.drive === 'ok') return volta(res, url, 'ok', `${r.titulo} enviado por e-mail e salvo no Google Drive.`);
   volta(res, url, 'erro', `E-mail enviado, mas o Drive falhou: ${r.drive.erro} Use "Enviar ao Drive" para tentar de novo.`);
@@ -2269,7 +2277,7 @@ async function rodaFechamento(d, { simular = false } = {}) {
 const textoFalha = (d, problemas, auto) => `⚠️ Fechamento ${auto ? 'automático ' : ''}de ${dataFmt(d)} NÃO foi enviado (${problemas.length} problema${problemas.length > 1 ? 's' : ''}):\n${problemas.slice(0, 8).map((p) => `• ${p}`).join('\n')}${problemas.length > 8 ? `\n… e mais ${problemas.length - 8}` : ''}\n\nNada foi enviado.${auto ? ' Tento de novo a cada 30 min; ou corrija e envie na Conferência.' : ''}${linkConf(d)}`;
 const textoOk = (e, dia) => `${e.drive?.erro ? '⚠️' : '✅'} ${e.titulo} enviado automaticamente\n${porLoja(dia)}\nTotal ${brl(e.total)} (${e.linhas} linhas)\nE-mail: ${e.para.join(', ')}\n${e.drive === 'ok' ? 'Salvo no Google Drive.' : e.drive === 'sem' ? 'Google Drive não configurado.' : `Drive FALHOU (${e.drive.erro}): use "Enviar ao Drive" na Conferência.`}`;
 async function fechamentoAutomatico() {
-  if (fechando || process.env.ALERTAS === '0' || cfg('auto_fechamento') !== '1') return;
+  if (fechando || TESTE_LOCAL || process.env.ALERTAS === '0' || cfg('auto_fechamento') !== '1') return; // no modo teste local o automático não roda
   const { data: d, hora } = agora();
   if (hora < (cfg('hora_fechamento') || '12:30')) return;
   if (!agenda(db.prepare('SELECT * FROM lojas').all(), d, d).length || envioDo(d)) return; // hoje ninguém paga, ou já foi enviado

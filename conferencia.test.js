@@ -105,6 +105,6 @@ test('conferente: vê todas as lojas, completa o cadastro (CNPJ) e envia a plani
   assert.deepStrictEqual(ordem, ['LESTE', 'DIRCEU', 'SUL', 'DOM SEVERINO'], 'ordem das lojas do modelo');
   const fm = XLSX.read(bytes, { cellNF: true }).Sheets.Planilha1;
   assert.strictEqual(fm['G2'].z, '_-* #,##0.00_-;\\-* #,##0.00_-;_-* "-"??_-;_-@_-', 'formato contábil do modelo');
-  assert.strictEqual(fm['A2'].z, 'm/d/yy');
+  assert.strictEqual(fm['A2'].z, 'dd/mm/yyyy');
   assert.match(await post(ck, '/conferencia/enviar', { d: D, ok: '1' }), /já foi enviado/);
 });

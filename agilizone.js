@@ -120,12 +120,34 @@ async function testa(l) {
 // Não é a API oficial: usa o token (Bearer) de um login do painel, que expira. de/ate em ISO.
 const LEDGER = () => (process.env.AGILIZONE_LEDGER_URL || 'https://ledger.agilizone.com').replace(/\/$/, '');
 function tokenPainelExpira(tk) { try { return JSON.parse(Buffer.from(tk.split('.')[1], 'base64url')).exp * 1000 || null; } catch { return null; } }
-async function ocorrencias(storeId, de, ate, tk) {
-  if (!tk) throw erro('Token do painel do Agilizone não configurado (Configurações > Lojas).');
-  const exp = tokenPainelExpira(tk);
-  if (exp && exp < Date.now()) throw erro('O token do painel do Agilizone expirou. Cole um novo em Configurações > Lojas.');
-  const r = await chama(`${LEDGER()}/occurrences?${new URLSearchParams({ storeId, from: new Date(de).toISOString(), to: new Date(ate).toISOString() })}`, { headers: { Authorization: `Bearer ${tk}`, Accept: 'application/json' } });
-  if (r.status === 401 || r.status === 403) throw erro('O painel do Agilizone recusou o token (expirado ou sem acesso a esta loja). Cole um novo em Configurações > Lojas.');
+// Login automático: AGILIZONE_PAINEL_EMAIL e AGILIZONE_PAINEL_SENHA no servidor (o token dura 7 dias e não há refresh: loga de novo).
+// Sem elas, vale o token colado em Configurações (que expira).
+const AUTH = () => (process.env.AGILIZONE_AUTH_URL || 'https://auth.agilizone.com').replace(/\/$/, '');
+const painelLogin = () => !!(process.env.AGILIZONE_PAINEL_EMAIL && process.env.AGILIZONE_PAINEL_SENHA);
+let sessao = null; // { jwt, exp }
+async function tokenPainel(manual, renova) {
+  if (!painelLogin()) return manual;
+  if (!renova && sessao && sessao.exp - Date.now() > 3600e3) return sessao.jwt;
+  const r = await chama(`${AUTH()}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ email: process.env.AGILIZONE_PAINEL_EMAIL, password: process.env.AGILIZONE_PAINEL_SENHA }) });
+  if ([400, 401, 403, 422].includes(r.status)) throw erro('O painel do Agilizone recusou o login automático. Confira AGILIZONE_PAINEL_EMAIL e AGILIZONE_PAINEL_SENHA no servidor.');
+  if (!r.ok) throw erro(`O login do painel do Agilizone não respondeu (erro ${r.status}).`);
+  const jwt = (await r.json()).jwt;
+  if (!jwt) throw erro('O login do painel do Agilizone não devolveu o token.');
+  sessao = { jwt, exp: tokenPainelExpira(jwt) || Date.now() + 6 * 864e5 };
+  return jwt;
+}
+async function ocorrencias(storeId, de, ate, manual) {
+  const url = `${LEDGER()}/occurrences?${new URLSearchParams({ storeId, from: new Date(de).toISOString(), to: new Date(ate).toISOString() })}`;
+  let r;
+  for (let t = 0; t < 2; t++) {
+    const tk = await tokenPainel(manual, t > 0);
+    if (!tk) throw erro('Painel do Agilizone sem acesso: defina AGILIZONE_PAINEL_EMAIL e AGILIZONE_PAINEL_SENHA no servidor.');
+    const exp = tokenPainelExpira(tk);
+    if (!painelLogin() && exp && exp < Date.now()) throw erro('O token do painel do Agilizone expirou. Cole um novo em Configurações > Lojas.');
+    r = await chama(url, { headers: { Authorization: `Bearer ${tk}`, Accept: 'application/json' } });
+    if (!(r.status === 401 && painelLogin() && t === 0)) break; // token vencido: loga de novo e repete
+  }
+  if (r.status === 401 || r.status === 403) throw erro('O painel do Agilizone recusou o acesso às ocorrências desta loja (token expirado ou usuário sem acesso).');
   if (!r.ok) throw erro(`O painel do Agilizone não respondeu às ocorrências (erro ${r.status}).`);
   const lista = await r.json();
   const por = new Map(); // deliverymanId -> { valor (centavos), qtd, itens }
@@ -137,4 +159,4 @@ async function ocorrencias(storeId, de, ate, tk) {
   return por;
 }
 
-module.exports = { ocorrencias, tokenPainelExpira, configurada, variaveis, pedidos, entregadores, paraImportacao, testa };
+module.exports = { ocorrencias, tokenPainelExpira, painelLogin, configurada, variaveis, pedidos, entregadores, paraImportacao, testa };

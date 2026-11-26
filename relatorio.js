@@ -164,7 +164,7 @@ function gerarPdf(f0, g0) {
 }
 
 // Configuração de e-mail: tela "Configurações" (tabela config), com as variáveis de ambiente como reserva.
-const ENV = { smtp_host: 'SMTP_HOST', smtp_port: 'SMTP_PORT', smtp_user: 'SMTP_USER', smtp_pass: 'SMTP_PASS', smtp_from: 'SMTP_FROM', app_url: 'APP_URL', email_para: 'EMAIL_PARA', email_copia: 'EMAIL_COPIA' };
+const ENV = { smtp_host: 'SMTP_HOST', smtp_port: 'SMTP_PORT', smtp_user: 'SMTP_USER', smtp_pass: 'SMTP_PASS', smtp_from: 'SMTP_FROM', app_url: 'APP_URL', email_para: 'EMAIL_PARA', email_copia: 'EMAIL_COPIA', telegram_token: 'TELEGRAM_BOT_TOKEN', telegram_chat: 'TELEGRAM_CHAT_ID' };
 const cfg = (k) => db.prepare('SELECT valor FROM config WHERE chave = ?').get(k)?.valor ?? process.env[ENV[k]] ?? '';
 const listaEmails = (txt) => String(txt || '').split(/[\s,;]+/).map((e) => e.trim()).filter(Boolean);
 

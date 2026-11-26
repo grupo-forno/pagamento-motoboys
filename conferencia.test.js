@@ -36,7 +36,8 @@ before(async () => {
   const v = variaveis(sul);
   const creds = Object.fromEntries(db.prepare('SELECT * FROM lojas').all().flatMap((l) => [[variaveis(l).id, 'cid'], [variaveis(l).secret, 's']])); // todas conectadas (Agilizone falso)
   db.prepare("INSERT INTO config (chave, valor) VALUES ('email_para', 'fin@exemplo.com')").run();
-  // sem storeId cadastrado: o sistema descobre por GET /stores
+  db.prepare("UPDATE lojas SET agz_store_id = '6a03160245f42a2cff69ab95'").run(); // storeId do painel (o da API oficial é outro)
+  db.prepare("UPDATE lojas SET agz_store_id = '8afa395c-8fe9-454c-af3b-61fba2b7e08a' WHERE nome LIKE '%DOM SEVERINO%'").run(); // UUID da API: o sistema ignora e limpa
   db.prepare('INSERT INTO usuarios (nome, login, senha, perfil) VALUES (?,?,?,?)').run('Conf', 'conf', hashSenha('senha12345'), 'conferente');
   srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '0', SYNC_ENTREGADORES: '0', EMAIL_SO_ARQUIVO: '1', AGILIZONE_URL: `http://127.0.0.1:${mock.address().port}`, AGILIZONE_LEDGER_URL: `http://127.0.0.1:${mock.address().port}`, AGILIZONE_AUTH_URL: `http://127.0.0.1:${mock.address().port}`, AGILIZONE_PAINEL_EMAIL: 'painel@exemplo.com', AGILIZONE_PAINEL_SENHA: 'segredo', ...creds } });
   srv.stderr.on('data', (d) => process.stderr.write(d));
@@ -93,9 +94,17 @@ test('conferente: vê todas as lojas, completa o cadastro (CNPJ) e envia a plani
   assert.strictEqual(e.total, 2600 * nLojas);
   const r = await get(ck, `/conferencia/planilha?d=${D}`);
   assert.match(r.headers.get('content-disposition'), /23-11-2026 - MOTOBOYS\.xlsx/);
-  const linhas = XLSX.utils.sheet_to_json(XLSX.read(Buffer.from(await r.arrayBuffer())).Sheets.Planilha1, { header: 1, raw: false });
+  const bytes = Buffer.from(await r.arrayBuffer()), wb = XLSX.read(bytes), linhas = XLSX.utils.sheet_to_json(wb.Sheets.Planilha1, { header: 1, raw: true });
+  assert.deepStrictEqual(wb.SheetNames, ['Planilha1']);
   assert.deepStrictEqual(linhas[0], ['VENCIMENTO', 'NOME', 'CPF/CNPJ', 'DESCRIÇÃO', 'CATEGORIA', 'CENTRO DE CUSTO', 'VALOR']);
-  assert.ok(linhas.some((l) => JSON.stringify(l) === JSON.stringify(['23/11/2026', 'KEVIN SOUZA LIMA', '077.900.303-96', 'Motoboys Sul', 'Motoboys', 'SUL', '-20.00'])), JSON.stringify(linhas));
-  assert.ok(linhas.some((l) => l[2] === '12.345.678/0001-99' && l[5] === 'LESTE' && l[3] === 'Motoboys Leste'), 'centro de custo da Leste');
+  // como no modelo: data em número (46349 = 23/11/2026), DESCRIÇÃO com o espaço no fim em Leste e Sul, valor negativo
+  assert.ok(linhas.some((l) => JSON.stringify(l) === JSON.stringify([46349, 'KEVIN SOUZA LIMA', '077.900.303-96', 'Motoboys Sul ', 'Motoboys', 'SUL', -20])), JSON.stringify(linhas.slice(0, 3)));
+  assert.ok(linhas.some((l) => l[2] === '12.345.678/0001-99' && l[5] === 'LESTE' && l[3] === 'Motoboys Leste '), 'centro de custo da Leste');
+  assert.ok(linhas.some((l) => l[5] === 'DIRCEU' && l[3] === 'Motoboys Dirceu'), 'Dirceu sem espaço no fim');
+  const ordem = []; for (const l of linhas.slice(1)) if (ordem.at(-1) !== l[5]) ordem.push(l[5]);
+  assert.deepStrictEqual(ordem, ['LESTE', 'DIRCEU', 'SUL', 'DOM SEVERINO'], 'ordem das lojas do modelo');
+  const fm = XLSX.read(bytes, { cellNF: true }).Sheets.Planilha1;
+  assert.strictEqual(fm['G2'].z, '_-* #,##0.00_-;\\-* #,##0.00_-;_-* "-"??_-;_-@_-', 'formato contábil do modelo');
+  assert.strictEqual(fm['A2'].z, 'm/d/yy');
   assert.match(await post(ck, '/conferencia/enviar', { d: D, ok: '1' }), /já foi enviado/);
 });

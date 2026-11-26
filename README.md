@@ -36,6 +36,12 @@ Regras:
 ## E-mail (Google Workspace)
 Em **Configurações** (login da TI) há o passo a passo. Resumo: numa conta do domínio (ex.: `tecnologia@grupofornopaulista.com`), ative a verificação em duas etapas, crie uma **senha de app** em myaccount.google.com/apppasswords e preencha servidor `smtp.gmail.com`, porta `587`, usuário e senha de app. Depois use **Enviar teste**. Sem servidor configurado, os e-mails ficam salvos em `data/emails/`, não saem e o envio ao financeiro fica bloqueado.
 
+## Fechamento automático (Conferência geral) e Telegram
+Em **Configurações › Alertas**. No dia de pagamento (segunda e sexta; Dirceu também na quarta), depois da hora definida (padrão 12:30, Teresina), o sistema puxa tudo do Agilizone e confere. **Sem nenhuma pendência**, gera `DD-MM-AAAA - MOTOBOYS.xlsx` no modelo do financeiro, envia por e-mail e sobe no Drive. **Com qualquer pendência** (cadastro sem nome completo ou CPF/CNPJ, erro no Agilizone, ocorrências não carregadas) não envia nada: avisa no Telegram e tenta de novo a cada 30 min (o mesmo problema só é avisado uma vez; reavisa a cada 2 h).
+- Telegram: crie o bot no @BotFather, cole o token e o chat id (botão **Descobrir chat**). Também aceita `TELEGRAM_BOT_TOKEN` e `TELEGRAM_CHAT_ID` no servidor. **Simular** roda a conferência de uma data sem enviar nada.
+- O modelo da planilha está em `conferencia.js` (`DESCRICAO`, `ORDEM_CENTROS`) e `modelo-planilha/` (estilos e tema do próprio modelo).
+- Ocorrências: login automático do painel com `AGILIZONE_PAINEL_EMAIL` e `AGILIZONE_PAINEL_SENHA` no servidor.
+
 ## Rodar
 Requer Node 22.13 ou mais novo.
 ```bash

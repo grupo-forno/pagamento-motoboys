@@ -9,6 +9,7 @@ const { lerRelatorio, lerResumo, valorDigitado, pixValido, FILTRO_HORA, VIRADA_H
 const AGZ_API = require('./agilizone');
 const AG = require('./agenda');
 const CONF = require('./conferencia');
+const TG = require('./telegram');
 const revisao = (...campos) => crypto.createHash('sha1').update(JSON.stringify(campos)).digest('hex').slice(0, 12);
 const revLinha = (l) => revisao(l.nome, l.pix || '', l.obs || '');
 const MSG_ALTERADO = 'foi alterado por outra pessoa (ou em outra aba) depois que você abriu esta tela. Nada foi salvo: recarregue, confira e edite de novo.';
@@ -255,6 +256,7 @@ const COMO_EXPORTAR = html`<div class="passos">
 // ---------- Calendário de pagamento ----------
 const TZ = process.env.TZ_ALERTAS || 'America/Fortaleza'; // Teresina
 function agora() {
+  if (process.env.AGORA_TESTE) { const [data, hora] = process.env.AGORA_TESTE.split(' '); return { data, hora }; } // só para testes: "2026-11-23 13:00"
   const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
     .formatToParts(new Date()).map((x) => [x.type, x.value]));
   return { data: `${p.year}-${p.month}-${p.day}`, hora: `${p.hour}:${p.minute}` };
@@ -987,11 +989,8 @@ async function lojaNoDia(l, d, renova) {
       cacheConf.set(k, c);
     } catch (e) { return { ...base, erro: e.message }; }
   }
-  if (!l.agz_store_id) { // descobre sozinho pela API oficial e guarda
-    try { const id = await AGZ_API.storeId(l); if (id) { db.prepare('UPDATE lojas SET agz_store_id = ? WHERE id = ?').run(id, l.id); l.agz_store_id = id; } } catch (_) {}
-  }
-  // Ocorrências do painel (mesmo período), quando a loja tem storeId e há token do painel.
-  base.ocAuto = !!(l.agz_store_id && (AGZ_API.painelLogin() || cfg('agz_painel_token')));
+  // Ocorrências do painel (mesmo período), quando a loja tem o storeId DO PAINEL (24 letras/números; o código com traços da API oficial é outro) e há acesso ao painel.
+  base.ocAuto = !!(/^[0-9a-f]{24}$/i.test(l.agz_store_id || '') && (AGZ_API.painelLogin() || cfg('agz_painel_token')));
   if (base.ocAuto && (renova || !c.oc)) {
     try { c.oc = await AGZ_API.ocorrencias(l.agz_store_id, `${base.ini}T${CONF_HORA}:00:00-03:00`, `${d}T${CONF_HORA}:00:59-03:00`, cfg('agz_painel_token'), c.resumo.map((r) => r.agzId)); c.erroOc = ''; }
     catch (e) { c.oc = null; c.erroOc = e.message; }
@@ -1119,34 +1118,48 @@ const arqEnvio = (d) => path.join(DIR, 'envios', `${d}.xlsx`); // a planilha exa
 async function subirEnvioDrive(d, buf, u) {
   const r = await CONF.subirDrive({ credencial: cfg('drive_credencial'), pasta: cfg('drive_pasta'), nome: `${CONF.titulo(d)}.xlsx`, buffer: buf, mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   db.prepare('UPDATE envios SET drive_id = ? WHERE pagamento = ?').run(r.id, d);
-  log(u.id, 'conferencia', `${CONF.titulo(d)} enviado ao Google Drive`);
+  log(u?.id ?? null, 'conferencia', `${CONF.titulo(d)} enviado ao Google Drive`);
+}
+// Gera a planilha do dia e envia (e-mail + Drive). Serve à tela (user = quem conferiu) e ao fechamento automático (user = null).
+// Retorna { erro } (nada foi enviado) ou { titulo, linhas, total, para, drive: 'sem' | 'ok' | { erro } }.
+const emEnvio = new Set(); // evita enviar a mesma data duas vezes ao mesmo tempo (tela + automático)
+async function enviaFechamento(d, dia, user, { semOcConfirmado = false } = {}) {
+  if (emEnvio.has(d)) return { erro: 'Este pagamento está sendo enviado agora. Aguarde um instante e recarregue.' };
+  if (envioDo(d)) return { erro: 'Este pagamento já foi enviado.' };
+  emEnvio.add(d);
+  try {
+    const semOc = semOcorrencias(dia);
+    if (semOc.length && !semOcConfirmado) return { erro: `Nada foi enviado: confirme que não há ocorrências em ${semOc.map((x) => lojaCurta(x.loja.nome)).join(', ')} (o painel do Agilizone não respondeu).` };
+    const pend = bloqueiosDo(dia);
+    if (pend.length) return { erro: `Nada foi enviado: ${pend.length} pendência(s), ex.: ${pend[0]}. Confira e tente de novo.` };
+    const linhas = linhasPlanilha(dia), total = linhas.reduce((s, l) => s + l.valor, 0), titulo = CONF.titulo(d), buf = CONF.planilha(d, linhas);
+    if (!linhas.length) return { erro: 'Nenhum valor a pagar neste dia.' };
+    const para = listaEmails(cfg('email_para'));
+    if (!para.length) return { erro: 'Nada foi enviado: cadastre os destinatários em Configurações > E-mail.' };
+    const corpo = `Pagamento dos entregadores de ${diaLongo(d)}.\n\n${dia.map((x) => `${lojaCurta(x.loja.nome)} (${dataFmt(x.ini)} a ${dataFmt(x.fim)}): ${x.itens.filter((i) => i.valor > 0).length} entregadores, ${brl(x.itens.reduce((s, i) => s + i.valor, 0))}`).join('\n')}\n\nTotal: ${brl(total)} (${linhas.length} linhas)${semOc.length ? `\nATENÇÃO: sem ocorrências (painel do Agilizone indisponível): ${semOc.map((x) => lojaCurta(x.loja.nome)).join(', ')}.` : ''}\n${user ? `Conferido por ${user.nome}.` : 'Gerado e enviado automaticamente pelo sistema, sem nenhuma pendência na conferência.'} Planilha em anexo.`;
+    try {
+      const r = await enviarEmail({ to: para.join(', '), subject: titulo, text: corpo, attachments: [{ filename: `${titulo}.xlsx`, content: buf }] });
+      if (r.salvo && process.env.EMAIL_SO_ARQUIVO !== '1') return { erro: 'Nada foi enviado: servidor de e-mail não configurado (Configurações > E-mail). Baixe a planilha enquanto isso.' };
+    } catch (e) { return { erro: `Nada foi enviado: o servidor de e-mail recusou (${e.message}).` }; }
+    fs.mkdirSync(path.dirname(arqEnvio(d)), { recursive: true });
+    fs.writeFileSync(arqEnvio(d), buf);
+    db.prepare('INSERT INTO envios (pagamento, arquivo, total, linhas, para, enviado_por) VALUES (?,?,?,?,?,?)').run(d, `${titulo}.xlsx`, total, linhas.length, para.join(', '), user?.id ?? null);
+    log(user?.id ?? null, 'conferencia', `${user ? 'Enviou' : 'Enviou automaticamente'} ${titulo}: ${linhas.length} linhas, ${brl(total)}, para ${para.join(', ')}`);
+    const ok = { titulo, linhas: linhas.length, total, para };
+    if (!cfg('drive_pasta') || !cfg('drive_credencial')) return { ...ok, drive: 'sem' };
+    try { await subirEnvioDrive(d, buf, user); return { ...ok, drive: 'ok' }; } catch (e) { return { ...ok, drive: { erro: e.message } }; }
+  } finally { emEnvio.delete(d); }
 }
 app.post('/conferencia/enviar', so((r) => confere(r.user)), async (req, res, next) => { try {
   const d = String(req.body.d || ''), url = `/conferencia?d=${d}`;
   if (!dataOk(d)) throw falha('Data inválida.');
   if (envioDo(d)) return volta(res, url, 'erro', 'Este pagamento já foi enviado.');
   if (req.body.ok !== '1') return volta(res, url, 'erro', 'Marque que conferiu todas as lojas antes de enviar.');
-  const dia = await conferenciaDoDia(d, true); // envia com os dados mais recentes do Agilizone
-  const semOc = semOcorrencias(dia);
-  if (semOc.length && req.body.sem_oc !== '1') return volta(res, url, 'erro', `Nada foi enviado: confirme que não há ocorrências em ${semOc.map((x) => lojaCurta(x.loja.nome)).join(', ')} (o painel do Agilizone não respondeu).`);
-  const pend = bloqueiosDo(dia);
-  if (pend.length) return volta(res, url, 'erro', `Nada foi enviado: ${pend.length} pendência(s), ex.: ${pend[0]}. Confira e tente de novo.`);
-  const linhas = linhasPlanilha(dia), total = linhas.reduce((s, l) => s + l.valor, 0), titulo = CONF.titulo(d), buf = CONF.planilha(d, linhas);
-  if (!linhas.length) return volta(res, url, 'erro', 'Nenhum valor a pagar neste dia.');
-  const para = listaEmails(cfg('email_para'));
-  if (!para.length) return volta(res, url, 'erro', 'Nada foi enviado: cadastre os destinatários em Configurações > E-mail.');
-  const corpo = `Pagamento dos entregadores de ${diaLongo(d)}.\n\n${dia.map((x) => `${lojaCurta(x.loja.nome)} (${dataFmt(x.ini)} a ${dataFmt(x.fim)}): ${x.itens.filter((i) => i.valor > 0).length} entregadores, ${brl(x.itens.reduce((s, i) => s + i.valor, 0))}`).join('\n')}\n\nTotal: ${brl(total)} (${linhas.length} linhas)${semOc.length ? `\nATENÇÃO: sem ocorrências (painel do Agilizone indisponível): ${semOc.map((x) => lojaCurta(x.loja.nome)).join(', ')}.` : ''}\nConferido por ${req.user.nome}. Planilha em anexo.`;
-  try {
-    const r = await enviarEmail({ to: para.join(', '), subject: titulo, text: corpo, attachments: [{ filename: `${titulo}.xlsx`, content: buf }] });
-    if (r.salvo && process.env.EMAIL_SO_ARQUIVO !== '1') return volta(res, url, 'erro', 'Nada foi enviado: servidor de e-mail não configurado (Configurações > E-mail). Baixe a planilha enquanto isso.');
-  } catch (e) { return volta(res, url, 'erro', `Nada foi enviado: o servidor de e-mail recusou (${e.message}).`); }
-  fs.mkdirSync(path.dirname(arqEnvio(d)), { recursive: true });
-  fs.writeFileSync(arqEnvio(d), buf);
-  db.prepare('INSERT INTO envios (pagamento, arquivo, total, linhas, para, enviado_por) VALUES (?,?,?,?,?,?)').run(d, `${titulo}.xlsx`, total, linhas.length, para.join(', '), req.user.id);
-  log(req.user.id, 'conferencia', `Enviou ${titulo}: ${linhas.length} linhas, ${brl(total)}, para ${para.join(', ')}`);
-  if (!cfg('drive_pasta') || !cfg('drive_credencial')) return volta(res, url, 'ok', `${titulo} enviado por e-mail. Google Drive não configurado.`);
-  try { await subirEnvioDrive(d, buf, req.user); volta(res, url, 'ok', `${titulo} enviado por e-mail e salvo no Google Drive.`); }
-  catch (e) { volta(res, url, 'erro', `E-mail enviado, mas o Drive falhou: ${e.message} Use "Enviar ao Drive" para tentar de novo.`); }
+  const r = await enviaFechamento(d, await conferenciaDoDia(d, true), req.user, { semOcConfirmado: req.body.sem_oc === '1' }); // com os dados mais recentes do Agilizone
+  if (r.erro) return volta(res, url, 'erro', r.erro);
+  if (r.drive === 'sem') return volta(res, url, 'ok', `${r.titulo} enviado por e-mail. Google Drive não configurado.`);
+  if (r.drive === 'ok') return volta(res, url, 'ok', `${r.titulo} enviado por e-mail e salvo no Google Drive.`);
+  volta(res, url, 'erro', `E-mail enviado, mas o Drive falhou: ${r.drive.erro} Use "Enviar ao Drive" para tentar de novo.`);
 } catch (e) { next(e); } });
 app.post('/conferencia/drive', so((r) => confere(r.user)), async (req, res, next) => { try {
   const d = String(req.body.d || ''), url = `/conferencia?d=${d}`;
@@ -1969,6 +1982,17 @@ ${semSmtp ? html`<div class="alert warn">${icone('alerta')}<div>Sem servidor de 
 <p class="hint">O despachante vê os avisos (amanhã, hoje, atrasado) na tela inicial do sistema.</p>
 ${ultimosAlertas.length ? html`<details class="fold" style="margin-top:8px"><summary class="mut small">${icone('chevron', 'chev')} Últimos alertas</summary><ul class="timeline" style="margin-top:10px">${ultimosAlertas.map((a) => html`<li>${a.acao}<small>${a.quando}</small></li>`)}</ul></details>` : ''}</div>
 <div class="card-f"><button class="btn btn-pri">${icone('check')} Salvar alertas</button></div></form>`;
+  const autoLigado = v('auto_fechamento') === '1', temToken = !!v('telegram_token'), tgOk = temToken && !!v('telegram_chat'), driveOk = !!(v('drive_pasta') && v('drive_credencial'));
+  const faltas = [!autoLigado && 'fechamento automático desligado', semSmtp && 'servidor de e-mail', !nDest && 'destinatários do e-mail', !tgOk && 'Telegram (token e chat)', !driveOk && 'Google Drive (opcional)'].filter(Boolean);
+  const automacao = html`<form method="post" action="/config/automacao" class="card cfg-estreito" id="automacao" data-guarda><div class="card-h"><span class="hico pri">${icone('enviar')}</span><div class="t"><h2>Fechamento automático e alertas no Telegram</h2><p>No dia de pagamento, o sistema puxa tudo do Agilizone, confere e, sem nenhuma pendência, gera a planilha no modelo e envia por e-mail e Drive. Com qualquer problema não envia nada e avisa no Telegram.</p></div></div><div class="card-b">
+<p class="cfg-sit ${autoLigado && tgOk && !semSmtp && nDest ? 'ok' : 'warn'}" role="status"><b>Situação real:</b> ${autoLigado ? `ligado: roda nos dias de pagamento depois das ${v('hora_fechamento') || '12:30'} (Teresina)` : 'desligado'}${faltas.filter((f) => f !== 'fechamento automático desligado').length ? `. Falta: ${faltas.filter((f) => f !== 'fechamento automático desligado').join(', ')}` : ''}.</p>
+<div class="field" style="display:flex;gap:12px;align-items:flex-start"><label class="check" style="flex:1;margin:0;align-items:flex-start"><input type="checkbox" name="auto_fechamento" value="1" ${autoLigado ? 'checked' : ''} style="margin-top:3px"><span><b>Enviar o fechamento automaticamente</b><br><span class="mut small" style="font-weight:400">Depois do horário, nos dias de pagamento de cada loja. Se houver qualquer pendência (cadastro incompleto, erro no Agilizone, ocorrências não carregadas), não envia: avisa no Telegram e tenta de novo a cada 30 minutos.</span></span></label>
+<input type="time" name="hora_fechamento" value="${v('hora_fechamento') || '12:30'}" aria-label="Horário do fechamento automático" style="width:120px"></div>
+<details class="fold" style="margin-bottom:12px" ${tgOk ? '' : 'open'}><summary class="mut small">${icone('chevron', 'chev')} Como criar o bot do Telegram</summary><ol style="margin:8px 0 0 22px;line-height:1.7"><li>No Telegram, abra <b>@BotFather</b>, envie <b>/newbot</b> e siga os passos. Ele devolve o <b>token</b>.</li><li>Abra o seu bot e envie <b>oi</b> (para um grupo: adicione o bot ao grupo e escreva algo).</li><li>Cole o token abaixo e clique em <b>Descobrir chat</b>: o sistema lista o ID. Cole-o em Chat ID e salve.</li><li>Use <b>Enviar teste</b> para conferir.</li></ol></details>
+<div class="fgrid"><div class="field"><label for="telegram_token">Token do bot</label><input id="telegram_token" name="telegram_token" type="password" placeholder="${temToken ? '•••••••• (mantido)' : '123456789:AAxxxxxxxx'}" autocomplete="new-password"><p class="hint">${temToken ? 'Deixe vazio para manter o atual.' : 'Fica só no servidor.'}</p></div>
+<div class="field"><label for="telegram_chat">Chat ID</label><input id="telegram_chat" name="telegram_chat" value="${v('telegram_chat')}" inputmode="numeric" placeholder="123456789" autocomplete="off"></div></div>
+<div class="field"><label for="d_sim">Simular um fechamento</label><div style="display:flex;gap:8px;flex-wrap:wrap"><input id="d_sim" name="d_sim" type="date" value="${agora().data}"><button class="btn btn-sec" formaction="/config/automacao/simular">Simular (não envia nada)</button></div><p class="hint">Roda a conferência da data e avisa no Telegram se estaria tudo certo ou o que está faltando.</p></div></div>
+<div class="card-f"><button class="btn btn-pri">${icone('check')} Salvar</button><button class="btn btn-sec" formaction="/config/automacao/teste">${icone('enviar', 'sm')} Enviar teste</button><button class="btn btn-ghost" formaction="/config/automacao/descobrir">Descobrir chat</button></div></form>`;
   const calCampos = (p, nome, cal, travaNome = false) => {
     const er = (c) => (erros[c] && ctx.abrir === p ? html`<div class="erro-campo" id="${p}-e-${c}" role="alert">${icone('erro', 'sm')} <span>${erros[c]}</span></div>` : ''), iv = (c) => (erros[c] && ctx.abrir === p ? new Raw(`aria-invalid="true" aria-describedby="${p}-e-${c}"`) : '');
     let leitura = ''; try { leitura = AG.textoCalendario(AG.lerCalendario(cal)); } catch (_) {}
@@ -1986,8 +2010,8 @@ ${leitura ? html`<p class="cal-leg"><b>Como o sistema lê:</b> ${leitura}</p>` :
   const tkP = v('agz_painel_token'), expP = tkP ? AGZ_API.tokenPainelExpira(tkP) : null;
   const painel = html`<form method="post" action="/config/painel" class="card" style="margin-bottom:16px" data-guarda><div class="card-h"><span class="hico pri">${icone('moto')}</span><div class="t"><h2>Ocorrências dos entregadores (painel do Agilizone)</h2><p>A API oficial não traz ocorrências. Elas vêm do painel (ledger.agilizone.com) com o login do painel. O storeId de cada loja é descoberto sozinho pela API oficial: preencha abaixo só se uma loja ficar sem ocorrências.</p></div></div><div class="card-b">
 <p class="cfg-sit ${AGZ_API.painelLogin() || (tkP && (!expP || expP > Date.now())) ? 'ok' : 'warn'}" role="status"><b>Acesso ao painel:</b> ${AGZ_API.painelLogin() ? 'login automático configurado no servidor (renova sozinho)' : !tkP ? 'não configurado: defina AGILIZONE_PAINEL_EMAIL e AGILIZONE_PAINEL_SENHA no servidor (ou cole um token abaixo, que expira)' : expP && expP < Date.now() ? `expirou em ${new Date(expP).toLocaleString('pt-BR', { timeZone: TZ })}` : expP ? `válido até ${new Date(expP).toLocaleString('pt-BR', { timeZone: TZ })}` : 'configurado'}</p>
-<details class="fold" style="margin-bottom:12px"><summary class="mut small">${icone('chevron', 'chev')} Onde pegar o token e o storeId</summary><ol style="margin:8px 0 0 22px;line-height:1.7"><li>No painel do Agilizone, abra o Resumo de entregas com o F12 na aba Rede.</li><li>Clique na requisição <b>occurrences/summary</b>. A URL traz <b>storeId=…</b> (é o da loja aberta).</li><li>Em Request headers, copie o valor de <b>Authorization</b> depois de "Bearer ".</li></ol></details>
-<div class="field"><label for="agz_painel_token">Token do painel</label><textarea id="agz_painel_token" name="agz_painel_token" style="min-height:70px" placeholder="${tkP ? '•••••••• (mantido)' : 'eyJ0eXAiOiJKV1Qi…'}" autocomplete="off"></textarea><p class="hint">Deixe vazio para manter o atual.</p></div>
+<details class="fold" style="margin-bottom:12px" ${tkP || AGZ_API.painelLogin() ? '' : 'open'}><summary class="mut small">${icone('chevron', 'chev')} Como ligar: storeId de cada loja e acesso ao painel</summary><ol style="margin:8px 0 0 22px;line-height:1.7"><li><b>storeId:</b> no painel do Agilizone, abra o Resumo de entregas com o F12 na aba Rede e clique na requisição <b>occurrences</b>. A URL traz <b>storeId=…</b> com <b>24 letras e números</b>. Não é o código com traços (ex.: 8afa395c-…) que a API oficial usa.</li><li><b>Acesso:</b> defina no servidor <b>AGILIZONE_PAINEL_EMAIL</b> e <b>AGILIZONE_PAINEL_SENHA</b> (o sistema faz o login e renova sozinho). Rodando local, ponha no arquivo <b>.env</b> e reinicie.</li></ol></details>
+<details class="fold" style="margin-bottom:12px"><summary class="mut small">${icone('chevron', 'chev')} Token manual (só para teste, se não usar o login automático)</summary><div class="field" style="margin-top:10px"><label for="agz_painel_token">Token do painel</label><textarea id="agz_painel_token" name="agz_painel_token" style="min-height:70px" placeholder="${tkP ? '•••••••• (mantido)' : 'eyJ0eXAiOiJKV1Qi…'}" autocomplete="off"></textarea><p class="hint">Expira em dias. Deixe vazio para manter o atual.</p></div></details>
 <div class="fgrid">${lojas.map((l) => html`<div class="field"><label for="sid-${l.id}">storeId · ${lojaCurta(l.nome)}</label><input id="sid-${l.id}" name="sid_${l.id}" value="${l.agz_store_id || ''}" placeholder="6a03160245f42a2cff69ab95" autocomplete="off"></div>`)}</div></div>
 <div class="card-f"><button class="btn btn-pri">${icone('check')} Salvar</button></div></form>`;
   const lojasTab = html`${painel}<section class="card" aria-labelledby="lojas-t"><div class="card-h"><div class="t"><h2 id="lojas-t">Lojas e dias de pagamento <span class="c-n">${lojas.length}</span></h2><p>Alterar nome ou calendário não apaga fechamentos, entregadores nem histórico. Fechamentos já importados mantêm o pagamento previsto da época.</p></div><button type="button" class="btn btn-sec" data-abre="dlg-nl">${icone('mais', 'sm')} Nova loja</button></div>
@@ -2010,7 +2034,7 @@ ${lojas.map((l) => { const p = `l${l.id}`, dados = ctx.abrir === p ? ctx.valores
 <div class="field"><label for="drive_pasta">Link ou ID da pasta</label><input id="drive_pasta" name="drive_pasta" value="${v('drive_pasta')}" placeholder="https://drive.google.com/drive/folders/…"></div>
 <div class="field"><label for="drive_credencial">Credencial (JSON)</label><textarea id="drive_credencial" name="drive_credencial" style="min-height:90px" placeholder="${cred ? '•••••••• (mantida)' : '{ "type": "service_account", … }'}"></textarea><p class="hint">${cred ? 'Deixe vazio para manter a atual.' : 'O conteúdo do arquivo .json.'}</p></div></div>
 <div class="card-f"><button class="btn btn-pri">${icone('check')} Salvar</button><button class="btn btn-sec" formaction="/config/drive/teste">Testar</button></div></form>`;
-  res.status(ctx.status || 200).send(page(req, { titulo: 'Configurações', compacto: true, eyebrow: 'Administração', sub: 'E-mail da solicitação de pagamento, alertas, lojas e entregadores. Só o suporte vê esta tela.', css: '/marca/admin.css', js: '/marca/admin.js' }, html`${nav}${aba === 'alertas' ? alertas : aba === 'lojas' ? lojasTab : aba === 'entregadores' ? entTab : aba === 'drive' ? driveTab : email}`));
+  res.status(ctx.status || 200).send(page(req, { titulo: 'Configurações', compacto: true, eyebrow: 'Administração', sub: 'E-mail da solicitação de pagamento, alertas, lojas e entregadores. Só o suporte vê esta tela.', css: '/marca/admin.css', js: '/marca/admin.js' }, html`${nav}${aba === 'alertas' ? html`${automacao}${alertas}` : aba === 'lojas' ? lojasTab : aba === 'entregadores' ? entTab : aba === 'drive' ? driveTab : email}`));
 }
 app.get('/config', so((r) => r.user.perfil === 'admin'), (req, res) => telaConfig(req, res));
 
@@ -2035,7 +2059,7 @@ app.post('/config/painel', so((r) => r.user.perfil === 'admin'), (req, res) => {
   if (tk && tk.split('.').length !== 3) return volta(res, url, 'erro', 'Token inválido: copie só o valor depois de "Bearer ".');
   for (const l of db.prepare('SELECT id FROM lojas').all()) {
     const s = String(req.body[`sid_${l.id}`] ?? '').trim();
-    if (s && !/^[0-9a-f]{24}$/i.test(s)) return volta(res, url, 'erro', `storeId inválido: ${s}. Ele tem 24 letras/números (ex.: 6a03160245f42a2cff69ab95).`);
+    if (s && !/^[0-9a-f]{24}$/i.test(s)) return volta(res, url, 'erro', `storeId inválido: ${s}. Use o do painel: 24 letras/números (ex.: 6a03160245f42a2cff69ab95), não o código com traços da API.`);
     db.prepare('UPDATE lojas SET agz_store_id = ? WHERE id = ?').run(s || null, l.id);
   }
   if (tk) db.prepare("INSERT INTO config (chave, valor) VALUES ('agz_painel_token', ?) ON CONFLICT (chave) DO UPDATE SET valor = excluded.valor").run(tk);
@@ -2133,6 +2157,39 @@ app.post('/config/entregadores/:id', so((r) => r.user.perfil === 'admin'), pixPo
 app.post('/config/lojas', so((r) => r.user.perfil === 'admin'), salvaLoja);
 app.post('/config/lojas/:id', so((r) => r.user.perfil === 'admin'), salvaLoja);
 
+// Fechamento automático + Telegram (token e chat id). O token nunca aparece na tela nem no log.
+function salvaAutomacao(req) {
+  const b = req.body, hora = String(b.hora_fechamento || '12:30'), chat = String(b.telegram_chat || '').trim(), tk = String(b.telegram_token || '').trim();
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(hora)) throw falha('Horário inválido.');
+  if (chat && !/^-?\d+$/.test(chat)) throw falha('Chat ID inválido: só números (o de grupo começa com -).');
+  if (tk && !/^\d+:[\w-]{20,}$/.test(tk)) throw falha('Token do bot inválido: ele tem o formato 123456789:AAxxxxxxxx (do @BotFather).');
+  const set = db.prepare('INSERT INTO config (chave, valor) VALUES (?, ?) ON CONFLICT (chave) DO UPDATE SET valor = excluded.valor');
+  tx(() => { set.run('auto_fechamento', b.auto_fechamento ? '1' : '0'); set.run('hora_fechamento', hora); set.run('telegram_chat', chat); if (tk) set.run('telegram_token', tk); });
+  log(req.user.id, 'config', `Fechamento automático: ${b.auto_fechamento ? `ligado às ${hora}` : 'desligado'}; Telegram: ${chat ? `chat ${chat}` : 'sem chat'}${tk ? '; token alterado' : ''}`);
+}
+const comAutomacao = (fn) => (req, res, next) => (async () => { // salva os campos do formulário e depois executa a ação do botão
+  try { salvaAutomacao(req); } catch (e) { if (!e.publico) throw e; return volta(res, '/config?aba=alertas', 'erro', e.message); }
+  await fn(req, res);
+})().catch(next);
+app.post('/config/automacao', so((r) => r.user.perfil === 'admin'), comAutomacao((req, res) => volta(res, '/config?aba=alertas', 'ok', 'Salvo. O fechamento automático roda nos dias de pagamento, depois da hora definida.')));
+app.post('/config/automacao/teste', so((r) => r.user.perfil === 'admin'), comAutomacao(async (req, res) => {
+  const r = await TG.avisar('✅ Teste do sistema de pagamento de entregadores: o Telegram está recebendo os alertas.');
+  volta(res, '/config?aba=alertas', r.enviado ? 'ok' : 'erro', r.enviado ? 'Mensagem de teste enviada. Confira no Telegram.' : `Não enviou: ${r.motivo}`);
+}));
+app.post('/config/automacao/descobrir', so((r) => r.user.perfil === 'admin'), comAutomacao(async (req, res) => {
+  try {
+    const c = await TG.chats();
+    volta(res, '/config?aba=alertas', c.length ? 'ok' : 'erro', c.length ? `Falaram com o bot: ${c.map((x) => `${x.nome} = ${x.id}`).join(' · ')}. Copie o número do seu chat para o campo Chat ID.` : 'Ninguém falou com o bot ainda. Abra o bot no Telegram, envie "oi" e clique de novo.');
+  } catch (e) { volta(res, '/config?aba=alertas', 'erro', e.message); }
+}));
+app.post('/config/automacao/simular', so((r) => r.user.perfil === 'admin'), comAutomacao(async (req, res) => {
+  const d = String(req.body.d_sim || '');
+  if (!dataOk(d)) return volta(res, '/config?aba=alertas', 'erro', 'Escolha a data do pagamento a simular.');
+  const r = await rodaFechamento(d, { simular: true });
+  const texto = r.problemas ? textoFalha(d, r.problemas, false).replace('⚠️', '🧪 SIMULAÇÃO ⚠️') : `🧪 SIMULAÇÃO: o fechamento de ${dataFmt(d)} estaria OK para enviar (nada foi enviado).\n${porLoja(r.dia)}`;
+  const a = await TG.avisar(texto);
+  volta(res, '/config?aba=alertas', r.problemas ? 'erro' : 'ok', r.problemas ? `Simulação: ${r.problemas.length} problema(s), ex.: ${r.problemas[0]}.${a.enviado ? ' Aviso enviado no Telegram.' : ''}` : `Simulação: tudo certo para enviar o fechamento de ${dataFmt(d)} (nada foi enviado).${a.enviado ? ' Aviso enviado no Telegram.' : ''}`);
+}));
 app.post('/config/alertas', so((r) => r.user.perfil === 'admin'), (req, res) => {
   const b = req.body, set = db.prepare('INSERT INTO config (chave, valor) VALUES (?, ?) ON CONFLICT (chave) DO UPDATE SET valor = excluded.valor');
   for (const h of ['hora_resumo']) if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(b[h] || ''))) throw falha('Horário inválido.');
@@ -2187,6 +2244,58 @@ setInterval(verificarAlertas, 5 * 60e3).unref();
 // Cadastro de entregadores em dia com o Agilizone: ao subir (80 dias) e a cada 30 minutos (3 dias).
 if (process.env.SYNC_ENTREGADORES !== '0') { setTimeout(() => sincronizaTodas(80), 20e3).unref(); setInterval(() => sincronizaTodas(3), 30 * 60e3).unref(); }
 setTimeout(verificarAlertas, 15e3).unref();
+
+// ---------- Fechamento automático ----------
+// No dia de pagamento, depois da hora configurada: puxa tudo do Agilizone, confere e, SEM nenhuma pendência, gera a planilha
+// no modelo, envia por e-mail e sobe no Drive. Com qualquer problema NÃO envia nada: avisa no Telegram e tenta de novo a cada 30 min.
+const TENTAR_A_CADA = Number(process.env.FECHAMENTO_RETRY_MS) || 30 * 60e3, REAVISAR_A_CADA = 2 * 3600e3;
+const PASSO_FECHAMENTO = Number(process.env.FECHAMENTO_PASSO_MS) || 60e3;
+const tentFechamento = new Map(); // data -> { em, sig, avisoEm }: última tentativa, o que deu errado e quando avisou
+let fechando = false;
+const linkConf = (d) => (cfg('app_url') ? `\n${cfg('app_url').replace(/\/$/, '')}/conferencia?d=${d}` : '');
+const porLoja = (dia) => dia.map((x) => `• ${lojaCurta(x.loja.nome)}: ${x.itens.filter((i) => i.valor > 0).length} entregadores, ${brl(x.itens.reduce((s, i) => s + i.valor, 0))}`).join('\n');
+// Confere o dia e, sem pendências, envia. Retorna { problemas, dia } (nada enviado), { simulado, dia } ou { enviado, dia }.
+async function rodaFechamento(d, { simular = false } = {}) {
+  let dia;
+  try { dia = await conferenciaDoDia(d, true); } catch (e) { return { problemas: [`erro ao ler o Agilizone: ${e.message}`], dia: [] }; }
+  const problemas = [...bloqueiosDo(dia), ...semOcorrencias(dia).map((x) => `${lojaCurta(x.loja.nome)}: ocorrências não carregadas (${x.erroOc})`)];
+  if (!dia.length) problemas.push('nenhuma loja paga neste dia');
+  else if (!linhasPlanilha(dia).length) problemas.push('não há valores a pagar neste dia');
+  if (problemas.length) return { problemas, dia };
+  if (simular) return { simulado: true, dia };
+  const r = await enviaFechamento(d, dia, null);
+  return r.erro ? { problemas: [r.erro], dia } : { enviado: r, dia };
+}
+const textoFalha = (d, problemas, auto) => `⚠️ Fechamento ${auto ? 'automático ' : ''}de ${dataFmt(d)} NÃO foi enviado (${problemas.length} problema${problemas.length > 1 ? 's' : ''}):\n${problemas.slice(0, 8).map((p) => `• ${p}`).join('\n')}${problemas.length > 8 ? `\n… e mais ${problemas.length - 8}` : ''}\n\nNada foi enviado.${auto ? ' Tento de novo a cada 30 min; ou corrija e envie na Conferência.' : ''}${linkConf(d)}`;
+const textoOk = (e, dia) => `${e.drive?.erro ? '⚠️' : '✅'} ${e.titulo} enviado automaticamente\n${porLoja(dia)}\nTotal ${brl(e.total)} (${e.linhas} linhas)\nE-mail: ${e.para.join(', ')}\n${e.drive === 'ok' ? 'Salvo no Google Drive.' : e.drive === 'sem' ? 'Google Drive não configurado.' : `Drive FALHOU (${e.drive.erro}): use "Enviar ao Drive" na Conferência.`}`;
+async function fechamentoAutomatico() {
+  if (fechando || process.env.ALERTAS === '0' || cfg('auto_fechamento') !== '1') return;
+  const { data: d, hora } = agora();
+  if (hora < (cfg('hora_fechamento') || '12:30')) return;
+  if (!agenda(db.prepare('SELECT * FROM lojas').all(), d, d).length || envioDo(d)) return; // hoje ninguém paga, ou já foi enviado
+  const t = tentFechamento.get(d);
+  if (t && Date.now() - t.em < TENTAR_A_CADA) return;
+  fechando = true;
+  try {
+    const r = await rodaFechamento(d), agoraMs = Date.now();
+    if (r.enviado) { tentFechamento.delete(d); await TG.avisar(textoOk(r.enviado, r.dia)); return; }
+    const sig = r.problemas.join('|');
+    let avisoEm = t?.avisoEm || 0;
+    if (!t || t.sig !== sig || agoraMs - avisoEm > REAVISAR_A_CADA) { // avisa quando muda o problema, ou de tempos em tempos
+      log(null, 'fechamento', `Fechamento automático de ${dataFmt(d)} não enviado: ${r.problemas.join('; ').slice(0, 500)}`);
+      const a = await TG.avisar(textoFalha(d, r.problemas, true));
+      if (a.enviado) avisoEm = agoraMs; else log(null, 'fechamento', `Alerta no Telegram não saiu: ${a.motivo}`);
+    }
+    tentFechamento.set(d, { em: agoraMs, sig, avisoEm });
+  } catch (e) {
+    console.error('fechamento automático:', e);
+    log(null, 'fechamento', `Erro inesperado no fechamento automático: ${e.message}`);
+    tentFechamento.set(d, { em: Date.now(), sig: 'erro', avisoEm: t?.avisoEm || 0 });
+    await TG.avisar(`⚠️ Erro inesperado no fechamento automático de ${dataFmt(d)}: ${e.message}. Nada foi enviado.${linkConf(d)}`);
+  } finally { fechando = false; }
+}
+setInterval(fechamentoAutomatico, PASSO_FECHAMENTO).unref();
+setTimeout(fechamentoAutomatico, Math.min(25e3, PASSO_FECHAMENTO)).unref();
 
 // ---------- Erros ----------
 const ERRO_TXT = { 403: ['Acesso negado', 'Seu perfil não tem acesso a esta tela.'], 404: ['Página não encontrada', 'O endereço não existe, foi movido ou o item já não está disponível.'],

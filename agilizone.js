@@ -132,10 +132,6 @@ async function lojasDaCredencial(l) {
   lojasCache.set(k, { em: Date.now(), lista });
   return lista;
 }
-async function storeId(l) {
-  const lista = await lojasDaCredencial(l);
-  return (lista.length === 1 ? lista[0] : lista.find((s) => semAc(s.name) === semAc(l.nome)))?.id || null;
-}
 // Qual loja do Agilizone os dados desta loja estão lendo (para a tela mostrar): { id, nome, lojas } ou null.
 async function lojaLida(l) {
   try { const sid = await lojaDoFiltro(l), lista = await lojasDaCredencial(l), s = lista.find((x) => String(x.id) === String(sid)); return s ? { id: s.id, nome: s.name, lojas: lista.length } : null; } catch { return null; }
@@ -203,4 +199,4 @@ async function ocorrencias(storeId, de, ate, manual, ids = []) {
   return por;
 }
 
-module.exports = { ocorrencias, storeId, lojaLida, tokenPainelExpira, painelLogin, configurada, variaveis, pedidos, entregadores, paraImportacao, testa };
+module.exports = { ocorrencias, lojaLida, tokenPainelExpira, painelLogin, configurada, variaveis, pedidos, entregadores, paraImportacao, testa };

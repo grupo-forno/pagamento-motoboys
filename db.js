@@ -131,6 +131,8 @@ if (!db.prepare("SELECT sql FROM sqlite_master WHERE name = 'usuarios'").get().s
 // Nome completo (vai na planilha; o "nome" segue o apelido do Agilizone). cpf guarda CPF (11) ou CNPJ (14 dígitos).
 if (!temColuna('motoboys', 'nome_completo')) db.exec('ALTER TABLE motoboys ADD COLUMN nome_completo TEXT');
 // Conferência geral: um envio por data de pagamento (todas as lojas juntas), com a planilha gerada.
+// storeId da loja no painel do Agilizone (ledger.agilizone.com: ocorrências e acertos dos entregadores).
+if (!temColuna('lojas', 'agz_store_id')) db.exec('ALTER TABLE lojas ADD COLUMN agz_store_id TEXT');
 // Resumo de entregas (CSV do Agilizone) por loja e pagamento: dá o valor a pagar (com ocorrências e já pago).
 db.exec(`CREATE TABLE IF NOT EXISTS conf_resumo (pagamento TEXT NOT NULL, loja_id INTEGER NOT NULL REFERENCES lojas, linhas TEXT NOT NULL,
   arquivo TEXT, em TEXT NOT NULL DEFAULT (datetime('now','localtime')), por INTEGER, PRIMARY KEY (pagamento, loja_id));`);

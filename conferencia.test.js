@@ -13,10 +13,12 @@ const CONF = require('./conferencia');
 const PORT = 4700 + Math.floor(Math.random() * 90), B = `http://127.0.0.1:${PORT}`;
 const D = '2026-11-23'; // segunda: SUL paga sex/sab/dom
 let srv, mock, sul;
+const TK = `x.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url')}.y`; // token do painel (falso)
 
 before(async () => {
   mock = http.createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
+    if (req.url.startsWith('/occurrences')) return res.end(req.headers.authorization === `Bearer ${TK}` ? JSON.stringify([{ deliverymanId: '7', value: 250, name: 'Outros', description: 'retirada virou entrega' }]) : '[]');
     if (req.url.startsWith('/auth/token')) return res.end(JSON.stringify({ access_token: 'tok', expires_in: 86400 }));
     const de = new Date(new URL(req.url, 'http://x').searchParams.get('from')).getTime();
     const o = (id, e, fee, h) => ({ id, orderDisplayNumber: id, status: 'COMPLETED', deliveryman: e, deliverymanFee: fee, createdAt: new Date(de + h * 36e5).toISOString() });
@@ -27,9 +29,10 @@ before(async () => {
   sul = db.prepare("SELECT * FROM lojas WHERE nome LIKE '%SUL'").get();
   const v = variaveis(sul);
   const creds = Object.fromEntries(db.prepare('SELECT * FROM lojas').all().flatMap((l) => [[variaveis(l).id, 'cid'], [variaveis(l).secret, 's']])); // todas conectadas (Agilizone falso)
-  db.prepare("INSERT INTO config (chave, valor) VALUES ('email_para', 'fin@exemplo.com')").run();
+  db.prepare("INSERT INTO config (chave, valor) VALUES ('email_para', 'fin@exemplo.com'), ('agz_painel_token', ?)").run(TK);
+  db.prepare("UPDATE lojas SET agz_store_id = '6a03160245f42a2cff69ab95'").run();
   db.prepare('INSERT INTO usuarios (nome, login, senha, perfil) VALUES (?,?,?,?)').run('Conf', 'conf', hashSenha('senha12345'), 'conferente');
-  srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '0', SYNC_ENTREGADORES: '0', EMAIL_SO_ARQUIVO: '1', AGILIZONE_URL: `http://127.0.0.1:${mock.address().port}`, ...creds } });
+  srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '0', SYNC_ENTREGADORES: '0', EMAIL_SO_ARQUIVO: '1', AGILIZONE_URL: `http://127.0.0.1:${mock.address().port}`, AGILIZONE_LEDGER_URL: `http://127.0.0.1:${mock.address().port}`, ...creds } });
   srv.stderr.on('data', (d) => process.stderr.write(d));
   await new Promise((ok, erro) => { srv.stdout.on('data', (d) => String(d).includes('Pagamento Entregadores') && ok()); srv.on('exit', erro); });
 });
@@ -60,6 +63,10 @@ test('conferente: vê todas as lojas, completa o cadastro (CNPJ) e envia a plani
     assert.match(loc, /dados salvos/, loc);
   }
   assert.match(await post(ck, '/entregadores/1', { loja: sul.id, nome_completo: 'Só', cpf: '123', pix: 'a@b.com' }), /CPF deve ter 11|nome completo|não encontrado/);
+  // automático: taxas da API + ocorrência do painel (Kevin 17,50 + 2,50)
+  h = await (await get(ck, `/conferencia?d=${D}&aba=${sul.id}`)).text();
+  assert.ok(h.includes('taxas + ocorrências'), h.match(/badge [a-z]+">Automático[^]{0,300}/)?.[0]);
+  assert.match(h, /<b>R\$\s20,00<\/b>/, 'ocorrência automática somada');
   // Resumo de cada loja: Kevin com 1 ocorrência de R$ 2,50 (o valor a pagar vem do Resumo)
   const csv = 'Entregador;Pedidos;Soma das taxas de entrega;Ocorrências;Ocorrências + Taxas;Pago\nKevin;2;17,50;1;20,00;0,00\nMarcos;1;6,00;0;6,00;0,00\n';
   for (const { id } of db.prepare('SELECT id FROM lojas').all()) {

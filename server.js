@@ -986,6 +986,14 @@ async function lojaNoDia(l, d, renova) {
       cacheConf.set(k, c);
     } catch (e) { return { ...base, erro: e.message }; }
   }
+  // Ocorrências do painel (mesmo período), quando a loja tem storeId e há token do painel.
+  base.ocAuto = !!(l.agz_store_id && cfg('agz_painel_token'));
+  if (base.ocAuto && (renova || !c.oc)) {
+    try { c.oc = await AGZ_API.ocorrencias(l.agz_store_id, `${base.ini}T${CONF_HORA}:00:00-03:00`, `${d}T${CONF_HORA}:00:59-03:00`, cfg('agz_painel_token')); c.erroOc = ''; }
+    catch (e) { c.oc = null; c.erroOc = e.message; }
+  }
+  base.erroOc = base.ocAuto ? c.erroOc || '' : '';
+  const oc = base.ocAuto && c.oc ? new Map(c.oc) : null;
   // Resumo importado: o valor a pagar vem dele (taxas + ocorrências − já pago); os pedidos da API servem de conferência.
   const cr = db.prepare('SELECT * FROM conf_resumo WHERE pagamento = ? AND loja_id = ?').get(d, l.id);
   const res = cr ? new Map(JSON.parse(cr.linhas).map((r) => [semAcento(r.entregador).trim(), r])) : null;
@@ -996,8 +1004,11 @@ async function lojaNoDia(l, d, renova) {
     if (rr) res.delete(semAcento(r.entregador).trim());
     const falta = [!m.nome_completo && 'nome completo', !CONF.docValido(m.cpf) && 'CPF/CNPJ', res && !rr && 'linha no Resumo'].filter(Boolean);
     const valorRes = rr ? rr.total + rr.ocorrencias - rr.pago : null;
-    return { m: { ...m, pix: pix?.pix, identidade: pix?.agz_id }, pedidos: r.pedidos, valorApi: r.total, rr, valor: rr ? valorRes : r.total, falta, semPix: !pix?.pix };
+    const o = oc?.get(String(r.agzId)); if (o) oc.delete(String(r.agzId));
+    const ocAuto = !rr && o ? o : null;
+    return { m: { ...m, pix: pix?.pix, identidade: pix?.agz_id }, pedidos: r.pedidos, valorApi: r.total, rr, ocAuto, valor: rr ? valorRes : r.total + (ocAuto?.valor || 0), falta, semPix: !pix?.pix };
   }).sort((a, b) => nomeEnt(a.m).localeCompare(nomeEnt(b.m), 'pt-BR'));
+  base.ocSemPedido = !cr && oc ? [...oc.entries()].filter(([, o]) => o.valor) : []; // ocorrência de entregador sem pedido no período
   base.soNoResumo = res ? [...res.values()].filter((r) => r.total + r.ocorrencias - r.pago > 0).map((r) => r.entregador) : []; // no Resumo, sem pedido no período da API
   return base;
 }
@@ -1006,6 +1017,8 @@ async function conferenciaDoDia(d, renova) {
   return (await Promise.all(lojas.map((l) => lojaNoDia(l, d, renova)))).filter(Boolean);
 }
 const bloqueiosDo = (dia) => dia.flatMap((x) => { const lj = lojaCurta(x.loja.nome); return x.erro ? [`${lj}: ${x.erro}`] : [
+  ...(x.erroOc && !x.resumo ? [`${lj}: ocorrências não carregadas: ${x.erroOc}`] : []),
+  ...x.ocSemPedido.map(([id, o]) => `${lj}: ocorrência de ${brl(o.valor)} para o entregador ${id} do Agilizone, que não tem pedido no período`),
   ...x.soNoResumo.map((n) => `${n} (${lj}): está no Resumo, mas não tem pedido no período da API`),
   ...x.itens.filter((i) => i.falta.length && (i.valor > 0 || i.falta.includes('linha no Resumo'))).map((i) => `${nomeEnt(i.m)} (${lj}): falta ${i.falta.join(' e ')}`)]; });
 const linhasPlanilha = (dia) => dia.flatMap((x) => x.itens.filter((i) => i.valor > 0).map((i) => ({ nome: nomeEnt(i.m), doc: i.m.cpf, centro: centroDa(x.loja), valor: i.valor })));
@@ -1028,18 +1041,20 @@ app.get('/conferencia', so((r) => confere(r.user)), async (req, res, next) => { 
 <div class="field"><label for="${k}-c">CPF ou CNPJ</label><input id="${k}-c" name="cpf" value="${m.cpf ? CONF.docFmt(m.cpf) : ''}" inputmode="numeric" maxlength="18" required autocomplete="off"><p class="hint">11 números (CPF) ou 14 (CNPJ).</p></div>
 <input type="hidden" name="nascimento" value="${m.nascimento || ''}"><div class="field"><label for="${k}-p">Chave Pix</label><input id="${k}-p" name="pix" value="${m.pix || ''}" required maxlength="120" autocomplete="off"></div>
 ${m.identidade ? '' : html`<p class="bad-t">Identidade pendente: vínculo pelo id do Agilizone não confirmado.</p>`}<div class="acoes-f"><button type="button" class="btn btn-ghost" data-fecha>Cancelar</button><button class="btn btn-pri" ${m.identidade ? '' : 'disabled'}>Salvar</button></div></form></dialog>`; };
-  const fonte = (x) => x.erro ? html`<span class="badge bad">Erro no Agilizone</span>` : x.resumo ? html`<span class="badge info">Resumo manual · ${quando(x.resumo.em)}</span> <span class="mut small">Valores com ocorrências e já pago, conferidos com a API.</span>` : html`<span class="badge ok">Automático (API Agilizone)</span> <span class="mut small">Soma das taxas dos pedidos. Ocorrências não vêm pela API.</span>`;
+  const fonte = (x) => x.erro ? html`<span class="badge bad">Erro no Agilizone</span>` : x.resumo ? html`<span class="badge info">Resumo manual · ${quando(x.resumo.em)}</span> <span class="mut small">Valores com ocorrências e já pago, conferidos com a API.</span>` : x.ocAuto && !x.erroOc ? html`<span class="badge ok">Automático · taxas + ocorrências</span> <span class="mut small">Pedidos pela API e ocorrências pelo painel do Agilizone.</span>`
+    : html`<span class="badge warn">Automático · só taxas</span> <span class="mut small">${x.erroOc || (x.loja.agz_store_id ? 'Falta o token do painel do Agilizone (Configurações > Lojas) para trazer as ocorrências.' : 'Falta o storeId desta loja (Configurações > Lojas) para trazer as ocorrências.')}</span>`;
+  const comOc = (x) => x.resumo || x.itens.some((i) => i.ocAuto);
   const tabLoja = (x) => html`<section class="card"><div class="card-h"><div class="t"><h2>${x.loja.nome}</h2><p>Pedidos de ${dataFmt(x.ini)} ${CONF_HORA}h a ${dataFmt(d)} ${CONF_HORA}h · centro de custo ${centroDa(x.loja)}</p></div></div>
 <div class="card-b" style="padding-bottom:0">${fonte(x)}
 ${env ? '' : html`<details class="fold" style="margin-top:10px" ${x.resumo ? '' : ''}><summary class="mut small">${icone('chevron', 'chev')} ${x.resumo ? 'Trocar ou remover o Resumo manual' : 'Importação manual do Resumo (opcional: para incluir ocorrências e o já pago)'}</summary>
 <form method="post" action="/conferencia/resumo" enctype="multipart/form-data" class="linha-form" style="margin-top:10px" data-carregando="Lendo o Resumo…"><input type="hidden" name="d" value="${d}"><input type="hidden" name="loja" value="${x.loja.id}"><div class="field"><label for="res-${x.loja.id}">Resumo de entregas por entregador (.csv)</label><input id="res-${x.loja.id}" name="resumo" type="file" accept=".csv" required><p class="hint">No Agilizone: Relatório de Pedidos, filtro <b>${dataFmt(x.ini)} ${CONF_HORA}:00</b> a <b>${dataFmt(d)} ${CONF_HORA}:00</b> › Resumo de entregas por entregador › Exportar Resumo.</p></div><button class="btn btn-sec">${icone('subir', 'sm')} Importar</button></form>
 ${x.resumo ? html`<form method="post" action="/conferencia/resumo/remover" style="margin-top:8px"><input type="hidden" name="d" value="${d}"><input type="hidden" name="loja" value="${x.loja.id}"><button class="btn btn-ghost btn-sm">Remover o Resumo e voltar ao automático</button></form>` : ''}</details>`}</div>
 ${x.soNoResumo.length ? html`<div class="card-b"><div class="alert bad">${icone('alerta')}<div>No Resumo, mas sem pedidos no período da API: ${x.soNoResumo.join(', ')}. Confira o filtro de datas do Resumo.</div></div></div>` : ''}
-${x.erro ? html`<div class="card-b"><div class="alert bad">${icone('erro')}<div>${x.erro}</div></div></div>` : html`<div class="tw"><table><thead><tr><th>Entregador</th><th>CPF/CNPJ</th><th class="n">Pedidos</th><th class="n">Taxas (API)</th>${x.resumo ? html`<th class="n">Ocorrências</th><th class="n">Já pago</th>` : ''}<th class="n">A pagar</th><th>Situação</th><th class="n">Ação</th></tr></thead><tbody>
-${x.itens.map((i) => html`<tr><th scope="row">${nomeEnt(i.m)}${i.m.nome_completo && i.m.nome_completo !== i.m.nome ? html`<small class="mut">Agilizone: ${i.m.nome}</small>` : ''}</th><td>${i.m.cpf ? CONF.docFmt(i.m.cpf) : '—'}</td><td class="n">${i.pedidos}</td><td class="n">${brl(i.valorApi)}${i.rr && i.rr.total !== i.valorApi ? html`<small class="bad-t">Resumo: ${brl(i.rr.total)}</small>` : ''}</td>${x.resumo ? html`<td class="n">${i.rr?.ocorrencias ? brl(i.rr.ocorrencias) : '—'}</td><td class="n">${i.rr?.pago ? brl(-i.rr.pago) : '—'}</td>` : ''}<td class="n"><b>${brl(i.valor)}</b></td>
+${x.erro ? html`<div class="card-b"><div class="alert bad">${icone('erro')}<div>${x.erro}</div></div></div>` : html`<div class="tw"><table><thead><tr><th>Entregador</th><th>CPF/CNPJ</th><th class="n">Pedidos</th><th class="n">Taxas (API)</th>${comOc(x) ? html`<th class="n">Ocorrências</th><th class="n">Já pago</th>` : ''}<th class="n">A pagar</th><th>Situação</th><th class="n">Ação</th></tr></thead><tbody>
+${x.itens.map((i) => html`<tr><th scope="row">${nomeEnt(i.m)}${i.m.nome_completo && i.m.nome_completo !== i.m.nome ? html`<small class="mut">Agilizone: ${i.m.nome}</small>` : ''}</th><td>${i.m.cpf ? CONF.docFmt(i.m.cpf) : '—'}</td><td class="n">${i.pedidos}</td><td class="n">${brl(i.valorApi)}${i.rr && i.rr.total !== i.valorApi ? html`<small class="bad-t">Resumo: ${brl(i.rr.total)}</small>` : ''}</td>${comOc(x) ? html`<td class="n">${i.rr?.ocorrencias ? brl(i.rr.ocorrencias) : i.ocAuto ? html`<span title="${i.ocAuto.itens.join(' · ')}">${brl(i.ocAuto.valor)} <small class="mut">(${i.ocAuto.qtd})</small></span>` : '—'}</td><td class="n">${i.rr?.pago ? brl(-i.rr.pago) : '—'}</td>` : ''}<td class="n"><b>${brl(i.valor)}</b></td>
 <td>${i.falta.length ? html`<span class="badge bad">Falta ${i.falta.join(' e ')}</span>` : i.semPix ? html`<span class="badge warn">Sem Pix</span>` : html`<span class="badge ok">OK</span>`}</td><td class="n">${dlg(x, i)}</td></tr>`)}
 ${x.itens.length ? '' : html`<tr><td colspan="9">Nenhum pedido entregue no período.</td></tr>`}</tbody>
-<tfoot><tr><th>Total</th><td></td><td class="n">${x.itens.reduce((s, i) => s + i.pedidos, 0)}</td><td class="n">${brl(x.itens.reduce((s, i) => s + i.valorApi, 0))}</td>${x.resumo ? html`<td colspan="2"></td>` : ''}<td class="n"><b>${brl(x.itens.reduce((s, i) => s + i.valor, 0))}</b></td><td colspan="2"></td></tr></tfoot></table></div>`}</section>`;
+<tfoot><tr><th>Total</th><td></td><td class="n">${x.itens.reduce((s, i) => s + i.pedidos, 0)}</td><td class="n">${brl(x.itens.reduce((s, i) => s + i.valorApi, 0))}</td>${comOc(x) ? html`<td colspan="2"></td>` : ''}<td class="n"><b>${brl(x.itens.reduce((s, i) => s + i.valor, 0))}</b></td><td colspan="2"></td></tr></tfoot></table></div>`}</section>`;
   const lojasOk = dia.filter((x) => !bloqueiosDo([x]).length).length;
   const stat = (ic, cor, v, l, hero) => html`<div class="card stat ${hero ? 'hero' : ''}"><span class="hico ${cor}">${icone(ic)}</span><div><div class="v">${v}</div><div class="l">${l}</div></div></div>`;
   const topo = html`<div class="stats">${stat('carteira', 'pri', brl(total), `A pagar em ${diaLongo(d)}`, true)}${stat('moto', '', nEnt, 'Entregadores')}${stat('loja', lojasOk === dia.length ? 'ok' : 'warn', `${lojasOk}/${dia.length}`, 'Lojas prontas')}${stat(bloqueios.length ? 'alerta' : 'check', bloqueios.length ? 'bad' : 'ok', bloqueios.length, bloqueios.length ? 'Pendências para corrigir' : 'Sem pendências')}</div>`;
@@ -1957,7 +1972,14 @@ ${leitura ? html`<p class="cal-leg"><b>Como o sistema lê:</b> ${leitura}</p>` :
   const agzStatus = (l) => { const v = AGZ_API.variaveis(l); return AGZ_API.configurada(l) ? html`<p class="hint">${icone('check', 'sm')} Conexão com o Agilizone configurada no servidor.</p>` : html`<p class="hint">Para importar direto do Agilizone, defina no servidor (EasyPanel > Ambiente) as variáveis <b>${v.id}</b> e <b>${v.secret}</b> com o Client ID e o Client Secret desta loja, e reinicie o serviço.</p>`; };
   const entTab = html`<section class="card" aria-labelledby="ent-t"><div class="card-h"><span class="hico">${icone('moto')}</span><div class="t"><h2 id="ent-t">Entregadores e chaves Pix</h2><p>O Agilizone traz os entregadores, mas não o Pix. A chave é cadastrada <b>por loja</b> em Entregadores e fica salva no sistema: atualizar a lista do Agilizone só acrescenta quem é novo e <b>nunca apaga nem troca</b> uma chave já salva.</p></div><a class="btn btn-pri" href="/entregadores">Abrir Entregadores</a></div>
 <div class="card-b"><form method="post" action="/config/entregadores/buscar" class="ent-imp" data-carregando="Buscando os entregadores nas lojas…"><div><b>Trazer do Agilizone (todas as lojas conectadas)</b><p class="hint">Lê os pedidos dos últimos 80 dias de cada loja conectada e cadastra quem ainda não está no sistema, com o id do Agilizone. Quem já tem Pix salvo não é alterado. Para uma loja só, use "Atualizar do Agilizone" em Entregadores.</p></div><button class="btn btn-sec">${icone('subir', 'sm')} Buscar entregadores no Agilizone</button></form></div></section>`;
-  const lojasTab = html`<section class="card" aria-labelledby="lojas-t"><div class="card-h"><div class="t"><h2 id="lojas-t">Lojas e dias de pagamento <span class="c-n">${lojas.length}</span></h2><p>Alterar nome ou calendário não apaga fechamentos, entregadores nem histórico. Fechamentos já importados mantêm o pagamento previsto da época.</p></div><button type="button" class="btn btn-sec" data-abre="dlg-nl">${icone('mais', 'sm')} Nova loja</button></div>
+  const tkP = v('agz_painel_token'), expP = tkP ? AGZ_API.tokenPainelExpira(tkP) : null;
+  const painel = html`<form method="post" action="/config/painel" class="card" style="margin-bottom:16px" data-guarda><div class="card-h"><span class="hico pri">${icone('moto')}</span><div class="t"><h2>Ocorrências dos entregadores (painel do Agilizone)</h2><p>A API oficial não traz ocorrências. Elas vêm do painel (ledger.agilizone.com) com o token de um login do painel e o storeId de cada loja.</p></div></div><div class="card-b">
+<p class="cfg-sit ${tkP && (!expP || expP > Date.now()) ? 'ok' : 'warn'}" role="status"><b>Token:</b> ${!tkP ? 'não configurado' : expP && expP < Date.now() ? `expirou em ${new Date(expP).toLocaleString('pt-BR', { timeZone: TZ })}` : expP ? `válido até ${new Date(expP).toLocaleString('pt-BR', { timeZone: TZ })}` : 'configurado'}</p>
+<details class="fold" style="margin-bottom:12px"><summary class="mut small">${icone('chevron', 'chev')} Onde pegar o token e o storeId</summary><ol style="margin:8px 0 0 22px;line-height:1.7"><li>No painel do Agilizone, abra o Resumo de entregas com o F12 na aba Rede.</li><li>Clique na requisição <b>occurrences/summary</b>. A URL traz <b>storeId=…</b> (é o da loja aberta).</li><li>Em Request headers, copie o valor de <b>Authorization</b> depois de "Bearer ".</li></ol></details>
+<div class="field"><label for="agz_painel_token">Token do painel</label><textarea id="agz_painel_token" name="agz_painel_token" style="min-height:70px" placeholder="${tkP ? '•••••••• (mantido)' : 'eyJ0eXAiOiJKV1Qi…'}" autocomplete="off"></textarea><p class="hint">Deixe vazio para manter o atual.</p></div>
+<div class="fgrid">${lojas.map((l) => html`<div class="field"><label for="sid-${l.id}">storeId · ${lojaCurta(l.nome)}</label><input id="sid-${l.id}" name="sid_${l.id}" value="${l.agz_store_id || ''}" placeholder="6a03160245f42a2cff69ab95" autocomplete="off"></div>`)}</div></div>
+<div class="card-f"><button class="btn btn-pri">${icone('check')} Salvar</button></div></form>`;
+  const lojasTab = html`${painel}<section class="card" aria-labelledby="lojas-t"><div class="card-h"><div class="t"><h2 id="lojas-t">Lojas e dias de pagamento <span class="c-n">${lojas.length}</span></h2><p>Alterar nome ou calendário não apaga fechamentos, entregadores nem histórico. Fechamentos já importados mantêm o pagamento previsto da época.</p></div><button type="button" class="btn btn-sec" data-abre="dlg-nl">${icone('mais', 'sm')} Nova loja</button></div>
 <div class="tw"><table class="tab-l"><thead><tr><th scope="col">Loja</th><th scope="col">Quando paga</th><th scope="col">Integração Agilizone</th><th scope="col" class="n">Fechamentos</th><th scope="col" class="n"><span class="sr">Ação</span></th></tr></thead><tbody>
 ${lojas.map((l) => html`<tr><th scope="row">${l.nome}</th><td>${AG.textoCalendario(calendarioDa(l))}</td><td>${AGZ_API.configurada(l) ? html`<span class="badge ok">Conectada</span>` : html`<span class="badge warn">Sem credenciais</span>`}</td><td class="n">${l.n}</td><td class="n"><button type="button" class="btn btn-sec btn-sm" data-abre="dlg-l${l.id}" aria-label="Editar ${l.nome}">${icone('lapis', 'sm')} Editar</button></td></tr>`)}</tbody></table></div></section>
 ${lojas.map((l) => { const p = `l${l.id}`, dados = ctx.abrir === p ? ctx.valores : { nome: l.nome, calendario: l.calendario || AG.PADRAO }; return html`<dialog id="dlg-${p}" class="dlg sheet ent-sheet" aria-labelledby="t-${p}" ${ctx.abrir === p ? new Raw('data-abrir') : ''}><h2 id="t-${p}">Editar ${l.nome}</h2><p>${l.n} fechamento(s) · ${AGZ_API.configurada(l) ? 'integração conectada' : 'sem credenciais do Agilizone'}</p>
@@ -1997,6 +2019,19 @@ app.post('/config', so((r) => r.user.perfil === 'admin'), (req, res) => {
   volta(res, '/config?aba=email', 'ok', 'Configurações salvas. Use "Enviar teste" para conferir.');
 });
 
+app.post('/config/painel', so((r) => r.user.perfil === 'admin'), (req, res) => {
+  const url = '/config?aba=lojas', tk = String(req.body.agz_painel_token || '').trim().replace(/^bearer\s+/i, '');
+  if (tk && tk.split('.').length !== 3) return volta(res, url, 'erro', 'Token inválido: copie só o valor depois de "Bearer ".');
+  for (const l of db.prepare('SELECT id FROM lojas').all()) {
+    const s = String(req.body[`sid_${l.id}`] ?? '').trim();
+    if (s && !/^[0-9a-f]{24}$/i.test(s)) return volta(res, url, 'erro', `storeId inválido: ${s}. Ele tem 24 letras/números (ex.: 6a03160245f42a2cff69ab95).`);
+    db.prepare('UPDATE lojas SET agz_store_id = ? WHERE id = ?').run(s || null, l.id);
+  }
+  if (tk) db.prepare("INSERT INTO config (chave, valor) VALUES ('agz_painel_token', ?) ON CONFLICT (chave) DO UPDATE SET valor = excluded.valor").run(tk);
+  cacheConf.clear();
+  log(req.user.id, 'config', `Painel do Agilizone salvo (storeIds${tk ? '; token alterado' : ''})`);
+  volta(res, url, 'ok', 'Salvo. A Conferência já traz as ocorrências das lojas com storeId.');
+});
 function salvaDrive(req) {
   const pasta = CONF.pastaId(req.body.drive_pasta), cred = String(req.body.drive_credencial || '').trim();
   if (cred) {

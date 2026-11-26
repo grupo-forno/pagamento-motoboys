@@ -116,4 +116,25 @@ async function testa(l) {
   return { total: j.total, taxa: j.data.length ? j.data.every((o) => typeof o.deliverymanFee === 'number') : null };
 }
 
-module.exports = { configurada, variaveis, pedidos, entregadores, paraImportacao, testa };
+// ---- Painel (ledger.agilizone.com): ocorrências dos entregadores ----
+// Não é a API oficial: usa o token (Bearer) de um login do painel, que expira. de/ate em ISO.
+const LEDGER = () => (process.env.AGILIZONE_LEDGER_URL || 'https://ledger.agilizone.com').replace(/\/$/, '');
+function tokenPainelExpira(tk) { try { return JSON.parse(Buffer.from(tk.split('.')[1], 'base64url')).exp * 1000 || null; } catch { return null; } }
+async function ocorrencias(storeId, de, ate, tk) {
+  if (!tk) throw erro('Token do painel do Agilizone não configurado (Configurações > Lojas).');
+  const exp = tokenPainelExpira(tk);
+  if (exp && exp < Date.now()) throw erro('O token do painel do Agilizone expirou. Cole um novo em Configurações > Lojas.');
+  const r = await chama(`${LEDGER()}/occurrences?${new URLSearchParams({ storeId, from: new Date(de).toISOString(), to: new Date(ate).toISOString() })}`, { headers: { Authorization: `Bearer ${tk}`, Accept: 'application/json' } });
+  if (r.status === 401 || r.status === 403) throw erro('O painel do Agilizone recusou o token (expirado ou sem acesso a esta loja). Cole um novo em Configurações > Lojas.');
+  if (!r.ok) throw erro(`O painel do Agilizone não respondeu às ocorrências (erro ${r.status}).`);
+  const lista = await r.json();
+  const por = new Map(); // deliverymanId -> { valor (centavos), qtd, itens }
+  for (const o of Array.isArray(lista) ? lista : lista.content || []) {
+    const k = String(o.deliverymanId), x = por.get(k) || { valor: 0, qtd: 0, itens: [] };
+    x.valor += Number(o.value) || 0; x.qtd++; x.itens.push(`${o.name}${o.description ? `: ${o.description}` : ''}`);
+    por.set(k, x);
+  }
+  return por;
+}
+
+module.exports = { ocorrencias, tokenPainelExpira, configurada, variaveis, pedidos, entregadores, paraImportacao, testa };

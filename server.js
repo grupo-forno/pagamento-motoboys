@@ -993,7 +993,7 @@ async function lojaNoDia(l, d, renova) {
   // Ocorrências do painel (mesmo período), quando a loja tem storeId e há token do painel.
   base.ocAuto = !!(l.agz_store_id && (AGZ_API.painelLogin() || cfg('agz_painel_token')));
   if (base.ocAuto && (renova || !c.oc)) {
-    try { c.oc = await AGZ_API.ocorrencias(l.agz_store_id, `${base.ini}T${CONF_HORA}:00:00-03:00`, `${d}T${CONF_HORA}:00:59-03:00`, cfg('agz_painel_token')); c.erroOc = ''; }
+    try { c.oc = await AGZ_API.ocorrencias(l.agz_store_id, `${base.ini}T${CONF_HORA}:00:00-03:00`, `${d}T${CONF_HORA}:00:59-03:00`, cfg('agz_painel_token'), c.resumo.map((r) => r.agzId)); c.erroOc = ''; }
     catch (e) { c.oc = null; c.erroOc = e.message; }
   }
   base.erroOc = base.ocAuto ? c.erroOc || '' : '';

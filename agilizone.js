@@ -170,22 +170,32 @@ async function tokenPainel(manual, renova) {
   sessao = { jwt, exp: tokenPainelExpira(jwt) || Date.now() + 6 * 864e5 };
   return jwt;
 }
-async function ocorrencias(storeId, de, ate, manual) {
-  const url = `${LEDGER()}/occurrences?${new URLSearchParams({ storeId, from: new Date(de).toISOString(), to: new Date(ate).toISOString() })}`;
-  let r;
-  for (let t = 0; t < 2; t++) {
-    const tk = await tokenPainel(manual, t > 0);
-    if (!tk) throw erro('Painel do Agilizone sem acesso: defina AGILIZONE_PAINEL_EMAIL e AGILIZONE_PAINEL_SENHA no servidor.');
-    const exp = tokenPainelExpira(tk);
-    if (!painelLogin() && exp && exp < Date.now()) throw erro('O token do painel do Agilizone expirou. Cole um novo em Configurações > Lojas.');
-    r = await chama(url, { headers: { Authorization: `Bearer ${tk}`, Accept: 'application/json' } });
-    if (!(r.status === 401 && painelLogin() && t === 0)) break; // token vencido: loga de novo e repete
-  }
-  if (r.status === 401 || r.status === 403) throw erro('O painel do Agilizone recusou o acesso às ocorrências desta loja (token expirado ou usuário sem acesso).');
-  if (!r.ok) throw erro(`O painel do Agilizone não respondeu às ocorrências (erro ${r.status}).`);
-  const lista = await r.json();
+// O painel pede as ocorrências POR ENTREGADOR (GET /occurrences?storeId&deliverymanId&from&to), igual ao Resumo. ids = entregadores com pedido no período.
+async function ocorrencias(storeId, de, ate, manual, ids = []) {
+  const from = new Date(de).toISOString(), to = new Date(ate).toISOString();
+  const busca = async (id) => {
+    const url = `${LEDGER()}/occurrences?${new URLSearchParams({ storeId, deliverymanId: String(id), from, to })}`;
+    let r;
+    for (let t = 0; t < 2; t++) {
+      const tk = await tokenPainel(manual, t > 0);
+      if (!tk) throw erro('Painel do Agilizone sem acesso: defina AGILIZONE_PAINEL_EMAIL e AGILIZONE_PAINEL_SENHA no servidor.');
+      const exp = tokenPainelExpira(tk);
+      if (!painelLogin() && exp && exp < Date.now()) throw erro('O token do painel do Agilizone expirou. Cole um novo em Configurações > Lojas.');
+      r = await chama(url, { headers: { Authorization: `Bearer ${tk}`, Accept: 'application/json' } });
+      if (!(r.status === 401 && painelLogin() && t === 0)) break; // token vencido: loga de novo e repete
+    }
+    if (r.status === 401 || r.status === 403) throw erro('O painel do Agilizone recusou o acesso às ocorrências desta loja (token expirado ou usuário sem acesso).');
+    if (!r.ok) throw erro(`O painel do Agilizone não respondeu às ocorrências (erro ${r.status}: ${(await r.text()).replace(/\s+/g, ' ').slice(0, 160)}). Confira o storeId da loja em Configurações > Lojas.`);
+    const lista = await r.json();
+    return Array.isArray(lista) ? lista : lista.content || [];
+  };
+  const todas = [], un = [...new Set(ids.map(String))];
+  if (un.length) await tokenPainel(manual); // 1 login antes das buscas em paralelo
+  for (let i = 0; i < un.length; i += 6) todas.push(...(await Promise.all(un.slice(i, i + 6).map(busca))).flat());
+  const estornadas = new Set(todas.map((o) => o.reversesId).filter(Boolean)); // ocorrência desfeita não conta (nem o estorno)
   const por = new Map(); // deliverymanId -> { valor (centavos), qtd, itens }
-  for (const o of Array.isArray(lista) ? lista : lista.content || []) {
+  for (const o of todas) {
+    if (o.reversesId || estornadas.has(o.id)) continue;
     const k = String(o.deliverymanId), x = por.get(k) || { valor: 0, qtd: 0, itens: [] };
     x.valor += Number(o.value) || 0; x.qtd++; x.itens.push(`${o.name}${o.description ? `: ${o.description}` : ''}`);
     por.set(k, x);

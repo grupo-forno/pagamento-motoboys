@@ -20,7 +20,11 @@ before(async () => {
     res.setHeader('content-type', 'application/json');
     if (req.url.startsWith('/stores')) return res.end(JSON.stringify({ data: [{ id: '6a03160245f42a2cff69ab95', name: 'Loja' }], page: 1, pageSize: 100, total: 1 }));
     if (req.url === '/auth/login') { let b = ''; req.on('data', (c) => (b += c)); return req.on('end', () => { const j = JSON.parse(b); if (j.email !== 'painel@exemplo.com' || j.password !== 'segredo') { res.statusCode = 401; return res.end('{}'); } res.end(JSON.stringify({ jwt: TK })); }); }
-    if (req.url.startsWith('/occurrences')) return res.end(req.headers.authorization === `Bearer ${TK}` ? JSON.stringify([{ deliverymanId: '7', value: 250, name: 'Outros', description: 'retirada virou entrega' }]) : '[]');
+    if (req.url.startsWith('/occurrences')) { // como o painel: exige deliverymanId (sem ele, 400)
+      const q = new URL(req.url, 'http://x').searchParams;
+      if (!q.get('deliverymanId')) { res.statusCode = 400; return res.end('{"message":"deliverymanId is required"}'); }
+      return res.end(req.headers.authorization === `Bearer ${TK}` && q.get('deliverymanId') === '7' ? JSON.stringify([{ id: 'o1', deliverymanId: '7', value: 250, name: 'Outros', description: 'retirada virou entrega', reversesId: null }]) : '[]');
+    }
     if (req.url.startsWith('/auth/token')) return res.end(JSON.stringify({ access_token: 'tok', expires_in: 86400 }));
     const de = new Date(new URL(req.url, 'http://x').searchParams.get('from')).getTime();
     const o = (id, e, fee, h) => ({ id, orderDisplayNumber: id, status: 'COMPLETED', deliveryman: e, deliverymanFee: fee, createdAt: new Date(de + h * 36e5).toISOString() });

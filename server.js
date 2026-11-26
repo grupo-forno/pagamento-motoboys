@@ -976,19 +976,20 @@ app.post('/entregadores/:id', so((r) => editaMotoboy(r.user)), (req, res) => {
 // por e-mail e para a pasta do Google Drive, com o título "DD-MM-AAAA - MOTOBOYS". O fluxo por fechamento segue disponível.
 // Centro de custo: o nome curto da loja (LESTE, DIRCEU, SUL...).
 const centroDa = (l) => lojaCurta(l.nome).replace(/centro de distribui[cç][aã]o\s*/i, '').replace(/\s+ativa$/i, '').trim().toUpperCase();
-const CONF_HORA = '12'; // corte da conferência geral: 12h do 1º dia até 12h do dia do pagamento
+const CONF_INI = '12:00'; // período da conferência geral: 12h do 1º dia de referência até o corte (Configurações > Alertas, padrão 05:00) do dia do pagamento
+const corteHora = () => cfg('hora_corte') || '05:00';
 const cacheConf = new Map(); // `${loja}|${data}` -> { em, resumo } (5 min; "Atualizar do Agilizone" ignora)
 async function lojaNoDia(l, d, renova) {
   const ref = AG.diasReferencia(calendarioDa(l), d);
   if (!ref) return null; // a loja não paga nesse dia
   const base = { loja: l, ini: ref[0], fim: ref[ref.length - 1], itens: [], erro: '' };
   if (!AGZ_API.configurada(l)) return { ...base, erro: 'Loja sem credenciais do Agilizone (Configurações > Lojas).' };
-  const k = `${l.id}|${d}`;
+  const k = `${l.id}|${d}|${corteHora()}`;
   let c = cacheConf.get(k);
   if (renova || !c || Date.now() - c.em > 5 * 60e3) {
     try {
-      // Mesmo filtro usado no Agilizone: do 1º dia de referência às 12h até o dia do pagamento às 12h (Teresina).
-      const orders = await AGZ_API.pedidos(l, `${base.ini}T${CONF_HORA}:00:00-03:00`, `${d}T${CONF_HORA}:00:59-03:00`); // o Agilizone inclui o minuto final (12:00 vale até 12:00:59)
+      // Do 1º dia de referência às 12h até o dia do pagamento no horário de corte (Teresina).
+      const orders = await AGZ_API.pedidos(l, `${base.ini}T${CONF_INI}:00-03:00`, `${d}T${corteHora()}:59-03:00`); // o Agilizone inclui o minuto final (05:00 vale até 05:00:59)
       const pi = AGZ_API.paraImportacao(orders, { tz: TZ });
       c = { em: Date.now(), resumo: pi.resumo, excluidos: pi.excluidos, total: orders.length };
       cacheConf.set(k, c);
@@ -997,7 +998,7 @@ async function lojaNoDia(l, d, renova) {
   // Ocorrências do painel (mesmo período), quando a loja tem o storeId DO PAINEL (24 letras/números; o código com traços da API oficial é outro) e há acesso ao painel.
   base.ocAuto = !!(/^[0-9a-f]{24}$/i.test(l.agz_store_id || '') && (AGZ_API.painelLogin() || cfg('agz_painel_token')));
   if (base.ocAuto && (renova || !c.oc)) {
-    try { c.oc = await AGZ_API.ocorrencias(l.agz_store_id, `${base.ini}T${CONF_HORA}:00:00-03:00`, `${d}T${CONF_HORA}:00:59-03:00`, cfg('agz_painel_token'), c.resumo.map((r) => r.agzId)); c.erroOc = ''; }
+    try { c.oc = await AGZ_API.ocorrencias(l.agz_store_id, `${base.ini}T${CONF_INI}:00-03:00`, `${d}T${corteHora()}:59-03:00`, cfg('agz_painel_token'), c.resumo.map((r) => r.agzId)); c.erroOc = ''; }
     catch (e) { c.oc = null; c.erroOc = e.message; }
   }
   base.erroOc = base.ocAuto ? c.erroOc || '' : '';
@@ -1023,8 +1024,9 @@ async function lojaNoDia(l, d, renova) {
   base.soNoResumo = res ? [...res.values()].filter((r) => r.total + r.ocorrencias - r.pago > 0).map((r) => r.entregador) : []; // no Resumo, sem pedido no período da API
   return base;
 }
+const lojasAtivas = () => db.prepare('SELECT * FROM lojas WHERE ativa = 1 ORDER BY nome').all();
 async function conferenciaDoDia(d, renova) {
-  const lojas = db.prepare('SELECT * FROM lojas ORDER BY nome').all();
+  const lojas = lojasAtivas();
   return (await Promise.all(lojas.map((l) => lojaNoDia(l, d, renova)))).filter(Boolean);
 }
 const bloqueiosDo = (dia) => dia.flatMap((x) => { const lj = lojaCurta(x.loja.nome); return x.erro ? [`${lj}: ${x.erro}`] : [
@@ -1038,7 +1040,7 @@ const envioDo = (d) => db.prepare('SELECT e.*, u.nome por FROM envios e LEFT JOI
 const dataOk = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '') && !isNaN(Date.parse(d));
 
 app.get('/conferencia', so((r) => confere(r.user)), async (req, res, next) => { try {
-  const hoje = agora().data, lojas = db.prepare('SELECT * FROM lojas ORDER BY nome').all();
+  const hoje = agora().data, lojas = lojasAtivas();
   const datas = [...new Set(agenda(lojas, AG.soma(hoje, -10), AG.soma(hoje, 7)).map((p) => p.pagamento))].sort();
   const d = dataOk(req.query.d) ? req.query.d : datas.find((x) => x >= hoje && !envioDo(x)) || datas.find((x) => x >= hoje) || hoje;
   const dia = await conferenciaDoDia(d, req.query.renova === '1'), env = envioDo(d);
@@ -1056,10 +1058,10 @@ ${m.identidade ? '' : html`<p class="bad-t">Identidade pendente: vínculo pelo i
   const fonte = (x) => x.erro ? html`<span class="badge bad">Erro no Agilizone</span>` : x.resumo ? html`<span class="badge info">Resumo manual · ${quando(x.resumo.em)}</span> <span class="mut small">Valores com ocorrências e já pago, conferidos com a API.</span>` : x.ocAuto && !x.erroOc ? html`<span class="badge ok">Automático · taxas + ocorrências</span> <span class="mut small">Pedidos pela API e ocorrências pelo painel do Agilizone.</span>`
     : html`<span class="badge warn">Automático · só taxas</span> <span class="mut small">${x.erroOc || (x.loja.agz_store_id ? 'Falta o token do painel do Agilizone (Configurações > Lojas) para trazer as ocorrências.' : 'Falta o storeId desta loja (Configurações > Lojas) para trazer as ocorrências.')}</span>`;
   const comOc = (x) => x.resumo || x.itens.some((i) => i.ocAuto);
-  const tabLoja = (x) => html`<section class="card"><div class="card-h"><div class="t"><h2>${x.loja.nome}</h2><p>Pedidos de ${dataFmt(x.ini)} ${CONF_HORA}h a ${dataFmt(d)} ${CONF_HORA}h · centro de custo ${centroDa(x.loja)}</p></div></div>
+  const tabLoja = (x) => html`<section class="card"><div class="card-h"><div class="t"><h2>${x.loja.nome}</h2><p>Pedidos de ${dataFmt(x.ini)} ${CONF_INI} a ${dataFmt(d)} ${corteHora()} · centro de custo ${centroDa(x.loja)}</p></div></div>
 <div class="card-b" style="padding-bottom:0">${x.lojaAgz ? html`<p class="mut small" style="margin:0 0 8px">${icone('loja', 'sm')} Lendo a loja <b>${x.lojaAgz.nome}</b> no Agilizone${x.lojaAgz.lojas > 1 ? ` (a credencial enxerga ${x.lojaAgz.lojas} lojas; só esta entra)` : ''}.</p>` : ''}${fonte(x)}
 ${env ? '' : html`<details class="fold" style="margin-top:10px" ${x.resumo ? '' : ''}><summary class="mut small">${icone('chevron', 'chev')} ${x.resumo ? 'Trocar ou remover o Resumo manual' : 'Importação manual do Resumo (opcional: para incluir ocorrências e o já pago)'}</summary>
-<form method="post" action="/conferencia/resumo" enctype="multipart/form-data" class="linha-form" style="margin-top:10px" data-carregando="Lendo o Resumo…"><input type="hidden" name="d" value="${d}"><input type="hidden" name="loja" value="${x.loja.id}"><div class="field"><label for="res-${x.loja.id}">Resumo de entregas por entregador (.csv)</label><input id="res-${x.loja.id}" name="resumo" type="file" accept=".csv" required><p class="hint">No Agilizone: Relatório de Pedidos, filtro <b>${dataFmt(x.ini)} ${CONF_HORA}:00</b> a <b>${dataFmt(d)} ${CONF_HORA}:00</b> › Resumo de entregas por entregador › Exportar Resumo.</p></div><button class="btn btn-sec">${icone('subir', 'sm')} Importar</button></form>
+<form method="post" action="/conferencia/resumo" enctype="multipart/form-data" class="linha-form" style="margin-top:10px" data-carregando="Lendo o Resumo…"><input type="hidden" name="d" value="${d}"><input type="hidden" name="loja" value="${x.loja.id}"><div class="field"><label for="res-${x.loja.id}">Resumo de entregas por entregador (.csv)</label><input id="res-${x.loja.id}" name="resumo" type="file" accept=".csv" required><p class="hint">No Agilizone: Relatório de Pedidos, filtro <b>${dataFmt(x.ini)} ${CONF_INI}</b> a <b>${dataFmt(d)} ${corteHora()}</b> › Resumo de entregas por entregador › Exportar Resumo.</p></div><button class="btn btn-sec">${icone('subir', 'sm')} Importar</button></form>
 ${x.resumo ? html`<form method="post" action="/conferencia/resumo/remover" style="margin-top:8px"><input type="hidden" name="d" value="${d}"><input type="hidden" name="loja" value="${x.loja.id}"><button class="btn btn-ghost btn-sm">Remover o Resumo e voltar ao automático</button></form>` : ''}</details>`}</div>
 ${Object.keys(x.excluidos).length ? html`<div class="card-b"><div class="alert warn">${icone('info')}<div><b>Fora do pagamento (${Object.values(x.excluidos).reduce((s, e) => s + e.n, 0)} de ${x.totalApi} pedidos no período)</b> Só pedidos <b>finalizados com entregador</b> entram. Ficaram de fora: ${Object.entries(x.excluidos).map(([k, e]) => `${{ FINALIZADO_SEM_ENTREGADOR: 'finalizados sem entregador', CANCELED: 'cancelados' }[k] || k.toLowerCase()}: ${e.n} (${brl(e.valor)})`).join(' · ')}. É isso que explica a diferença para os cards do topo do Agilizone.</div></div></div>` : ''}
 ${x.soNoResumo.length ? html`<div class="card-b"><div class="alert bad">${icone('alerta')}<div>No Resumo, mas sem pedidos no período da API: ${x.soNoResumo.join(', ')}. Confira o filtro de datas do Resumo.</div></div></div>` : ''}
@@ -1073,20 +1075,22 @@ ${x.itens.length ? '' : html`<tr><td colspan="9">Nenhum pedido entregue no perí
   const topo = html`<div class="stats">${stat('carteira', 'pri', brl(total), `A pagar em ${diaLongo(d)}`, true)}${stat('moto', '', nEnt, 'Entregadores')}${stat('loja', lojasOk === dia.length ? 'ok' : 'warn', `${lojasOk}/${dia.length}`, 'Lojas prontas')}${stat(bloqueios.length ? 'alerta' : 'check', bloqueios.length ? 'bad' : 'ok', bloqueios.length, bloqueios.length ? 'Pendências para corrigir' : 'Sem pendências')}</div>`;
   const geral = html`<section class="card"><div class="card-h"><div class="t"><h2>Lojas que pagam ${diaLongo(d)}</h2><p>Valores puxados automaticamente do Agilizone. Clique na loja para ver os entregadores.</p></div></div>
 <div class="tw"><table><thead><tr><th>Loja</th><th>Período</th><th>Origem</th><th class="n">Entregadores</th><th class="n">Valor</th><th>Situação</th></tr></thead><tbody>
-${dia.map((x) => { const pend = bloqueiosDo([x]).length; return html`<tr><th scope="row"><a href="${url({ aba: x.loja.id })}">${lojaCurta(x.loja.nome)}</a></th><td>${dataFmt(x.ini)} ${CONF_HORA}h a ${dataFmt(d)} ${CONF_HORA}h</td><td>${x.erro ? '—' : x.resumo ? html`<span class="badge info">Resumo manual</span>` : html`<span class="badge nodot">Automático</span>`}</td><td class="n">${x.itens.length}</td><td class="n">${brl(x.itens.reduce((s, i) => s + i.valor, 0))}</td>
+${dia.map((x) => { const pend = bloqueiosDo([x]).length; return html`<tr><th scope="row"><a href="${url({ aba: x.loja.id })}">${lojaCurta(x.loja.nome)}</a></th><td>${dataFmt(x.ini)} ${CONF_INI} a ${dataFmt(d)} ${corteHora()}</td><td>${x.erro ? '—' : x.resumo ? html`<span class="badge info">Resumo manual</span>` : html`<span class="badge nodot">Automático</span>`}</td><td class="n">${x.itens.length}</td><td class="n">${brl(x.itens.reduce((s, i) => s + i.valor, 0))}</td>
 <td>${x.erro ? html`<span class="badge bad">Erro no Agilizone</span>` : pend ? html`<span class="badge bad">${pend} pendência(s)</span>` : html`<span class="badge ok">OK</span>`}</td></tr>`; })}
 ${dia.length ? '' : html`<tr><td colspan="6">Nenhuma loja paga neste dia.</td></tr>`}</tbody><tfoot><tr><th>Total</th><td></td><td></td><td class="n">${nEnt}</td><td class="n"><b>${brl(total)}</b></td><td></td></tr></tfoot></table></div></section>
 ${bloqueios.length ? html`<div class="alert bad" role="alert">${icone('alerta')}<div><b>Corrija antes de enviar (${bloqueios.length})</b><ul>${bloqueios.map((b) => html`<li>${b}</li>`)}</ul></div></div>` : ''}
 ${semPix ? html`<div class="alert warn">${icone('info')}<div>${semPix} entregador(es) sem chave Pix cadastrada. Não impede o envio (a planilha não leva o Pix).</div></div>` : ''}`;
   const semDrive = !cfg('drive_pasta') || !cfg('drive_credencial');
   const envio = env ? html`<section class="card"><div class="card-h"><span class="hico pri">${icone('check')}</span><div class="t"><h2>Enviado</h2><p>${quando(env.enviado_em)}${env.por ? ` por ${env.por}` : ''} · ${env.linhas} linhas · ${brl(env.total)}${env.para ? ` · e-mail para ${env.para}` : ''}</p></div></div>
-<div class="card-f"><a class="btn btn-sec" href="/conferencia/planilha?d=${d}">${icone('baixar')} Baixar planilha</a>${env.drive_id ? html`<a class="btn btn-ghost" href="https://drive.google.com/file/d/${env.drive_id}/view" target="_blank" rel="noopener">Abrir no Drive</a>` : html`<form method="post" action="/conferencia/drive"><input type="hidden" name="d" value="${d}"><button class="btn btn-pri">${icone('subir')} Enviar ao Drive</button></form>`}</div></section>`
+<div class="card-f"><a class="btn btn-sec" href="/conferencia/planilha?d=${d}">${icone('baixar')} Baixar planilha</a>${env.drive_id ? html`<a class="btn btn-ghost" href="https://drive.google.com/file/d/${env.drive_id}/view" target="_blank" rel="noopener">Abrir no Drive</a>` : html`<form method="post" action="/conferencia/drive"><input type="hidden" name="d" value="${d}"><button class="btn btn-pri">${icone('subir')} Enviar ao Drive</button></form>`}
+<a class="btn btn-ghost" href="/conferencia/entregues">Ver entregues</a></div>
+<form method="post" action="/conferencia/reenviar" class="card-b" data-carregando="Enviando…"><input type="hidden" name="d" value="${d}"><div class="field"><label for="re-d">Reenviar a planilha enviada para</label><textarea id="re-d" name="para" required>${env.para || cfg('email_para') || ''}</textarea></div><button class="btn btn-sec">${icone('enviar', 'sm')} Reenviar</button></form></section>`
     : html`${TESTE_LOCAL ? html`<div class="alert warn" role="note">${icone('alerta')}<div><b>MODO TESTE LOCAL</b> Pode enviar com cadastros incompletos. O e-mail vai com [TESTE] no assunto, nada é registrado (dá para enviar de novo) e não sobe no Drive.</div></div>` : ''}<form method="post" action="/conferencia/enviar" class="card" data-carregando="Enviando…"><input type="hidden" name="d" value="${d}"><div class="card-h"><span class="hico pri">${icone('enviar')}</span><div class="t"><h2>${TESTE_LOCAL ? '[TESTE] ' : ''}Enviar ${CONF.titulo(d)}</h2><p>Gera a planilha no modelo do financeiro, manda por e-mail para ${listaEmails(cfg('email_para')).join(', ') || 'os destinatários (não configurados)'}${semDrive ? '' : ' e sobe na pasta do Google Drive'}.</p></div></div>
 <div class="card-b">${semDrive ? html`<div class="alert warn">${icone('alerta')}<div>Google Drive não configurado (Configurações > Google Drive): a planilha vai só por e-mail.</div></div>` : ''}<label class="check"><input type="checkbox" name="ok" value="1" required ${bloqueios.length ? 'disabled' : ''}> Conferi todas as lojas e os valores estão corretos.</label>
 ${semOcorrencias(dia).length ? html`<label class="check"><input type="checkbox" name="sem_oc" value="1" required ${bloqueios.length ? 'disabled' : ''}> <span>Sem ocorrências em <b>${semOcorrencias(dia).map((x) => lojaCurta(x.loja.nome)).join(', ')}</b>: o painel do Agilizone não respondeu. Confirmo que não há ocorrências a pagar nelas neste período (ou que lanço à parte).</span></label>` : ''}</div>
 <div class="card-f"><a class="btn btn-sec" href="/conferencia/planilha?d=${d}">${icone('baixar')} Baixar planilha (prévia)</a><button class="btn btn-pri" ${bloqueios.length || !nEnt ? 'disabled' : ''}>${icone('enviar')} Enviar</button></div></form>`;
   res.send(page(req, { titulo: 'Conferência geral', compacto: true, eyebrow: 'Pagamento de entregadores', sub: `Pagamento de ${diaLongo(d)} · ${env ? 'Enviado' : 'Em conferência'}`,
-    acoes: html`<a class="btn btn-sec" href="${url({ renova: '1' })}" data-carregando="Buscando no Agilizone…">Atualizar do Agilizone</a>` }, html`
+    acoes: html`<a class="btn btn-ghost" href="/conferencia/entregues">Entregues</a> <a class="btn btn-sec" href="${url({ renova: '1' })}" data-carregando="Buscando no Agilizone…">Atualizar do Agilizone</a>` }, html`
 <nav class="pills" aria-label="Dia de pagamento">${datas.map((x) => html`<a href="/conferencia?d=${x}" class="${x === d ? 'on' : ''}">${dataFmt(x).slice(0, 5)} ${diaLongo(x).split(' ')[0]}${envioDo(x) ? ' ✓' : ''}</a>`)}<form method="get" class="linha-form" style="display:inline-flex"><label class="sr" for="c-d">Outra data</label><input id="c-d" type="date" name="d" value="${d}"><button class="btn btn-ghost btn-sm">Ir</button></form></nav>
 <nav class="seg" aria-label="Abas"><a href="${url({ aba: 'geral' })}" class="${aba === 'geral' ? 'on' : ''}">Geral</a>${dia.map((x) => html`<a href="${url({ aba: x.loja.id })}" class="${aba === String(x.loja.id) ? 'on' : ''}">${lojaCurta(x.loja.nome)}${bloqueiosDo([x]).length ? html`<span class="c">!</span>` : ''}</a>`)}</nav>
 ${topo}${aba === 'geral' ? geral : tabLoja(dia.find((x) => String(x.loja.id) === aba))}
@@ -1169,6 +1173,30 @@ app.post('/conferencia/enviar', so((r) => confere(r.user)), async (req, res, nex
   if (r.drive === 'ok') return volta(res, url, 'ok', `${r.titulo} enviado por e-mail e salvo no Google Drive.`);
   volta(res, url, 'erro', `E-mail enviado, mas o Drive falhou: ${r.drive.erro} Use "Enviar ao Drive" para tentar de novo.`);
 } catch (e) { next(e); } });
+// Reenvio de um pagamento já entregue: manda de novo a planilha exatamente como foi enviada (sem recalcular nada).
+app.post('/conferencia/reenviar', so((r) => confere(r.user)), async (req, res, next) => { try {
+  const d = String(req.body.d || ''), env = dataOk(d) && envioDo(d), volt = req.body.volta === 'entregues' ? '/conferencia/entregues' : `/conferencia?d=${d}`;
+  if (!env || !fs.existsSync(arqEnvio(d))) return volta(res, volt, 'erro', 'Envio não encontrado.');
+  const para = [...new Set(listaEmails(req.body.para).map((e) => e.toLowerCase()))], invalido = para.find((e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+  if (!para.length || invalido) return volta(res, volt, 'erro', invalido ? `E-mail inválido: ${invalido}.` : 'Informe para quem reenviar.');
+  const titulo = CONF.titulo(d);
+  try {
+    const r = await enviarEmail({ to: para.join(', '), subject: `[REENVIO] ${titulo}`, text: `Reenvio da planilha do pagamento de ${diaLongo(d)} (enviada originalmente em ${quando(env.enviado_em)}), sem alterações.\nReenviado por ${req.user.nome}.`, attachments: [{ filename: `${titulo}.xlsx`, content: fs.readFileSync(arqEnvio(d)) }] });
+    if (r.salvo && process.env.EMAIL_SO_ARQUIVO !== '1') return volta(res, volt, 'erro', 'Nada foi enviado: servidor de e-mail não configurado (Configurações > E-mail).');
+  } catch (e) { return volta(res, volt, 'erro', `Nada foi enviado: o servidor de e-mail recusou (${e.message}).`); }
+  log(req.user.id, 'conferencia', `Reenviou ${titulo} para ${para.join(', ')}`);
+  volta(res, volt, 'ok', `${titulo} reenviado para ${para.join(', ')}.`);
+} catch (e) { next(e); } });
+app.get('/conferencia/entregues', so((r) => confere(r.user)), (req, res) => {
+  const lista = db.prepare('SELECT e.*, u.nome por FROM envios e LEFT JOIN usuarios u ON u.id = e.enviado_por ORDER BY e.pagamento DESC LIMIT 100').all();
+  res.send(page(req, { titulo: 'Entregues', compacto: true, eyebrow: 'Pagamento de entregadores', sub: 'Planilhas já enviadas ao financeiro',
+    acoes: html`<a class="btn btn-sec" href="/conferencia">Em conferência</a>` }, html`
+<section class="card"><div class="tw"><table><thead><tr><th>Pagamento</th><th>Enviado</th><th>Por</th><th class="n">Linhas</th><th class="n">Total</th><th>Drive</th><th class="n">Ações</th></tr></thead><tbody>
+${lista.map((e) => html`<tr><th scope="row">${diaLongo(e.pagamento)}<small class="mut">${e.arquivo}</small></th><td>${quando(e.enviado_em)}<small class="mut">${e.para}</small></td><td>${e.por || 'Automático'}</td><td class="n">${e.linhas}</td><td class="n">${brl(e.total)}</td><td>${e.drive_id ? html`<a href="https://drive.google.com/file/d/${e.drive_id}/view" target="_blank" rel="noopener">Abrir</a>` : '—'}</td>
+<td class="n"><a class="btn btn-sec btn-sm" href="/conferencia?d=${e.pagamento}">Abrir</a> <a class="btn btn-ghost btn-sm" href="/conferencia/planilha?d=${e.pagamento}">Baixar</a>
+<details class="fold"><summary class="mut small">Reenviar</summary><form method="post" action="/conferencia/reenviar" data-carregando="Enviando…"><input type="hidden" name="d" value="${e.pagamento}"><input type="hidden" name="volta" value="entregues"><div class="field"><label class="sr" for="re-${e.pagamento}">Reenviar para</label><textarea id="re-${e.pagamento}" name="para" required>${e.para || cfg('email_para') || ''}</textarea></div><button class="btn btn-pri btn-sm">${icone('enviar', 'sm')} Reenviar</button></form></details></td></tr>`)}
+${lista.length ? '' : html`<tr><td colspan="7">Nenhum pagamento enviado ainda.</td></tr>`}</tbody></table></div></section>`));
+});
 app.post('/conferencia/drive', so((r) => confere(r.user)), async (req, res, next) => { try {
   const d = String(req.body.d || ''), url = `/conferencia?d=${d}`;
   if (!dataOk(d) || !envioDo(d)) throw falha('Envio não encontrado.');
@@ -1993,9 +2021,11 @@ ${ultimosAlertas.length ? html`<details class="fold" style="margin-top:8px"><sum
   const autoLigado = v('auto_fechamento') === '1', temToken = !!v('telegram_token'), tgOk = temToken && !!v('telegram_chat'), driveOk = !!(v('drive_pasta') && v('drive_credencial'));
   const faltas = [!autoLigado && 'fechamento automático desligado', semSmtp && 'servidor de e-mail', !nDest && 'destinatários do e-mail', !tgOk && 'Telegram (token e chat)', !driveOk && 'Google Drive (opcional)'].filter(Boolean);
   const automacao = html`<form method="post" action="/config/automacao" class="card cfg-estreito" id="automacao" data-guarda><div class="card-h"><span class="hico pri">${icone('enviar')}</span><div class="t"><h2>Fechamento automático e alertas no Telegram</h2><p>No dia de pagamento, o sistema puxa tudo do Agilizone, confere e, sem nenhuma pendência, gera a planilha no modelo e envia por e-mail e Drive. Com qualquer problema não envia nada e avisa no Telegram.</p></div></div><div class="card-b">
-<p class="cfg-sit ${autoLigado && tgOk && !semSmtp && nDest ? 'ok' : 'warn'}" role="status"><b>Situação real:</b> ${autoLigado ? `ligado: roda nos dias de pagamento depois das ${v('hora_fechamento') || '12:30'} (Teresina)` : 'desligado'}${faltas.filter((f) => f !== 'fechamento automático desligado').length ? `. Falta: ${faltas.filter((f) => f !== 'fechamento automático desligado').join(', ')}` : ''}.</p>
+<p class="cfg-sit ${autoLigado && tgOk && !semSmtp && nDest ? 'ok' : 'warn'}" role="status"><b>Situação real:</b> ${autoLigado ? `ligado: roda nos dias de pagamento depois das ${v('hora_fechamento') || '06:00'} (Teresina), com pedidos até ${v('hora_corte') || '05:00'} do dia do pagamento` : 'desligado'}${faltas.filter((f) => f !== 'fechamento automático desligado').length ? `. Falta: ${faltas.filter((f) => f !== 'fechamento automático desligado').join(', ')}` : ''}.</p>
 <div class="field" style="display:flex;gap:12px;align-items:flex-start"><label class="check" style="flex:1;margin:0;align-items:flex-start"><input type="checkbox" name="auto_fechamento" value="1" ${autoLigado ? 'checked' : ''} style="margin-top:3px"><span><b>Enviar o fechamento automaticamente</b><br><span class="mut small" style="font-weight:400">Depois do horário, nos dias de pagamento de cada loja. Se houver qualquer pendência (cadastro incompleto, erro no Agilizone, ocorrências não carregadas), não envia: avisa no Telegram e tenta de novo a cada 30 minutos.</span></span></label>
-<input type="time" name="hora_fechamento" value="${v('hora_fechamento') || '12:30'}" aria-label="Horário do fechamento automático" style="width:120px"></div>
+<input type="time" name="hora_fechamento" value="${v('hora_fechamento') || '06:00'}" aria-label="Horário do envio automático" style="width:120px"></div>
+<div class="fgrid"><div class="field"><label for="hora_corte">Pedidos contados até</label><input id="hora_corte" name="hora_corte" type="time" value="${v('hora_corte') || '05:00'}" required style="width:120px"><p class="hint">Hora do dia do pagamento em que o período termina (começa às 12:00 do 1º dia de referência). O envio precisa ser depois dela.</p></div>
+<div class="field"><label for="auto_email_para">Enviar a planilha para</label><textarea id="auto_email_para" name="email_para" style="min-height:70px" placeholder="financeiro@grupofornopaulista.com">${v('email_para')}</textarea><p class="hint">Um ou mais e-mails, um por linha ou separados por vírgula. Vale para o envio automático e o manual.</p></div></div>
 <details class="fold" style="margin-bottom:12px" ${tgOk ? '' : 'open'}><summary class="mut small">${icone('chevron', 'chev')} Como criar o bot do Telegram</summary><ol style="margin:8px 0 0 22px;line-height:1.7"><li>No Telegram, abra <b>@BotFather</b>, envie <b>/newbot</b> e siga os passos. Ele devolve o <b>token</b>.</li><li>Abra o seu bot e envie <b>oi</b> (para um grupo: adicione o bot ao grupo e escreva algo).</li><li>Cole o token abaixo e clique em <b>Descobrir chat</b>: o sistema lista o ID. Cole-o em Chat ID e salve.</li><li>Use <b>Enviar teste</b> para conferir.</li></ol></details>
 <div class="fgrid"><div class="field"><label for="telegram_token">Token do bot</label><input id="telegram_token" name="telegram_token" type="password" placeholder="${temToken ? '•••••••• (mantido)' : '123456789:AAxxxxxxxx'}" autocomplete="new-password"><p class="hint">${temToken ? 'Deixe vazio para manter o atual.' : 'Fica só no servidor.'}</p></div>
 <div class="field"><label for="telegram_chat">Chat ID</label><input id="telegram_chat" name="telegram_chat" value="${v('telegram_chat')}" inputmode="numeric" placeholder="123456789" autocomplete="off"></div></div>
@@ -2024,10 +2054,10 @@ ${leitura ? html`<p class="cal-leg"><b>Como o sistema lê:</b> ${leitura}</p>` :
 <div class="card-f"><button class="btn btn-pri">${icone('check')} Salvar</button></div></form>`;
   const lojasTab = html`${painel}<section class="card" aria-labelledby="lojas-t"><div class="card-h"><div class="t"><h2 id="lojas-t">Lojas e dias de pagamento <span class="c-n">${lojas.length}</span></h2><p>Alterar nome ou calendário não apaga fechamentos, entregadores nem histórico. Fechamentos já importados mantêm o pagamento previsto da época.</p></div><button type="button" class="btn btn-sec" data-abre="dlg-nl">${icone('mais', 'sm')} Nova loja</button></div>
 <div class="tw"><table class="tab-l"><thead><tr><th scope="col">Loja</th><th scope="col">Quando paga</th><th scope="col">Integração Agilizone</th><th scope="col" class="n">Fechamentos</th><th scope="col" class="n"><span class="sr">Ação</span></th></tr></thead><tbody>
-${lojas.map((l) => html`<tr><th scope="row">${l.nome}</th><td>${AG.textoCalendario(calendarioDa(l))}</td><td>${AGZ_API.configurada(l) ? html`<span class="badge ok">Conectada</span>` : html`<span class="badge warn">Sem credenciais</span>`}</td><td class="n">${l.n}</td><td class="n"><button type="button" class="btn btn-sec btn-sm" data-abre="dlg-l${l.id}" aria-label="Editar ${l.nome}">${icone('lapis', 'sm')} Editar</button></td></tr>`)}</tbody></table></div></section>
+${lojas.map((l) => html`<tr><th scope="row">${l.nome}${l.ativa ? '' : html` <span class="badge nodot">Desativada</span>`}</th><td>${AG.textoCalendario(calendarioDa(l))}</td><td>${AGZ_API.configurada(l) ? html`<span class="badge ok">Conectada</span>` : html`<span class="badge warn">Sem credenciais</span>`}</td><td class="n">${l.n}</td><td class="n"><button type="button" class="btn btn-sec btn-sm" data-abre="dlg-l${l.id}" aria-label="Editar ${l.nome}">${icone('lapis', 'sm')} Editar</button></td></tr>`)}</tbody></table></div></section>
 ${lojas.map((l) => { const p = `l${l.id}`, dados = ctx.abrir === p ? ctx.valores : { nome: l.nome, calendario: l.calendario || AG.PADRAO }; return html`<dialog id="dlg-${p}" class="dlg sheet ent-sheet" aria-labelledby="t-${p}" ${ctx.abrir === p ? new Raw('data-abrir') : ''}><h2 id="t-${p}">Editar ${l.nome}</h2><p>${l.n} fechamento(s) · ${AGZ_API.configurada(l) ? 'integração conectada' : 'sem credenciais do Agilizone'}</p>
 <div class="alert bad aviso-renomear" role="alert">${icone('alerta')}<div><b>NÃO RENOMEIE A LOJA</b>O nome liga a loja ao Agilizone: as credenciais, os arquivos e a importação dependem dele. Renomear derruba a integração até as variáveis do servidor serem trocadas.</div></div>
-<form method="post" action="/config/lojas/${l.id}" data-guarda><input type="hidden" name="rev" value="${revisao(l.nome, l.calendario || AG.PADRAO)}">${calCampos(p, dados.nome, dados.calendario, !superAdmin(req.user))}<div class="acoes-f"><button type="button" class="btn btn-ghost" data-fecha>Cancelar</button><button class="btn btn-pri">${icone('check', 'sm')} Salvar loja</button></div></form>
+<form method="post" action="/config/lojas/${l.id}" data-guarda><input type="hidden" name="rev" value="${revisao(l.nome, l.calendario || AG.PADRAO)}">${calCampos(p, dados.nome, dados.calendario, !superAdmin(req.user))}<input type="hidden" name="ativa_f" value="1"><label class="check" style="margin-bottom:12px"><input type="checkbox" name="ativa" value="1" ${l.ativa ? 'checked' : ''}><span><b>Loja ativa</b><br><span class="mut small" style="font-weight:400">Desmarque para esconder a loja da Conferência, do fechamento automático e dos alertas (ex.: sem entregadores). Nada é apagado; é só marcar de novo para voltar.</span></span></label><div class="acoes-f"><button type="button" class="btn btn-ghost" data-fecha>Cancelar</button><button class="btn btn-pri">${icone('check', 'sm')} Salvar loja</button></div></form>
 <div class="cfg-agz">${agzStatus(l)}<p class="hint">As credenciais ficam no servidor e seus nomes vêm do nome da loja: ao renomear, ajuste as variáveis (${AGZ_API.variaveis(l).id} e ${AGZ_API.variaveis(l).secret}) ou a integração para de funcionar.</p>${AGZ_API.configurada(l) ? html`<form method="post" action="/config/lojas/${l.id}/agilizone"><button class="btn btn-sec">${icone('check', 'sm')} Testar conexão com o Agilizone</button></form>` : ''}</div></dialog>`; })}
 <dialog id="dlg-nl" class="dlg sheet ent-sheet" aria-labelledby="t-nl" ${ctx.abrir === 'nl' ? new Raw('data-abrir') : ''}><h2 id="t-nl">Nova loja</h2><p>Depois de criar, defina as credenciais do Agilizone no servidor.</p><form method="post" action="/config/lojas" data-guarda>${calCampos('nl', ctx.abrir === 'nl' ? ctx.valores.nome : '', ctx.abrir === 'nl' ? ctx.valores.calendario : AG.PADRAO)}
 <div class="acoes-f"><button type="button" class="btn btn-ghost" data-fecha>Cancelar</button><button class="btn btn-pri">${icone('mais', 'sm')} Adicionar loja</button></div></form></dialog>`;
@@ -2123,7 +2153,7 @@ const salvaLoja = (req, res) => {
   let cal;
   if (req.body.calendario != null) { try { cal = AG.lerCalendario(req.body.calendario); } catch (e) { erros.calendario = `Calendário inválido: ${e.message}`; } }
   if (Object.keys(erros).length) { return telaConfig(req, res, { aba: 'lojas', erros, abrir: p, valores: { nome, calendario: String(req.body.calendario ?? '') }, status: 422 }); }
-  if (id) db.prepare('UPDATE lojas SET nome = ?, calendario = COALESCE(?, calendario) WHERE id = ?').run(nome, cal ? String(req.body.calendario).trim() : null, id);
+  if (id) db.prepare('UPDATE lojas SET nome = ?, calendario = COALESCE(?, calendario), ativa = CASE WHEN ? THEN ? ELSE ativa END WHERE id = ?').run(nome, cal ? String(req.body.calendario).trim() : null, req.body.ativa_f ? 1 : 0, req.body.ativa ? 1 : 0, id);
   else db.prepare('INSERT INTO lojas (nome, calendario) VALUES (?, ?)').run(nome, cal ? String(req.body.calendario).trim() : AG.PADRAO);
   log(req.user.id, 'config', `${id ? 'Alterou loja #' + id : 'Criou loja'} "${nome}"${cal ? ` · pagamentos: ${AG.textoCalendario(cal)}` : ''}`);
   volta(res, '/config?aba=lojas', 'ok', `Loja ${nome} salva.`);
@@ -2167,13 +2197,16 @@ app.post('/config/lojas/:id', so((r) => r.user.perfil === 'admin'), salvaLoja);
 
 // Fechamento automático + Telegram (token e chat id). O token nunca aparece na tela nem no log.
 function salvaAutomacao(req) {
-  const b = req.body, hora = String(b.hora_fechamento || '12:30'), chat = String(b.telegram_chat || '').trim(), tk = String(b.telegram_token || '').trim();
-  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(hora)) throw falha('Horário inválido.');
+  const b = req.body, hora = String(b.hora_fechamento || '06:00'), corte = String(b.hora_corte || '05:00'), chat = String(b.telegram_chat || '').trim(), tk = String(b.telegram_token || '').trim();
+  const emails = [...new Set(listaEmails(b.email_para).map((e) => e.toLowerCase()))], invalido = emails.find((e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(hora) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(corte)) throw falha('Horário inválido.');
+  if (hora < corte) throw falha(`O envio (${hora}) não pode ser antes do horário de corte dos pedidos (${corte}).`);
+  if (invalido) throw falha(`E-mail inválido: ${invalido}. Use e-mails completos, um por linha ou separados por vírgula.`);
   if (chat && !/^-?\d+$/.test(chat)) throw falha('Chat ID inválido: só números (o de grupo começa com -).');
   if (tk && !/^\d+:[\w-]{20,}$/.test(tk)) throw falha('Token do bot inválido: ele tem o formato 123456789:AAxxxxxxxx (do @BotFather).');
   const set = db.prepare('INSERT INTO config (chave, valor) VALUES (?, ?) ON CONFLICT (chave) DO UPDATE SET valor = excluded.valor');
-  tx(() => { set.run('auto_fechamento', b.auto_fechamento ? '1' : '0'); set.run('hora_fechamento', hora); set.run('telegram_chat', chat); if (tk) set.run('telegram_token', tk); });
-  log(req.user.id, 'config', `Fechamento automático: ${b.auto_fechamento ? `ligado às ${hora}` : 'desligado'}; Telegram: ${chat ? `chat ${chat}` : 'sem chat'}${tk ? '; token alterado' : ''}`);
+  tx(() => { set.run('auto_fechamento', b.auto_fechamento ? '1' : '0'); set.run('hora_fechamento', hora); set.run('hora_corte', corte); if (b.email_para !== undefined) set.run('email_para', emails.join(', ')); set.run('telegram_chat', chat); if (tk) set.run('telegram_token', tk); });
+  log(req.user.id, 'config', `Fechamento automático: ${b.auto_fechamento ? `ligado às ${hora}` : 'desligado'}; corte dos pedidos ${corte}; e-mails: ${emails.join(', ') || 'nenhum'}; Telegram: ${chat ? `chat ${chat}` : 'sem chat'}${tk ? '; token alterado' : ''}`);
 }
 const comAutomacao = (fn) => (req, res, next) => (async () => { // salva os campos do formulário e depois executa a ação do botão
   try { salvaAutomacao(req); } catch (e) { if (!e.publico) throw e; return volta(res, '/config?aba=alertas', 'erro', e.message); }
@@ -2219,7 +2252,7 @@ async function verificarAlertas() {
   try {
     const { data: hoje, hora } = agora(), url = cfg('app_url').replace(/\/$/, '');
     const ligado = (k) => cfg(k) !== '0', horario = (k, p) => hora >= (cfg(k) || p);
-    const lojas = db.prepare('SELECT * FROM lojas ORDER BY nome').all();
+    const lojas = lojasAtivas();
     const emails = (sql, ...a) => db.prepare(`SELECT email FROM usuarios WHERE ativo = 1 AND email IS NOT NULL AND ${sql}`).all(...a).map((x) => x.email);
     const ti = emails("perfil = 'admin'");
     const link = url ? `\n\nAbrir o sistema: ${url}` : '';
@@ -2279,8 +2312,8 @@ const textoOk = (e, dia) => `${e.drive?.erro ? '⚠️' : '✅'} ${e.titulo} env
 async function fechamentoAutomatico() {
   if (fechando || TESTE_LOCAL || process.env.ALERTAS === '0' || cfg('auto_fechamento') !== '1') return; // no modo teste local o automático não roda
   const { data: d, hora } = agora();
-  if (hora < (cfg('hora_fechamento') || '12:30')) return;
-  if (!agenda(db.prepare('SELECT * FROM lojas').all(), d, d).length || envioDo(d)) return; // hoje ninguém paga, ou já foi enviado
+  if (hora < (cfg('hora_fechamento') || '06:00')) return;
+  if (!agenda(lojasAtivas(), d, d).length || envioDo(d)) return; // hoje ninguém paga, ou já foi enviado
   const t = tentFechamento.get(d);
   if (t && Date.now() - t.em < TENTAR_A_CADA) return;
   fechando = true;

@@ -107,4 +107,12 @@ test('conferente: vê todas as lojas, completa o cadastro (CNPJ) e envia a plani
   assert.strictEqual(fm['G2'].z, '_-* #,##0.00_-;\\-* #,##0.00_-;_-* "-"??_-;_-@_-', 'formato contábil do modelo');
   assert.strictEqual(fm['A2'].z, 'dd/mm/yyyy');
   assert.match(await post(ck, '/conferencia/enviar', { d: D, ok: '1' }), /já foi enviado/);
+  // Entregues: lista o enviado e permite reenviar a mesma planilha; o período termina no corte (05:00 por padrão)
+  const ent = await (await get(ck, '/conferencia/entregues')).text();
+  assert.ok(ent.includes('23-11-2026 - MOTOBOYS') && ent.includes('Reenviar'), 'lista os entregues');
+  assert.ok((await (await get(ck, `/conferencia?d=${D}`)).text()).includes('20/11/2026 12:00 a 23/11/2026 05:00'), 'período até 05:00');
+  assert.match(await post(ck, '/conferencia/reenviar', { d: D, para: 'outro@exemplo.com', volta: 'entregues' }), /reenviado para outro@exemplo.com/);
+  assert.match(await post(ck, '/conferencia/reenviar', { d: D, para: 'ruim' }), /E-mail inválido/);
+  const eml = fs.readdirSync(path.join(DIR, 'emails')).map((f) => fs.readFileSync(path.join(DIR, 'emails', f), 'utf8')).find((t) => t.includes('Subject: [REENVIO]'));
+  assert.ok(eml && eml.includes('outro@exemplo.com'), 'e-mail de reenvio');
 });

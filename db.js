@@ -132,6 +132,7 @@ if (!db.prepare("SELECT sql FROM sqlite_master WHERE name = 'usuarios'").get().s
 if (!temColuna('motoboys', 'nome_completo')) db.exec('ALTER TABLE motoboys ADD COLUMN nome_completo TEXT');
 // Conferência geral: um envio por data de pagamento (todas as lojas juntas), com a planilha gerada.
 // storeId da loja no painel do Agilizone (ledger.agilizone.com: ocorrências e acertos dos entregadores).
+if (!temColuna('lojas', 'ativa')) db.exec('ALTER TABLE lojas ADD COLUMN ativa INTEGER NOT NULL DEFAULT 1'); // 0 = desativada: some da Conferência, do fechamento automático e dos alertas
 if (!temColuna('lojas', 'agz_store_id')) db.exec('ALTER TABLE lojas ADD COLUMN agz_store_id TEXT');
 // Só vale o storeId do painel (24 letras/números). O código com traços é da API oficial (outro id) e foi gravado por engano antes: limpa.
 db.exec("UPDATE lojas SET agz_store_id = NULL WHERE agz_store_id IS NOT NULL AND agz_store_id NOT GLOB '[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]'");

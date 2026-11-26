@@ -55,12 +55,14 @@ async function get(l, caminho, params) {
 }
 
 // Todos os pedidos da loja entre de e ate (ISO com fuso), página por página (máx. 100 por página).
+// Uma credencial pode autorizar VÁRIAS lojas e /orders devolve todas elas: filtra pela loja do cadastro (storeId + conferência do pedido).
 async function pedidos(l, de, ate) {
-  const todos = [];
+  const sid = await lojaDoFiltro(l), todos = [];
+  const daLoja = (o) => !sid || !o.store?.id || String(o.store.id) === String(sid);
   for (let page = 1; page <= 100; page++) {
-    const j = await get(l, '/orders', { from: de, to: ate, page, pageSize: 100 });
+    const j = await get(l, '/orders', { from: de, to: ate, page, pageSize: 100, ...(sid ? { storeId: sid } : {}) });
     todos.push(...j.data);
-    if (!j.data.length || todos.length >= j.total) return todos;
+    if (!j.data.length || todos.length >= j.total) return todos.filter(daLoja);
   }
   throw erro('Pedidos demais para uma importação só. Importe um período menor.');
 }
@@ -73,9 +75,11 @@ function paraImportacao(orders, { tz = 'America/Fortaleza', de = '0000-01-01', a
   const local = (iso) => { const p = Object.fromEntries(fmt.formatToParts(new Date(iso)).map((x) => [x.type, x.value])); return `${p.day}/${p.month}/${p.year} ${p.hour}:${p.minute}:${p.second}`; };
   const lista = [], por = new Map();
   let semEntregador = 0, naoFinalizados = 0, fora = 0;
+  const excluidos = {}; // o que o pagamento deixa de fora, por status: { COMPLETED_SEM_ENTREGADOR|CANCELED|...: { n, valor (centavos) } }
+  const exclui = (k, o) => { const x = (excluidos[k] ||= { n: 0, valor: 0 }); x.n++; x.valor += typeof o.deliverymanFee === 'number' ? Math.round(o.deliverymanFee * 100) : 0; };
   for (const o of orders) {
-    if (o.status !== 'COMPLETED') { naoFinalizados++; continue; }
-    if (!o.deliveryman) { semEntregador++; continue; }
+    if (o.status !== 'COMPLETED') { naoFinalizados++; exclui(o.status, o); continue; }
+    if (!o.deliveryman) { semEntregador++; exclui('FINALIZADO_SEM_ENTREGADOR', o); continue; }
     if (typeof o.deliverymanFee !== 'number') throw erro('O Agilizone não liberou a taxa do entregador para esta loja. Peça ao desenvolvedor do Agilizone para liberar o escopo DELIVERYMAN_FEES.');
     const dia = diaOperacional(local(o.createdAt));
     if (!dia) throw erro(`Pedido ${o.orderDisplayNumber} sem data válida.`);
@@ -86,18 +90,20 @@ function paraImportacao(orders, { tz = 'America/Fortaleza', de = '0000-01-01', a
     const r = por.get(e.id) || { entregador: nome, agzId: e.id, pedidos: 0, cpf: null, pix: null, total: 0, pago: 0, ocorrencias: 0, qtdOc: 0 };
     r.pedidos++; r.total += taxa; por.set(e.id, r);
   }
-  return { pedidos: lista, resumo: [...por.values()], semEntregador, naoFinalizados, fora };
+  return { pedidos: lista, resumo: [...por.values()], semEntregador, naoFinalizados, fora, excluidos };
 }
 
 // Entregadores que aparecem nos pedidos dos últimos dias (a API não tem lista de entregadores): id e nome mais recente.
 // A janela máxima da API é de cerca de 3 meses.
 // GET /deliverymen traz todos os vinculados (e cpf/pixKeys se a credencial tiver DELIVERYMAN_PAYOUT); sem o escopo DELIVERYMEN (403), cai nos pedidos.
 async function listaDeliverymen(l) {
-  const out = [];
+  const out = [], sid = await lojaDoFiltro(l);
+  let vistos = 0; // a parada conta o que a API devolveu, não só o que ficou depois do filtro de loja
   for (let page = 1; page <= 1000; page++) {
     const j = await get(l, '/deliverymen', { page, pageSize: 100 });
-    for (const d of j.data) out.push({ id: d.id, nome: String(d.name || '').trim() || `Entregador ${d.id}`, cpf: d.cpf || null, pix: (d.pixKeys || [])[0] || null });
-    if (!j.data.length || out.length >= j.total) return out;
+    vistos += j.data.length;
+    for (const d of j.data) if (!sid || !d.stores?.length || d.stores.some((s) => String(s.storeId) === String(sid))) out.push({ id: d.id, nome: String(d.name || '').trim() || `Entregador ${d.id}`, cpf: d.cpf || null, pix: (d.pixKeys || [])[0] || null });
+    if (!j.data.length || vistos >= j.total) return out;
   }
   return out;
 }
@@ -114,6 +120,34 @@ async function testa(l) {
   const ate = new Date(), de = new Date(ate.getTime() - 7 * 864e5);
   const j = await get(l, '/orders', { from: de.toISOString(), to: ate.toISOString(), page: 1, pageSize: 5 });
   return { total: j.total, taxa: j.data.length ? j.data.every((o) => typeof o.deliverymanFee === 'number') : null };
+}
+
+// storeId da loja, pela própria credencial da API oficial (GET /stores): a única loja autorizada, ou a de mesmo nome.
+const lojasCache = new Map(); // id da credencial -> { em, lista } (10 min)
+const semAc = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+async function lojasDaCredencial(l) {
+  const k = credenciais(l)?.id, c = lojasCache.get(k);
+  if (c && Date.now() - c.em < 600e3) return c.lista;
+  const lista = ((await get(l, '/stores', { page: 1, pageSize: 100 })).data || []).filter((s) => s && s.id != null && typeof s.name === 'string');
+  lojasCache.set(k, { em: Date.now(), lista });
+  return lista;
+}
+async function storeId(l) {
+  const lista = await lojasDaCredencial(l);
+  return (lista.length === 1 ? lista[0] : lista.find((s) => semAc(s.name) === semAc(l.nome)))?.id || null;
+}
+// Qual loja do Agilizone os dados desta loja estão lendo (para a tela mostrar): { id, nome, lojas } ou null.
+async function lojaLida(l) {
+  try { const sid = await lojaDoFiltro(l), lista = await lojasDaCredencial(l), s = lista.find((x) => String(x.id) === String(sid)); return s ? { id: s.id, nome: s.name, lojas: lista.length } : null; } catch { return null; }
+}
+// Loja para filtrar pedidos/entregadores. Credencial com várias lojas: só segue se alguma tiver o nome da loja (senão misturaria as lojas).
+async function lojaDoFiltro(l) {
+  let lista;
+  try { lista = await lojasDaCredencial(l); } catch (e) { if (/erro (403|404)/.test(e.message)) return null; throw e; } // sem /stores na credencial: sem filtro
+  if (lista.length <= 1) return lista[0]?.id ?? null;
+  const s = lista.find((x) => semAc(x.name) === semAc(l.nome));
+  if (!s) throw erro(`A credencial de ${l.nome} enxerga ${lista.length} lojas (${lista.map((x) => x.name).join(', ')}) e nenhuma tem esse nome. O nome da loja em Configurações precisa ser igual ao do Agilizone, senão pedidos de lojas diferentes se misturam.`);
+  return s.id;
 }
 
 // ---- Painel (ledger.agilizone.com): ocorrências dos entregadores ----
@@ -159,4 +193,4 @@ async function ocorrencias(storeId, de, ate, manual) {
   return por;
 }
 
-module.exports = { ocorrencias, tokenPainelExpira, painelLogin, configurada, variaveis, pedidos, entregadores, paraImportacao, testa };
+module.exports = { ocorrencias, storeId, lojaLida, tokenPainelExpira, painelLogin, configurada, variaveis, pedidos, entregadores, paraImportacao, testa };

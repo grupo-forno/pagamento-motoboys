@@ -18,6 +18,7 @@ const TK = `x.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) 
 before(async () => {
   mock = http.createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
+    if (req.url.startsWith('/stores')) return res.end(JSON.stringify({ data: [{ id: '6a03160245f42a2cff69ab95', name: 'Loja' }], page: 1, pageSize: 100, total: 1 }));
     if (req.url === '/auth/login') { let b = ''; req.on('data', (c) => (b += c)); return req.on('end', () => { const j = JSON.parse(b); if (j.email !== 'painel@exemplo.com' || j.password !== 'segredo') { res.statusCode = 401; return res.end('{}'); } res.end(JSON.stringify({ jwt: TK })); }); }
     if (req.url.startsWith('/occurrences')) return res.end(req.headers.authorization === `Bearer ${TK}` ? JSON.stringify([{ deliverymanId: '7', value: 250, name: 'Outros', description: 'retirada virou entrega' }]) : '[]');
     if (req.url.startsWith('/auth/token')) return res.end(JSON.stringify({ access_token: 'tok', expires_in: 86400 }));
@@ -31,7 +32,7 @@ before(async () => {
   const v = variaveis(sul);
   const creds = Object.fromEntries(db.prepare('SELECT * FROM lojas').all().flatMap((l) => [[variaveis(l).id, 'cid'], [variaveis(l).secret, 's']])); // todas conectadas (Agilizone falso)
   db.prepare("INSERT INTO config (chave, valor) VALUES ('email_para', 'fin@exemplo.com')").run();
-  db.prepare("UPDATE lojas SET agz_store_id = '6a03160245f42a2cff69ab95'").run();
+  // sem storeId cadastrado: o sistema descobre por GET /stores
   db.prepare('INSERT INTO usuarios (nome, login, senha, perfil) VALUES (?,?,?,?)').run('Conf', 'conf', hashSenha('senha12345'), 'conferente');
   srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '0', SYNC_ENTREGADORES: '0', EMAIL_SO_ARQUIVO: '1', AGILIZONE_URL: `http://127.0.0.1:${mock.address().port}`, AGILIZONE_LEDGER_URL: `http://127.0.0.1:${mock.address().port}`, AGILIZONE_AUTH_URL: `http://127.0.0.1:${mock.address().port}`, AGILIZONE_PAINEL_EMAIL: 'painel@exemplo.com', AGILIZONE_PAINEL_SENHA: 'segredo', ...creds } });
   srv.stderr.on('data', (d) => process.stderr.write(d));

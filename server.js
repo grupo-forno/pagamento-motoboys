@@ -139,6 +139,47 @@ app.post('/login', (req, res) => {
   res.redirect('/');
 });
 
+// ---------- API do Apps Script (pasta MOTOBOYS no Drive) ----------
+// Fora do login por cookie: autentica por segredo (variável DRIVE_SCRIPT_SEGREDO, mín. 24 caracteres) no cabeçalho Authorization: Bearer.
+// O script lista os pendentes, baixa cada .xlsx, grava na pasta e confirma com o ID do arquivo no Drive.
+const nomeDrive = (f) => `${(f.pagamento || f.data_fim).split('-').reverse().join('-')}-motoboys${f.id}.xlsx`;
+const enfileiraDrive = (f) => db.prepare('INSERT OR IGNORE INTO drive_fila (fechamento_id, arquivo) VALUES (?, ?)').run(f.id, nomeDrive(f));
+const apiDrive = express.Router();
+apiDrive.use((req, res, next) => {
+  const seg = process.env.DRIVE_SCRIPT_SEGREDO || '', dado = /^Bearer (.+)$/.exec(req.headers.authorization || '')?.[1] || '';
+  if (seg.length < 24) return res.status(503).json({ erro: 'API do Drive desligada: defina DRIVE_SCRIPT_SEGREDO (mínimo 24 caracteres) no servidor.' });
+  const a = crypto.createHash('sha256').update(dado).digest(), b = crypto.createHash('sha256').update(seg).digest();
+  if (!crypto.timingSafeEqual(a, b)) return res.status(401).json({ erro: 'Não autorizado.' });
+  next();
+});
+apiDrive.get('/pendentes', (req, res) => res.json({ pendentes: db.prepare('SELECT fechamento_id id, arquivo, tentativas FROM drive_fila WHERE drive_id IS NULL ORDER BY criado_em, fechamento_id LIMIT 50').all()
+  .map((p) => ({ ...p, download: `/api/drive/fechamentos/${p.id}/xlsx` })) }));
+apiDrive.get('/fechamentos/:id/xlsx', (req, res) => {
+  const q = db.prepare('SELECT * FROM drive_fila WHERE fechamento_id = ?').get(Number(req.params.id)), f = q && carregaF(q.fechamento_id);
+  if (!f) return res.status(404).json({ erro: 'Fechamento não encontrado na fila.' });
+  const buf = xlsxFechamento(f, grade(f));
+  res.set({ 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': `attachment; filename="${q.arquivo}"`, 'X-Arquivo': q.arquivo, 'X-Content-SHA256': crypto.createHash('sha256').update(buf).digest('hex') }).send(buf);
+});
+// Confirmação idempotente: repetir devolve 200 e mantém o primeiro ID gravado.
+apiDrive.post('/fechamentos/:id/confirmar', express.json({ limit: '10kb' }), (req, res) => {
+  const id = Number(req.params.id), q = db.prepare('SELECT * FROM drive_fila WHERE fechamento_id = ?').get(id), driveId = String(req.body?.driveId || '');
+  if (!q) return res.status(404).json({ erro: 'Fechamento não encontrado na fila.' });
+  if (!/^[\w-]{10,100}$/.test(driveId)) return res.status(400).json({ erro: 'driveId inválido.' });
+  if (q.drive_id) return res.json({ ok: true, repetido: true, driveId: q.drive_id });
+  db.prepare("UPDATE drive_fila SET drive_id = ?, gravado_em = datetime('now','localtime'), erro = NULL WHERE fechamento_id = ? AND drive_id IS NULL").run(driveId, id);
+  log(null, `f:${id}`, `Planilha ${q.arquivo} gravada na pasta do Google Drive`);
+  res.json({ ok: true, repetido: false, driveId });
+});
+// Falha informada pelo script: o fechamento continua pendente; só registra o motivo (e no histórico, se mudou).
+apiDrive.post('/fechamentos/:id/falha', express.json({ limit: '10kb' }), (req, res) => {
+  const id = Number(req.params.id), q = db.prepare('SELECT * FROM drive_fila WHERE fechamento_id = ?').get(id), erro = String(req.body?.erro || 'erro').slice(0, 300);
+  if (!q) return res.status(404).json({ erro: 'Fechamento não encontrado na fila.' });
+  db.prepare('UPDATE drive_fila SET tentativas = tentativas + 1, erro = ? WHERE fechamento_id = ? AND drive_id IS NULL').run(erro, id);
+  if (!q.drive_id && q.erro !== erro) log(null, `f:${id}`, `Gravação no Google Drive falhou (segue pendente): ${erro}`);
+  res.json({ ok: true });
+});
+app.use('/api/drive', apiDrive);
+
 app.use((req, res, next) => {
   const sid = /(?:^|;\s*)sid=([a-f0-9]{64})/.exec(req.headers.cookie || '')?.[1];
   if (sid) req.user = db.prepare('SELECT u.*, l.nome loja FROM sessoes s JOIN usuarios u ON u.id = s.usuario_id LEFT JOIN lojas l ON l.id = u.loja_id WHERE s.token = ? AND s.expira > ? AND u.ativo = 1 AND u.perfil <> \'motoboy\'').get(sid, Date.now());
@@ -1502,6 +1543,7 @@ app.post('/fechamentos/:fid/enviar', so((r) => podeEditar(r.user, r.f)), async (
     const atual = carregaF(f.id);
     if (atual.status !== 'rascunho' || atual.versao !== f.versao) return false;
     db.prepare("UPDATE fechamentos SET status = 'enviado', versao = versao + 1, enviado_em = datetime('now','localtime'), enviado_por = ?, justificativa = ? WHERE id = ?").run(req.user.id, just, f.id);
+    enfileiraDrive(f); // planilha deste fechamento vai para a pasta do Drive (Apps Script)
     if (just) log(req.user.id, `f:${f.id}`, `Justificou a diferença com o Resumo (${difs.map((l) => `${l.nome}: pedidos ${brl(l.bruto)}, Resumo ${brl(l.resumo || 0)}`).join('; ')}): ${just}`);
     // Congela o PIX de cada entregador como foi enviado ao financeiro.
     const ls = grade(f).linhas;

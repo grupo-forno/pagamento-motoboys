@@ -141,6 +141,10 @@ db.exec(`CREATE TABLE IF NOT EXISTS conf_resumo (pagamento TEXT NOT NULL, loja_i
   arquivo TEXT, em TEXT NOT NULL DEFAULT (datetime('now','localtime')), por INTEGER, PRIMARY KEY (pagamento, loja_id));`);
 db.exec(`CREATE TABLE IF NOT EXISTS envios (id INTEGER PRIMARY KEY, pagamento TEXT NOT NULL UNIQUE, arquivo TEXT NOT NULL,
   total INTEGER NOT NULL, linhas INTEGER NOT NULL, para TEXT, drive_id TEXT, enviado_em TEXT NOT NULL DEFAULT (datetime('now','localtime')), enviado_por INTEGER);`);
+// Fila de planilhas (.xlsx) a gravar na pasta do Google Drive pelo Apps Script (ele busca; o app nunca fala com o Drive).
+// drive_id preenchido = gravado e confirmado. Uma linha por fechamento: reenvios do mesmo fechamento não duplicam.
+db.exec(`CREATE TABLE IF NOT EXISTS drive_fila (fechamento_id INTEGER PRIMARY KEY REFERENCES fechamentos ON DELETE CASCADE, arquivo TEXT NOT NULL,
+  criado_em TEXT NOT NULL DEFAULT (datetime('now','localtime')), drive_id TEXT, gravado_em TEXT, tentativas INTEGER NOT NULL DEFAULT 0, erro TEXT);`);
 if (!temColuna('ajustes', 'substituido_em')) recria('ajustes', AJUSTES);
 db.exec('CREATE INDEX IF NOT EXISTS pedidos_fechamento ON pedidos (fechamento_id)'); // soma dos pedidos por fechamento sem varrer a tabela inteira (listas ficavam em dezenas de segundos)
 db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS pedidos_validos ON pedidos (loja_id, chave) WHERE ativo = 1;

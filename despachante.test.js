@@ -160,6 +160,10 @@ test('D5b envio simultâneo e repetido: uma transição, uma notificação, um r
   assert.deepStrictEqual({ ...db.prepare('SELECT status, versao FROM fechamentos WHERE id = ?').get(fid) }, { status: 'enviado', versao: 1 });
   assert.strictEqual(n("SELECT COUNT(*) n FROM log WHERE ref = ? AND acao LIKE 'Enviou ao financeiro%'", `f:${fid}`), 1);
   assert.strictEqual(n("SELECT COUNT(*) n FROM log WHERE ref = ? AND acao LIKE 'E-mail (solicitação) enviado%'", `f:${fid}`), 1);
+  const q = db.prepare('SELECT arquivo, drive_id FROM drive_fila WHERE fechamento_id = ?').all(fid); // planilha entra na fila do Drive uma única vez
+  assert.strictEqual(q.length, 1);
+  assert.match(q[0].arquivo, new RegExp(`^\\d{2}-\\d{2}-\\d{4}-motoboys${fid}\\.xlsx$`));
+  assert.strictEqual(q[0].drive_id, null);
 });
 
 test('D5c falha do e-mail: envio já vale, não repete por tentativa nova nem por cliques paralelos, e o reenvio recupera sem duplicar o fechamento', async () => {

@@ -581,3 +581,11 @@ body.auth.operacional .btn-pri{box-shadow:none}
 html.recolhido .side .marca-t{display:none!important}
 html.recolhido .side .brand{justify-content:center;gap:0}
 html.recolhido .side .brand .logo-h{height:36px}
+
+/* Conferência geral e Entregues: rodapé de totais inteiro na mesma cor, e o seletor de data alinhado às pílulas */
+.tab-conf tfoot th,.tab-conf tfoot td{background:var(--surface-2);border-top:2px solid var(--bd-2);font-weight:700;padding-top:12px;padding-bottom:12px}
+.pills form{display:inline-flex;gap:6px;align-items:center;margin-left:auto}
+.pills form input[type=date]{height:34px;padding:0 10px}
+.pills form .btn{height:34px}
+.tab-conf td .fold{margin-top:6px;text-align:left}.tab-conf td form{margin:0}.tab-conf td .btn+.btn,.tab-conf td form+details{margin-top:6px}
+.tab-conf td textarea{min-height:60px;width:100%;min-width:220px}

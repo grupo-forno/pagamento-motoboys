@@ -61,6 +61,7 @@ test('conferente: vê todas as lojas, completa o cadastro (CNPJ) e envia a plani
   assert.strictEqual((await get(ck, '/')).headers.get('location'), '/conferencia');
   let h = await (await get(ck, `/conferencia?d=${D}`)).text();
   assert.ok(h.includes('Lojas que pagam') && h.includes('Automático'), 'aba geral');
+  assert.ok(h.includes('conferente operacional'), 'mesmo tema (fundo branco) dos outros perfis');
   assert.ok(h.includes('falta nome completo'), 'bloqueia sem nome completo/CPF');
   assert.ok(/<button class="btn btn-pri" disabled>/.test(h), 'envio bloqueado');
   // completa o cadastro (um com CNPJ); os mesmos ids do Agilizone aparecem em todas as lojas do teste
@@ -112,6 +113,12 @@ test('conferente: vê todas as lojas, completa o cadastro (CNPJ) e envia a plani
   assert.strictEqual(db.prepare('SELECT arquivo FROM drive_fila_envios WHERE envio_id = ?').get(e.id).arquivo, `23-11-2026-motoboys${e.id}.xlsx`);
   assert.ok((await (await get(ck, `/conferencia?d=${D}`)).text()).includes('Na fila do Drive'));
   assert.match(await post(ck, '/conferencia/drive', { d: D }), /fila|já foi gravada/);
+  // gravada no Drive: sem "refazer" nada muda; com "refazer" volta à fila para o script gravar de novo (arquivo apagado)
+  db.prepare("UPDATE drive_fila_envios SET drive_id = '1AbCdEfGhIjKlMnOp' WHERE envio_id = ?").run(e.id);
+  assert.ok((await (await get(ck, `/conferencia?d=${D}`)).text()).includes('Reenviar ao Drive'));
+  assert.match(await post(ck, '/conferencia/drive', { d: D }), /já foi gravada/);
+  assert.match(await post(ck, '/conferencia/drive', { d: D, refazer: '1' }), /de volta na fila/);
+  assert.strictEqual(db.prepare('SELECT drive_id FROM drive_fila_envios WHERE envio_id = ?').get(e.id).drive_id, null);
   // Entregues: lista o enviado e permite reenviar a mesma planilha; o período termina no corte (05:00 por padrão)
   const ent = await (await get(ck, '/conferencia/entregues')).text();
   assert.ok(ent.includes('23-11-2026 - MOTOBOYS') && ent.includes('Reenviar'), 'lista os entregues');

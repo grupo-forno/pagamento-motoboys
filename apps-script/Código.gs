@@ -2,13 +2,14 @@
  * App Entregadores → pasta MOTOBOYS do Google Drive.
  *
  * Grava a planilha da Conferência geral (uma por data de pagamento, todas as lojas juntas) e as dos fechamentos por loja.
- * A cada execução (acionador de 5 em 5 minutos) o script:
+ * O app aciona o script na hora (doPost, abaixo): ao clicar em "Enviar ao Drive" e no horário automático do dia do fechamento.
+ * Opcionalmente, um acionador (ex.: de hora em hora) pode rodar `sincronizar` como rede de segurança. A cada execução o script:
  *   1. pede ao app a lista de fechamentos pendentes;
  *   2. para cada um: se já existe na pasta um arquivo com o nome exato, só confirma; senão baixa o .xlsx,
  *      valida (HTTP 200, assinatura de .xlsx, tamanho e SHA-256) e grava na pasta;
  *   3. só depois de gravar, confirma ao app com o ID do arquivo no Drive.
  * Se algo falhar em um fechamento, ele continua pendente (será tentado de novo) e o script segue com os demais.
- * Sem refresh_token e sem implantação como App da Web: o script roda como a conta que o autorizou (Editora na pasta).
+ * Sem refresh_token no app: o script roda como a conta que o autorizou (Editora na pasta).
  *
  * Propriedades do script (Configurações do projeto > Propriedades do script):
  *   APP_URL   endereço do app, sem barra no fim (ex.: https://entregadores.exemplo.com.br)
@@ -20,12 +21,34 @@ var MIME_XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.she
 var NOME_VALIDO = /^\d{2}-\d{2}-\d{4}-motoboys\d+\.xlsx$/;
 var TAMANHO_MINIMO = 1000; // um .xlsx válido nunca é menor que isso
 
-/** Função do acionador. */
+/**
+ * Acionamento pelo app (App da Web): o app faz um POST com {"segredo": "..."} quando você clica em "Enviar ao Drive" e no horário
+ * automático do dia do fechamento. O script então roda a sincronização na hora e responde com o resultado.
+ * Implantar: Implantar > Nova implantação > App da Web > Executar como: Eu > Quem pode acessar: Qualquer pessoa (a proteção é o SEGREDO).
+ */
+function doPost(e) {
+  try {
+    var cfg = configuracao_();
+    var corpo = {};
+    try { corpo = JSON.parse(e.postData.contents); } catch (x) { /* corpo inválido: cai em não autorizado */ }
+    if (!corpo.segredo || corpo.segredo !== cfg.segredo) return resposta_({ ok: false, erro: 'Não autorizado.' });
+    var r = sincronizar();
+    return resposta_({ ok: true, pendentes: r.pendentes, gravados: r.gravados, falhas: r.falhas, ocupado: !!r.ocupado });
+  } catch (err) {
+    return resposta_({ ok: false, erro: String(err && err.message || err) });
+  }
+}
+
+function resposta_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+/** Sincroniza os pendentes (chamada pelo doPost e, se quiser, por um acionador de segurança). */
 function sincronizar() {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(30 * 1000)) {
     console.warn('Outra execução está em andamento; esta foi ignorada.');
-    return;
+    return { ocupado: true, pendentes: 0, gravados: 0, falhas: 0 };
   }
   try {
     var cfg = configuracao_();
@@ -46,6 +69,7 @@ function sincronizar() {
       }
     });
     console.log('Concluído: ' + gravados + ' confirmado(s), ' + falhas + ' com falha.');
+    return { pendentes: pendentes.length, gravados: gravados, falhas: falhas };
   } finally {
     lock.releaseLock();
   }

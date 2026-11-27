@@ -72,14 +72,13 @@ test('corrigido o cadastro: envia sozinho (e-mail + planilha) e confirma no Tele
   assert.strictEqual(msgs.filter((x) => /^✅/.test(x.text)).length, 1);
 });
 
-test('Configurações: teste do Telegram, descobrir chat e validação (o token nunca volta na tela)', async () => {
+test('Configurações: teste do Telegram e validação (o token nunca volta na tela)', async () => {
   const ck = (await fetch(`${B}/login`, { method: 'POST', body: new URLSearchParams({ login: 'adm', senha: 'senha12345' }), redirect: 'manual' })).headers.get('set-cookie').split(';')[0];
   const post = async (url, dados) => decodeURIComponent((await fetch(B + url, { method: 'POST', headers: { cookie: ck }, body: new URLSearchParams(dados), redirect: 'manual' })).headers.get('location') || '');
   const base = { auto_fechamento: '1', hora_fechamento: '12:30', telegram_chat: '42', telegram_token: '' };
   const antes = msgs.length;
   assert.match(await post('/config/automacao/teste', base), /Mensagem de teste enviada/);
   assert.ok(msgs.length > antes && /Teste do sistema/.test(msgs.at(-1).text));
-  assert.match(await post('/config/automacao/descobrir', base), /Vic Teste = 987/);
   assert.match(await post('/config/automacao', { ...base, telegram_token: 'lixo' }), /Token do bot inválido/);
   assert.match(await post('/config/automacao', { ...base, hora_fechamento: '25:99' }), /Horário inválido/);
   assert.match(await post('/config/automacao', { ...base, telegram_chat: 'abc' }), /Chat ID inválido/);

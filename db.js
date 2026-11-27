@@ -145,6 +145,10 @@ db.exec(`CREATE TABLE IF NOT EXISTS envios (id INTEGER PRIMARY KEY, pagamento TE
 // drive_id preenchido = gravado e confirmado. Uma linha por fechamento: reenvios do mesmo fechamento não duplicam.
 db.exec(`CREATE TABLE IF NOT EXISTS drive_fila (fechamento_id INTEGER PRIMARY KEY REFERENCES fechamentos ON DELETE CASCADE, arquivo TEXT NOT NULL,
   criado_em TEXT NOT NULL DEFAULT (datetime('now','localtime')), drive_id TEXT, gravado_em TEXT, tentativas INTEGER NOT NULL DEFAULT 0, erro TEXT);`);
+// Quem recebe os alertas do Telegram: pede com /start ao bot (pendente) e um administrador aprova.
+db.exec(`CREATE TABLE IF NOT EXISTS telegram_dest (chat_id TEXT PRIMARY KEY, nome TEXT NOT NULL, tipo TEXT NOT NULL DEFAULT 'conversa',
+  status TEXT NOT NULL DEFAULT 'pendente' CHECK (status IN ('pendente','aprovado')), pediu_em TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  aprovado_em TEXT, aprovado_por INTEGER);`);
 // Idem para a planilha da Conferência geral (uma por data de pagamento, com todas as lojas): envios.id é o "ID do fechamento" no nome.
 db.exec(`CREATE TABLE IF NOT EXISTS drive_fila_envios (envio_id INTEGER PRIMARY KEY REFERENCES envios ON DELETE CASCADE, arquivo TEXT NOT NULL,
   criado_em TEXT NOT NULL DEFAULT (datetime('now','localtime')), drive_id TEXT, gravado_em TEXT, tentativas INTEGER NOT NULL DEFAULT 0, erro TEXT);`);

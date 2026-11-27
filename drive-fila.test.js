@@ -71,3 +71,39 @@ test('autenticação, pendentes, download do .xlsx e confirmação repetível', 
   assert.strictEqual(db.prepare('SELECT drive_id FROM drive_fila WHERE fechamento_id = ?').get(fid).drive_id, '1AbCdEfGhIjKlMnOp');
   await para();
 });
+
+test('App da Web: botão "Enviar ao Drive" grava na hora e o horário do dia do fechamento aciona o script sozinho', async () => {
+  const http = require('node:http');
+  const { hashSenha } = require('./db');
+  let chamadas = []; let ok = true;
+  const web = http.createServer((req, res) => { // App da Web de mentira: grava (marca a fila) e responde como o script
+    let b = ''; req.on('data', (c) => (b += c));
+    req.on('end', () => {
+      const j = JSON.parse(b); chamadas.push(j);
+      if (j.segredo !== SEGREDO) return res.end(JSON.stringify({ ok: false, erro: 'Não autorizado.' }));
+      if (ok) db.prepare("UPDATE drive_fila_envios SET drive_id = '1GravadoPeloScript01', gravado_em = datetime('now') WHERE drive_id IS NULL").run();
+      res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ ok: true, gravados: ok ? 1 : 0, falhas: ok ? 0 : 1 }));
+    });
+  });
+  await new Promise((r) => web.listen(0, '127.0.0.1', r));
+  const novoEnvio = (pag) => { const id = Number(db.prepare("INSERT INTO envios (pagamento, arquivo, total, linhas) VALUES (?, 'x.xlsx', 100, 1)").run(pag).lastInsertRowid); db.prepare('INSERT INTO drive_fila_envios (envio_id, arquivo) VALUES (?, ?)').run(id, `x-motoboys${id}.xlsx`); return id; };
+  db.prepare("INSERT INTO usuarios (nome, login, senha, perfil) VALUES ('Adm', 'adm', ?, 'admin')").run(hashSenha('senha12345'));
+  const e1 = novoEnvio('2026-11-10');
+  await sobe({ DRIVE_SCRIPT_SEGREDO: SEGREDO, DRIVE_SCRIPT_URL: `http://127.0.0.1:${web.address().port}`, ALERTAS: '', FECHAMENTO_PASSO_MS: '300', FECHAMENTO_RETRY_MS: '800' });
+  const ck = (await fetch(`${B}/login`, { method: 'POST', body: new URLSearchParams({ login: 'adm', senha: 'senha12345' }), redirect: 'manual' })).headers.get('set-cookie').split(';')[0];
+  const post = async (u, dados) => decodeURIComponent((await fetch(B + u, { method: 'POST', headers: { cookie: ck }, body: new URLSearchParams(dados), redirect: 'manual' })).headers.get('location') || '');
+  try {
+  // 1) o agendador (data passada: não espera a hora) aciona sozinho e a fila fica gravada
+  const espera = async (c, ms = 10000) => { const f = Date.now() + ms; while (Date.now() < f) { if (c()) return true; await new Promise((r) => setTimeout(r, 100)); } return false; };
+  assert.ok(await espera(() => db.prepare('SELECT drive_id FROM drive_fila_envios WHERE envio_id = ?').get(e1).drive_id), 'agendador acionou o script');
+  assert.ok(chamadas.length >= 1 && chamadas[0].segredo === SEGREDO);
+  // 2) botão: grava na hora (volta à fila com "refazer" e o script regrava)
+  const antes = chamadas.length;
+  assert.match(await post('/conferencia/drive', { d: '2026-11-10', refazer: '1' }), /gravada de novo no Drive/);
+  assert.ok(chamadas.length > antes, 'botão acionou o script');
+  // 3) script falhando: avisa que ficou na fila e não finge sucesso
+  ok = false;
+  assert.match(await post('/conferencia/drive', { d: '2026-11-10', refazer: '1' }), /ficou na fila, mas não gravou agora/);
+  assert.strictEqual(db.prepare('SELECT drive_id FROM drive_fila_envios WHERE envio_id = ?').get(e1).drive_id, null);
+  } finally { await para(); web.closeAllConnections(); web.close(); }
+});

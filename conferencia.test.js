@@ -109,7 +109,7 @@ test('conferente: vê todas as lojas, completa o cadastro (CNPJ) e envia a plani
   assert.strictEqual(fm['A2'].z, 'dd/mm/yyyy');
   assert.match(await post(ck, '/conferencia/enviar', { d: D, ok: '1' }), /já foi enviado/);
   // Drive via Apps Script: a planilha entra na fila com o nome DD-MM-AAAA-motoboys{ID do envio}.xlsx
-  assert.match(loc, /Apps Script grava na pasta/);
+  assert.match(loc, /entrou na fila e o Apps Script grava/);
   assert.strictEqual(db.prepare('SELECT arquivo FROM drive_fila_envios WHERE envio_id = ?').get(e.id).arquivo, `23-11-2026-motoboys${e.id}.xlsx`);
   assert.ok((await (await get(ck, `/conferencia?d=${D}`)).text()).includes('Na fila do Drive'));
   assert.match(await post(ck, '/conferencia/drive', { d: D }), /fila|já foi gravada/);

@@ -1,14 +1,16 @@
-// Alertas pelo Telegram (bot). Token e chats ficam em Configurações (ou TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID no servidor).
-// Cadastro automático: quem abre o link de convite (t.me/<bot>?start=<código>) e toca em Iniciar é cadastrado para receber os alertas.
-const crypto = require('node:crypto');
+// Alertas pelo Telegram (bot). O token fica em Configurações (ou TELEGRAM_BOT_TOKEN no servidor).
+// Quem recebe: pessoas que mandam /start ao bot ficam em "Pedidos para receber" até um administrador aprovar (tabela telegram_dest).
+// Ids antigos digitados à mão (config telegram_chat / TELEGRAM_CHAT_ID) continuam valendo.
 const { cfg } = require('./relatorio');
 const { db } = require('./db');
 
 const BASE = () => (process.env.TELEGRAM_API_URL || 'https://api.telegram.org').replace(/\/$/, '');
-const ids = () => [...new Set(String(cfg('telegram_chat') || '').split(/[\s,;]+/).filter(Boolean))];
-const configurado = () => !!(cfg('telegram_token') && ids().length);
 const grava = (k, v) => db.prepare('INSERT INTO config (chave, valor) VALUES (?, ?) ON CONFLICT (chave) DO UPDATE SET valor = excluded.valor').run(k, String(v));
-const nomes = () => { try { return JSON.parse(cfg('telegram_nomes') || '{}'); } catch { return {}; } };
+const legado = () => String(cfg('telegram_chat') || '').split(/[\s,;]+/).filter(Boolean);
+const aprovados = () => db.prepare("SELECT * FROM telegram_dest WHERE status = 'aprovado' ORDER BY aprovado_em, pediu_em").all();
+const pendentes = () => db.prepare("SELECT * FROM telegram_dest WHERE status = 'pendente' ORDER BY pediu_em").all();
+const ids = () => [...new Set([...aprovados().map((x) => x.chat_id), ...legado()])];
+const configurado = () => !!(cfg('telegram_token') && ids().length);
 
 async function api(metodo, corpo) {
   const token = cfg('telegram_token');
@@ -28,50 +30,48 @@ async function avisar(texto) {
   const falha = rs.find((r) => r.status === 'rejected');
   return rs.some((r) => r.status === 'fulfilled') ? { enviado: true } : { enviado: false, motivo: falha?.reason?.message || 'erro' };
 }
+const paraChat = (chat_id, text) => api('sendMessage', { chat_id, text }).catch(() => {}); // mensagem a uma pessoa; falha não importa
 
-// Quem falou com o bot (para descobrir o chat id): [{ id, nome }]
-async function chats() {
-  const up = await api('getUpdates', { limit: 100 }), por = new Map();
-  for (const u of up) { const c = (u.message || u.channel_post || u.my_chat_member)?.chat; if (c) por.set(String(c.id), { id: String(c.id), nome: c.title || [c.first_name, c.last_name].filter(Boolean).join(' ') || c.username || '(sem nome)' }); }
-  return [...por.values()];
+// Usuário do bot (para o link t.me/<bot>); guardado depois da primeira consulta.
+async function botUser() {
+  let u = cfg('telegram_bot_user');
+  if (!u && cfg('telegram_token')) { u = (await api('getMe', {})).username || ''; if (u) grava('telegram_bot_user', u); }
+  return u;
 }
 
-// ---- Cadastro automático por link de convite ----
-const convite = (novo = false) => { // código secreto do link; sem ele ninguém se cadastra só por achar o bot
-  let c = cfg('telegram_convite');
-  if (!c || novo) { c = crypto.randomBytes(12).toString('base64url'); grava('telegram_convite', c); }
-  return c;
-};
-async function link() { // https://t.me/<bot>?start=<código>
-  if (!cfg('telegram_token')) return '';
-  let u = cfg('telegram_bot_user');
-  if (!u) { u = (await api('getMe', {})).username || ''; if (u) grava('telegram_bot_user', u); }
-  return u ? `https://t.me/${u}?start=${convite()}` : '';
+// ---- Aprovação de quem quer receber ----
+const aprova = (id, usuario) => db.prepare("UPDATE telegram_dest SET status = 'aprovado', aprovado_em = datetime('now','localtime'), aprovado_por = ? WHERE chat_id = ? AND status = 'pendente'").run(usuario ?? null, String(id)).changes > 0;
+function remove(id) { // recusa um pedido ou remove quem já recebe (inclui id antigo digitado à mão)
+  id = String(id);
+  const n = db.prepare('DELETE FROM telegram_dest WHERE chat_id = ?').run(id).changes, l = legado();
+  if (l.includes(id)) { grava('telegram_chat', l.filter((x) => x !== id).join(',')); return true; }
+  return n > 0;
 }
 const nomeDe = (c) => c.title || [c.first_name, c.last_name].filter(Boolean).join(' ') || c.username || String(c.id);
-const responde = (chat_id, text) => api('sendMessage', { chat_id, text }).catch(() => {});
 
-// Lê as mensagens novas: "/start <código>" cadastra o chat; "/parar" descadastra. Retorna os cadastrados/removidos nesta rodada.
+// Lê as mensagens novas do bot: "/start" cria um pedido (a aprovar), "/parar" tira a pessoa. Retorna o que aconteceu nesta rodada.
 async function sincroniza() {
   if (!cfg('telegram_token')) return [];
+  await botUser().catch(() => {});
   const off = Number(cfg('telegram_offset')) || 0, eventos = [];
   const up = await api('getUpdates', { offset: off || undefined, limit: 50, timeout: 0, allowed_updates: ['message'] });
   for (const u of up) {
-    const m = u.message, texto = String(m?.text || '').trim(), chat = m?.chat;
+    const m = u.message, chat = m?.chat, cmd = /^\/(start|parar)(?:@\w+)?(?:\s+\S+)?$/i.exec(String(m?.text || '').trim());
     grava('telegram_offset', u.update_id + 1);
-    if (!chat) continue;
-    const id = String(chat.id), lista = ids(), cmd = /^\/(start|parar)(?:@\w+)?(?:\s+(\S+))?$/i.exec(texto);
-    if (!cmd) continue;
+    if (!chat || !cmd) continue;
+    const id = String(chat.id), nome = nomeDe(chat), tipo = chat.type === 'private' ? 'conversa' : 'grupo', row = db.prepare('SELECT status FROM telegram_dest WHERE chat_id = ?').get(id);
     if (cmd[1].toLowerCase() === 'parar') {
-      if (lista.includes(id)) { grava('telegram_chat', lista.filter((x) => x !== id).join(',')); eventos.push({ id, nome: nomeDe(chat), acao: 'removido' }); await responde(id, 'Pronto: você não receberá mais os alertas. Para voltar, use o link de cadastro do sistema.'); }
+      if (remove(id)) { eventos.push({ id, nome, acao: 'saiu dos alertas' }); await paraChat(id, 'Pronto: você não receberá mais os alertas. Para voltar, envie /start.'); }
       continue;
     }
-    if (cmd[2] && cmd[2] === cfg('telegram_convite')) {
-      if (!lista.includes(id)) { grava('telegram_chat', [...lista, id].join(',')); grava('telegram_nomes', JSON.stringify({ ...nomes(), [id]: nomeDe(chat) })); eventos.push({ id, nome: nomeDe(chat), acao: 'cadastrado' }); }
-      await responde(id, lista.includes(id) ? '✅ Você já estava cadastrado(a) para receber os alertas do Pagamento de Entregadores.' : '✅ Cadastrado(a)! Você vai receber aqui os alertas do Pagamento de Entregadores (envios e erros). Para sair, envie /parar.');
-    } else await responde(id, 'Para receber os alertas, abra o link de cadastro que está no sistema (Configurações > Alertas > Telegram).');
+    if (row?.status === 'aprovado' || legado().includes(id)) { await paraChat(id, '✅ Você já recebe os alertas do Pagamento de Entregadores. Para sair, envie /parar.'); continue; }
+    if (row) { await paraChat(id, 'Seu pedido já foi enviado e está aguardando aprovação.'); continue; }
+    db.prepare("INSERT INTO telegram_dest (chat_id, nome, tipo, status) VALUES (?, ?, ?, 'pendente')").run(id, nome, tipo);
+    eventos.push({ id, nome, acao: 'pediu para receber os alertas' });
+    await paraChat(id, 'Pedido enviado! Assim que um administrador aprovar, você começa a receber os alertas aqui.');
+    if (ids().length) await avisar(`🔔 ${nome} pediu para receber os alertas. Aprove em Configurações › Alertas.`);
   }
   return eventos;
 }
 
-module.exports = { avisar, chats, configurado, ids, nomes, convite, link, sincroniza };
+module.exports = { avisar, configurado, ids, legado, aprovados, pendentes, aprova, remove, botUser, paraChat, sincroniza };

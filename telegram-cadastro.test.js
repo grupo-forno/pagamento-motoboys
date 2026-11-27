@@ -29,8 +29,7 @@ before(async () => {
   });
   await new Promise((ok) => tg.listen(0, '127.0.0.1', ok));
   db.prepare("INSERT INTO usuarios (nome, login, senha, perfil) VALUES ('Adm', 'adm', ?, 'admin')").run(hashSenha('senha12345'));
-  db.prepare("INSERT INTO config (chave, valor) VALUES ('telegram_token', ?)").run(TOKEN);
-  srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '', SYNC_ENTREGADORES: '0', FECHAMENTO_PASSO_MS: '300', TELEGRAM_API_URL: `http://127.0.0.1:${tg.address().port}` } });
+  srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '', SYNC_ENTREGADORES: '0', FECHAMENTO_PASSO_MS: '300', TELEGRAM_BOT_TOKEN: TOKEN, TELEGRAM_API_URL: `http://127.0.0.1:${tg.address().port}` } });
   srv.stderr.on('data', (d) => process.stderr.write(d));
   await new Promise((ok, erro) => { srv.stdout.on('data', (d) => String(d).includes('Pagamento Entregadores') && ok()); srv.on('exit', erro); });
 });

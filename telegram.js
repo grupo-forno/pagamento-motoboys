@@ -1,4 +1,4 @@
-// Alertas pelo Telegram (bot). O token fica em Configurações (ou TELEGRAM_BOT_TOKEN no servidor).
+// Alertas pelo Telegram (bot). O token NUNCA fica na tela nem no banco: só na variável TELEGRAM_BOT_TOKEN (servidor, ou .env no computador local).
 // Quem recebe: pessoas que mandam /start ao bot ficam em "Pedidos para receber" até um administrador aprovar (tabela telegram_dest).
 // Ids antigos digitados à mão (config telegram_chat / TELEGRAM_CHAT_ID) continuam valendo.
 const { cfg } = require('./relatorio');
@@ -10,13 +10,14 @@ const legado = () => String(cfg('telegram_chat') || '').split(/[\s,;]+/).filter(
 const aprovados = () => db.prepare("SELECT * FROM telegram_dest WHERE status = 'aprovado' ORDER BY aprovado_em, pediu_em").all();
 const pendentes = () => db.prepare("SELECT * FROM telegram_dest WHERE status = 'pendente' ORDER BY pediu_em").all();
 const ids = () => [...new Set([...aprovados().map((x) => x.chat_id), ...legado()])];
-const configurado = () => !!(cfg('telegram_token') && ids().length);
+const token = () => process.env.TELEGRAM_BOT_TOKEN || '';
+const configurado = () => !!(token() && ids().length);
 
 async function api(metodo, corpo) {
-  const token = cfg('telegram_token');
-  if (!token) throw new Error('Token do bot do Telegram não configurado.');
+  const t = token();
+  if (!t) throw new Error('Token do bot do Telegram não configurado (variável TELEGRAM_BOT_TOKEN no servidor).');
   let r;
-  try { r = await fetch(`${BASE()}/bot${token}/${metodo}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corpo), signal: AbortSignal.timeout(15000) }); }
+  try { r = await fetch(`${BASE()}/bot${t}/${metodo}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corpo), signal: AbortSignal.timeout(15000) }); }
   catch { throw new Error('Não consegui falar com o Telegram.'); } // sem a URL na mensagem: ela leva o token
   const j = await r.json().catch(() => ({}));
   if (!r.ok || !j.ok) throw new Error(`Telegram recusou: ${j.description || `erro ${r.status}`}`);
@@ -34,8 +35,10 @@ const paraChat = (chat_id, text) => api('sendMessage', { chat_id, text }).catch(
 
 // Usuário do bot (para o link t.me/<bot>); guardado depois da primeira consulta.
 async function botUser() {
+  const bid = token().split(':')[0]; // trocou o bot (token novo): esquece o usuário e a posição de leitura do bot anterior
+  if (bid && cfg('telegram_bot_id') !== bid) { grava('telegram_bot_id', bid); grava('telegram_bot_user', ''); grava('telegram_offset', '0'); }
   let u = cfg('telegram_bot_user');
-  if (!u && cfg('telegram_token')) { u = (await api('getMe', {})).username || ''; if (u) grava('telegram_bot_user', u); }
+  if (!u && token()) { u = (await api('getMe', {})).username || ''; if (u) grava('telegram_bot_user', u); }
   return u;
 }
 
@@ -51,7 +54,7 @@ const nomeDe = (c) => c.title || [c.first_name, c.last_name].filter(Boolean).joi
 
 // Lê as mensagens novas do bot: "/start" cria um pedido (a aprovar), "/parar" tira a pessoa. Retorna o que aconteceu nesta rodada.
 async function sincroniza() {
-  if (!cfg('telegram_token')) return [];
+  if (!token()) return [];
   await botUser().catch(() => {});
   const off = Number(cfg('telegram_offset')) || 0, eventos = [];
   const up = await api('getUpdates', { offset: off || undefined, limit: 50, timeout: 0, allowed_updates: ['message'] });

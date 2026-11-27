@@ -36,11 +36,11 @@ before(async () => {
   });
   await Promise.all([mock, tg].map((s) => new Promise((ok) => s.listen(0, '127.0.0.1', ok))));
   const set = db.prepare('INSERT INTO config (chave, valor) VALUES (?, ?)');
-  for (const [k, v] of [['auto_fechamento', '1'], ['hora_fechamento', '00:00'], ['telegram_token', TOKEN], ['telegram_chat', '42'], ['email_para', 'fin@exemplo.com']]) set.run(k, v);
+  for (const [k, v] of [['auto_fechamento', '1'], ['hora_fechamento', '00:00'], ['telegram_chat', '42'], ['email_para', 'fin@exemplo.com']]) set.run(k, v);
   const creds = Object.fromEntries(db.prepare('SELECT * FROM lojas').all().flatMap((l) => [[variaveis(l).id, 'cid'], [variaveis(l).secret, 's']]));
   db.prepare("INSERT INTO usuarios (nome, login, senha, perfil) VALUES ('Adm', 'adm', ?, 'admin')").run(hashSenha('senha12345'));
   srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '', SYNC_ENTREGADORES: '0', EMAIL_SO_ARQUIVO: '1',
-    AGORA_TESTE: `${D} 13:00`, FECHAMENTO_PASSO_MS: '300', FECHAMENTO_RETRY_MS: '800', TELEGRAM_API_URL: `http://127.0.0.1:${tg.address().port}`,
+    TELEGRAM_BOT_TOKEN: TOKEN, AGORA_TESTE: `${D} 13:00`, FECHAMENTO_PASSO_MS: '300', FECHAMENTO_RETRY_MS: '800', TELEGRAM_API_URL: `http://127.0.0.1:${tg.address().port}`,
     AGILIZONE_URL: `http://127.0.0.1:${mock.address().port}`, ...creds } });
   srv.stderr.on('data', (d) => process.stderr.write(d));
   await new Promise((ok, erro) => { srv.stdout.on('data', (d) => String(d).includes('Pagamento Entregadores') && ok()); srv.on('exit', erro); });
@@ -75,11 +75,10 @@ test('corrigido o cadastro: envia sozinho (e-mail + planilha) e confirma no Tele
 test('Configurações: teste do Telegram e validação (o token nunca volta na tela)', async () => {
   const ck = (await fetch(`${B}/login`, { method: 'POST', body: new URLSearchParams({ login: 'adm', senha: 'senha12345' }), redirect: 'manual' })).headers.get('set-cookie').split(';')[0];
   const post = async (url, dados) => decodeURIComponent((await fetch(B + url, { method: 'POST', headers: { cookie: ck }, body: new URLSearchParams(dados), redirect: 'manual' })).headers.get('location') || '');
-  const base = { auto_fechamento: '1', hora_fechamento: '12:30', telegram_chat: '42', telegram_token: '' };
+  const base = { auto_fechamento: '1', hora_fechamento: '12:30', telegram_chat: '42' };
   const antes = msgs.length;
   assert.match(await post('/config/automacao/teste', base), /Mensagem de teste enviada/);
   assert.ok(msgs.length > antes && /Teste do sistema/.test(msgs.at(-1).text));
-  assert.match(await post('/config/automacao', { ...base, telegram_token: 'lixo' }), /Token do bot inválido/);
   assert.match(await post('/config/automacao', { ...base, hora_fechamento: '25:99' }), /Horário inválido/);
   assert.match(await post('/config/automacao', { ...base, telegram_chat: 'abc' }), /Chat ID inválido/);
   const tela = await (await fetch(`${B}/config?aba=alertas`, { headers: { cookie: ck } })).text();
@@ -89,7 +88,7 @@ test('Configurações: teste do Telegram e validação (o token nunca volta na t
 test('teste agendado: roda o fluxo de verdade, manda só ao e-mail de teste, não registra nada e avisa no Telegram uma vez', async () => {
   const ck = (await fetch(`${B}/login`, { method: 'POST', body: new URLSearchParams({ login: 'adm', senha: 'senha12345' }), redirect: 'manual' })).headers.get('set-cookie').split(';')[0];
   const post = async (url, dados) => decodeURIComponent((await fetch(B + url, { method: 'POST', headers: { cookie: ck }, body: new URLSearchParams(dados), redirect: 'manual' })).headers.get('location') || '');
-  const base = { auto_fechamento: '1', hora_fechamento: '12:30', telegram_chat: '42', telegram_token: '', teste_data: D, teste_email: 'eu@exemplo.com' };
+  const base = { auto_fechamento: '1', hora_fechamento: '12:30', telegram_chat: '42', teste_data: D, teste_email: 'eu@exemplo.com' };
   assert.match(await post('/config/automacao/agendar-teste', { ...base, teste_hora: '12:00' }), /já passou/); // agora = 13:00
   assert.match(await post('/config/automacao/agendar-teste', { ...base, teste_hora: '13:30', teste_email: 'ruim' }), /e-mail válido/);
   assert.match(await post('/config/automacao/agendar-teste', { ...base, teste_hora: '13:30' }), /Teste agendado para hoje às 13:30/);

@@ -11,7 +11,7 @@ const PORT = 4800 + Math.floor(Math.random() * 90), B = `http://127.0.0.1:${PORT
 const { variaveis } = require('./agilizone');
 const D = '2026-11-23'; // segunda: todas as lojas pagam
 const TOKEN = '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ012345';
-let srv, mock, tg; const msgs = [];
+let srv, mock, tg, web; const msgs = [];
 const espera = async (cond, ms = 20000) => { const fim = Date.now() + ms; while (Date.now() < fim) { if (cond()) return true; await new Promise((r) => setTimeout(r, 100)); } return false; };
 const envios = () => db.prepare('SELECT * FROM envios').all();
 
@@ -34,18 +34,21 @@ before(async () => {
       res.end(JSON.stringify({ ok: true, result: {} }));
     });
   });
-  await Promise.all([mock, tg].map((s) => new Promise((ok) => s.listen(0, '127.0.0.1', ok))));
+  web = http.createServer((req, res) => { // App da Web do script (de mentira): marca como gravado o que está na fila
+    req.on('data', () => {}); req.on('end', () => { db.prepare("UPDATE drive_fila_envios SET drive_id = '1GravadoPeloScript01' WHERE drive_id IS NULL").run(); res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ ok: true, gravados: 1, falhas: 0 })); });
+  });
+  await Promise.all([mock, tg, web].map((s) => new Promise((ok) => s.listen(0, '127.0.0.1', ok))));
   const set = db.prepare('INSERT INTO config (chave, valor) VALUES (?, ?)');
   for (const [k, v] of [['auto_fechamento', '1'], ['hora_fechamento', '00:00'], ['telegram_chat', '42'], ['email_para', 'fin@exemplo.com']]) set.run(k, v);
   const creds = Object.fromEntries(db.prepare('SELECT * FROM lojas').all().flatMap((l) => [[variaveis(l).id, 'cid'], [variaveis(l).secret, 's']]));
   db.prepare("INSERT INTO usuarios (nome, login, senha, perfil) VALUES ('Adm', 'adm', ?, 'admin')").run(hashSenha('senha12345'));
   srv = spawn(process.execPath, ['server.js'], { cwd: __dirname, env: { ...process.env, PORT, HOST: '127.0.0.1', ALERTAS: '', SYNC_ENTREGADORES: '0', EMAIL_SO_ARQUIVO: '1',
-    TELEGRAM_BOT_TOKEN: TOKEN, AGORA_TESTE: `${D} 13:00`, FECHAMENTO_PASSO_MS: '300', FECHAMENTO_RETRY_MS: '800', TELEGRAM_API_URL: `http://127.0.0.1:${tg.address().port}`,
+    TELEGRAM_BOT_TOKEN: TOKEN, DRIVE_SCRIPT_SEGREDO: 'segredo-de-teste-com-mais-de-24-caracteres', DRIVE_SCRIPT_URL: `http://127.0.0.1:${web.address().port}`, AGORA_TESTE: `${D} 13:00`, FECHAMENTO_PASSO_MS: '300', FECHAMENTO_RETRY_MS: '800', TELEGRAM_API_URL: `http://127.0.0.1:${tg.address().port}`,
     AGILIZONE_URL: `http://127.0.0.1:${mock.address().port}`, ...creds } });
   srv.stderr.on('data', (d) => process.stderr.write(d));
   await new Promise((ok, erro) => { srv.stdout.on('data', (d) => String(d).includes('Pagamento Entregadores') && ok()); srv.on('exit', erro); });
 });
-after(async () => { await new Promise((ok) => { srv.on('exit', ok); srv.kill(); }); mock.close(); tg.close(); db.close(); try { fs.rmSync(DIR, { recursive: true, force: true }); } catch {} });
+after(async () => { await new Promise((ok) => { srv.on('exit', ok); srv.kill(); }); mock.close(); tg.close(); web.closeAllConnections(); web.close(); db.close(); try { fs.rmSync(DIR, { recursive: true, force: true }); } catch {} });
 
 test('com cadastro incompleto: não envia, avisa no Telegram e não repete o mesmo aviso', async () => {
   assert.ok(await espera(() => msgs.some((m) => /NÃO foi enviado/.test(m.text))), 'alerta no Telegram');
@@ -67,6 +70,10 @@ test('corrigido o cadastro: envia sozinho (e-mail + planilha) e confirma no Tele
   assert.ok(fs.existsSync(path.join(DIR, 'envios', `${D}.xlsx`)), 'planilha guardada');
   assert.ok(fs.readdirSync(path.join(DIR, 'emails')).length >= 1, 'e-mail gerado');
   assert.ok(await espera(() => msgs.some((m) => /^✅ 23-11-2026 - MOTOBOYS enviado automaticamente/.test(m.text))), 'confirmação no Telegram');
+  const m = msgs.find((x) => /^✅ 23-11-2026/.test(x.text));
+  assert.match(m.text, /Confira o e-mail/);
+  assert.match(m.text, /Planilha salva no Google Drive/); // Drive gravado na hora, junto do e-mail
+  assert.ok(db.prepare('SELECT drive_id FROM drive_fila_envios').get().drive_id, 'planilha gravada no Drive');
   await new Promise((r) => setTimeout(r, 2000));
   assert.strictEqual(envios().length, 1, 'não envia de novo');
   assert.strictEqual(msgs.filter((x) => /^✅/.test(x.text)).length, 1);
@@ -82,7 +89,7 @@ test('Configurações: teste do Telegram e validação (o token nunca volta na t
   assert.match(await post('/config/automacao', { ...base, hora_fechamento: '25:99' }), /Horário inválido/);
   assert.match(await post('/config/automacao', { ...base, telegram_chat: 'abc' }), /Chat ID inválido/);
   const tela = await (await fetch(`${B}/config?aba=alertas`, { headers: { cookie: ck } })).text();
-  assert.ok(tela.includes('Fechamento automático e alertas no Telegram') && !tela.includes(TOKEN), 'tela sem o token');
+  assert.ok(tela.includes('Envio automático do fechamento') && !tela.includes(TOKEN), 'tela sem o token');
 });
 
 test('teste agendado: roda o fluxo de verdade, manda só ao e-mail de teste, não registra nada e avisa no Telegram uma vez', async () => {

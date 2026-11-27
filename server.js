@@ -1187,8 +1187,7 @@ const driveDestino = () => (cfg('drive_pasta') && cfg('drive_credencial') ? 'dir
 // Acionamento imediato: com DRIVE_SCRIPT_URL (URL do App da Web do script), o app manda o script gravar os pendentes AGORA
 // (botão "Enviar ao Drive" e horário do dia do fechamento). Sem ela, vale o acionador do Apps Script.
 const driveRapido = () => !!process.env.DRIVE_SCRIPT_URL;
-const horaDrive = () => cfg('hora_drive') || '12:00';
-const quandoGrava = () => (driveRapido() ? `às ${horaDrive()} do dia do fechamento ou ao clicar em "Enviar ao Drive"` : 'em até 5 minutos (acionador do Apps Script)');
+const quandoGrava = () => (driveRapido() ? 'ao clicar em "Enviar ao Drive"' : 'em até 5 minutos (acionador do Apps Script)');
 async function acionaScript() { // { ok, gravados, falhas } ou { erro }
   try {
     const r = await fetch(process.env.DRIVE_SCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ segredo: process.env.DRIVE_SCRIPT_SEGREDO }), redirect: 'follow', signal: AbortSignal.timeout(90e3) });
@@ -1199,6 +1198,7 @@ async function acionaScript() { // { ok, gravados, falhas } ou { erro }
 }
 // Manda gravar agora e confere na fila se o envio do dia ficou gravado: { ok } ou { ok: false, erro }.
 async function gravaAgora(d) {
+  driveUltimo = Date.now(); // o reenvio periódico só entra se esta tentativa falhar
   const e = envioDo(d), r = await acionaScript(), q = e && db.prepare('SELECT drive_id, erro FROM drive_fila_envios WHERE envio_id = ?').get(e.id);
   return q?.drive_id ? { ok: true } : { ok: false, erro: r.erro || q?.erro || 'o script não gravou (veja o log do Apps Script)' };
 }
@@ -1238,7 +1238,12 @@ async function enviaFechamento(d, dia, user, { semOcConfirmado = false, emailTes
     const ok = { titulo, linhas: linhas.length, total, para };
     const destino = driveDestino();
     if (destino === 'sem') return { ...ok, drive: 'sem' };
-    if (destino === 'fila') { enfileiraEnvio({ id: envioId, pagamento: d }); return { ...ok, drive: 'fila' }; } // o Apps Script grava na pasta
+    if (destino === 'fila') { // entra na fila e, com o App da Web, o script grava na pasta já (senão, o acionador do Apps Script)
+      enfileiraEnvio({ id: envioId, pagamento: d });
+      if (!driveRapido()) return { ...ok, drive: 'fila' };
+      const g = await gravaAgora(d);
+      return { ...ok, drive: g.ok ? 'ok' : { erro: g.erro } };
+    }
     try { await subirEnvioDrive(d, buf, user); return { ...ok, drive: 'ok' }; } catch (e) { return { ...ok, drive: { erro: e.message } }; }
   } finally { emEnvio.delete(d); }
 }
@@ -1252,10 +1257,6 @@ app.post('/conferencia/enviar', so((r) => confere(r.user)), async (req, res, nex
   if (r.teste) return volta(res, url, 'ok', `TESTE enviado por e-mail para ${r.para.join(', ')} (${r.linhas} linhas, ${brl(r.total)}). Nada foi registrado: pode enviar de novo.`);
   if (r.drive === 'sem') return volta(res, url, 'ok', `${r.titulo} enviado por e-mail. Google Drive não configurado.`);
   if (r.drive === 'ok') return volta(res, url, 'ok', `${r.titulo} enviado por e-mail e salvo no Google Drive.`);
-  if (r.drive === 'fila' && driveRapido()) { // envio manual: já grava no Drive
-    const g = await gravaAgora(d);
-    return g.ok ? volta(res, url, 'ok', `${r.titulo} enviado por e-mail e gravado no Google Drive.`) : volta(res, url, 'erro', `${r.titulo} enviado por e-mail, mas o Drive não gravou agora (${g.erro}). Use "Enviar ao Drive" para tentar de novo.`);
-  }
   if (r.drive === 'fila') return volta(res, url, 'ok', `${r.titulo} enviado por e-mail. A planilha entrou na fila e o Apps Script grava ${quandoGrava()}.`);
   volta(res, url, 'erro', `E-mail enviado, mas o Drive falhou: ${r.drive.erro} Use "Enviar ao Drive" para tentar de novo.`);
 } catch (e) { next(e); } });
@@ -2121,25 +2122,26 @@ ${semSmtp ? html`<div class="alert warn">${icone('alerta')}<div>Sem servidor de 
 ${ultimosAlertas.length ? html`<details class="fold" style="margin-top:8px"><summary class="mut small">${icone('chevron', 'chev')} Últimos alertas</summary><ul class="timeline" style="margin-top:10px">${ultimosAlertas.map((a) => html`<li>${a.acao}<small>${a.quando}</small></li>`)}</ul></details>` : ''}</div>
 <div class="card-f"><button class="btn btn-pri">${icone('check')} Salvar alertas</button></div></form>`;
   const autoLigado = v('auto_fechamento') === '1', temToken = !!process.env.TELEGRAM_BOT_TOKEN, tgOk = temToken && TG.ids().length > 0, driveOk = !!(v('drive_pasta') && v('drive_credencial'));
-  const faltas = [!autoLigado && 'fechamento automático desligado', semSmtp && 'servidor de e-mail', !nDest && 'destinatários do e-mail', !tgOk && 'Telegram (token e chat)', !driveOk && 'Google Drive (opcional)'].filter(Boolean);
-  const automacao = html`<form method="post" action="/config/automacao" class="card cfg-estreito" id="automacao" data-guarda><div class="card-h"><span class="hico pri">${icone('enviar')}</span><div class="t"><h2>Fechamento automático e alertas no Telegram</h2><p>No dia de pagamento, o sistema puxa tudo do Agilizone, confere e, sem nenhuma pendência, gera a planilha no modelo e envia por e-mail e Drive. Com qualquer problema não envia nada e avisa no Telegram.</p></div></div><div class="card-b">
-<p class="cfg-sit ${autoLigado && tgOk && !semSmtp && nDest ? 'ok' : 'warn'}" role="status"><b>Situação real:</b> ${autoLigado ? `ligado: roda nos dias de pagamento depois das ${v('hora_fechamento') || '06:00'} (Teresina), com pedidos até ${v('hora_corte') || '05:00'} do dia do pagamento` : 'desligado'}${faltas.filter((f) => f !== 'fechamento automático desligado').length ? `. Falta: ${faltas.filter((f) => f !== 'fechamento automático desligado').join(', ')}` : ''}.</p>
-<div class="field" style="display:flex;gap:12px;align-items:flex-start"><label class="check" style="flex:1;margin:0;align-items:flex-start"><input type="checkbox" name="auto_fechamento" value="1" ${autoLigado ? 'checked' : ''} style="margin-top:3px"><span><b>Enviar o fechamento automaticamente</b><br><span class="mut small" style="font-weight:400">Depois do horário, nos dias de pagamento de cada loja. Se houver qualquer pendência (cadastro incompleto, erro no Agilizone, ocorrências não carregadas), não envia: avisa no Telegram e tenta de novo a cada 30 minutos.</span></span></label>
-<input type="time" name="hora_fechamento" value="${v('hora_fechamento') || '06:00'}" aria-label="Horário do envio automático" style="width:120px"></div>
-<div class="fgrid"><div class="field"><label for="hora_corte">Pedidos contados até</label><input id="hora_corte" name="hora_corte" type="time" value="${v('hora_corte') || '05:00'}" required style="width:120px"><p class="hint">Hora do dia do pagamento em que o período termina (começa às 12:00 do 1º dia de referência). O envio precisa ser depois dela.</p></div>
-<div class="field"><label for="hora_drive">Gravar no Drive às</label><input id="hora_drive" name="hora_drive" type="time" value="${v('hora_drive') || '12:00'}" required style="width:120px"><p class="hint">${process.env.DRIVE_SCRIPT_URL ? 'No dia do fechamento, a partir desta hora o app manda o Apps Script gravar a planilha na pasta do Drive. O botão "Enviar ao Drive" grava na hora.' : 'Precisa de DRIVE_SCRIPT_URL no servidor (App da Web do script). Sem ela, o Drive depende do acionador do Apps Script.'}</p></div>
-<div class="field"><label for="auto_email_para">Enviar a planilha para</label><textarea id="auto_email_para" name="email_para" style="min-height:70px" placeholder="financeiro@grupofornopaulista.com">${v('email_para')}</textarea><p class="hint">Um ou mais e-mails, um por linha ou separados por vírgula. Vale para o envio automático e o manual.</p></div></div>
-<details class="fold" style="margin-bottom:12px" ${tgOk ? '' : 'open'}><summary class="mut small">${icone('chevron', 'chev')} Como criar o bot do Telegram</summary><ol style="margin:8px 0 0 22px;line-height:1.7"><li>No Telegram, abra <b>@BotFather</b>, envie <b>/newbot</b> e siga os passos. Ele devolve o <b>token</b>.</li><li>Guarde o token na variável <code>TELEGRAM_BOT_TOKEN</code> do servidor (no computador local, no arquivo <code>.env</code>) e reinicie o app. Ele não é digitado aqui.</li><li>Mande o <b>link do bot</b> (aparece em "Convidar alguém", logo abaixo) a quem deve receber. A pessoa toca em <b>Iniciar</b> e o pedido aparece em <b>Pedidos para receber</b>, para você aprovar. Para sair, ela envia <b>/parar</b>.</li><li>Use <b>Enviar teste</b> para conferir.</li></ol></details>
+    const automacao = html`<form method="post" action="/config/automacao" class="card cfg-estreito" id="automacao" data-guarda><div class="card-h"><span class="hico pri">${icone('enviar')}</span><div class="t"><h2>Envio automático do fechamento</h2><p>No dia de pagamento, no horário que você definir, o sistema envia sozinho: o Excel por e-mail, o mesmo Excel no Drive e um aviso no Telegram.</p></div></div><div class="card-b">
+<p class="cfg-sit ${autoLigado && tgOk && !semSmtp && nDest && process.env.DRIVE_SCRIPT_URL ? 'ok' : 'warn'}" role="status"><b>Situação:</b> ${autoLigado ? `LIGADO. No dia de pagamento, a partir das ${v('hora_fechamento') || '06:00'} (Teresina), envia o e-mail, grava no Drive e avisa no Telegram` : '<b>DESLIGADO</b>: nada é enviado sozinho. Marque a caixa abaixo e clique em Salvar'}${[semSmtp && 'servidor de e-mail', !nDest && 'e-mail de destino', !tgOk && 'Telegram (token e alguém aprovado)', !process.env.DRIVE_SCRIPT_URL && 'Drive (DRIVE_SCRIPT_URL no servidor)'].filter(Boolean).length ? `. Falta configurar: ${[semSmtp && 'servidor de e-mail', !nDest && 'e-mail de destino', !tgOk && 'Telegram (token e alguém aprovado)', !process.env.DRIVE_SCRIPT_URL && 'Drive (DRIVE_SCRIPT_URL no servidor)'].filter(Boolean).join(', ')}` : ''}.</p>
+<div class="field" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><label class="check" style="flex:1;margin:0;min-width:240px"><input type="checkbox" name="auto_fechamento" value="1" ${autoLigado ? 'checked' : ''}><span><b>Enviar automaticamente no dia do fechamento</b></span></label>
+<label class="mut small" for="hora_fechamento">às</label><input id="hora_fechamento" type="time" name="hora_fechamento" value="${v('hora_fechamento') || '06:00'}" style="width:120px"></div>
+<p class="hint" style="margin-top:-6px">Se houver qualquer problema (cadastro incompleto, erro no Agilizone…), não envia nada: avisa no Telegram e tenta de novo a cada 30 minutos.</p>
+<div class="field"><label for="auto_email_para">Enviar o e-mail para</label><textarea id="auto_email_para" name="email_para" style="min-height:70px" placeholder="financeiro@grupofornopaulista.com">${v('email_para')}</textarea><p class="hint">Um ou mais e-mails, um por linha ou separados por vírgula.</p></div>
+<details class="fold" style="margin-bottom:12px"><summary class="mut small">${icone('chevron', 'chev')} Avançado</summary><div class="field" style="margin-top:10px"><label for="hora_corte">Pedidos contados até</label><input id="hora_corte" name="hora_corte" type="time" value="${v('hora_corte') || '05:00'}" required style="width:120px"><p class="hint">Hora do dia do pagamento em que o período dos pedidos termina (ele começa às 12:00 do 1º dia de referência). O horário do envio precisa ser depois dela. Normalmente não precisa mexer.</p></div></details>
+<details class="fold" style="margin-bottom:12px" ${temToken ? '' : 'open'}><summary class="mut small">${icone('chevron', 'chev')} Como criar o bot do Telegram</summary><ol style="margin:8px 0 0 22px;line-height:1.7"><li>No Telegram, abra <b>@BotFather</b>, envie <b>/newbot</b> e siga os passos. Ele devolve o <b>token</b>.</li><li>Guarde o token na variável <code>TELEGRAM_BOT_TOKEN</code> do servidor (no computador local, no arquivo <code>.env</code>) e reinicie o app. Ele não é digitado aqui.</li><li>Mande o <b>link do bot</b> (aparece em "Convidar alguém", logo abaixo) a quem deve receber. A pessoa toca em <b>Iniciar</b> e o pedido aparece em <b>Pedidos para receber</b>, para você aprovar. Para sair, ela envia <b>/parar</b>.</li><li>Use <b>Enviar teste</b> para conferir.</li></ol></details>
 <div class="fgrid"><div class="field"><label>Bot do Telegram</label>${temToken ? html`<p class="cfg-sit ok" role="status" style="margin:0"><b>Token configurado no servidor.</b></p>` : html`<p class="cfg-sit warn" role="status" style="margin:0"><b>Sem token.</b> Defina <code>TELEGRAM_BOT_TOKEN</code> nas variáveis do servidor (ou no arquivo <code>.env</code>, no computador local) e reinicie o app.</p>`}<p class="hint">O token nunca é digitado nem guardado aqui.</p></div>
 <div class="field"><label>Quem recebe</label><p class="hint" style="margin-top:0">${TG.ids().length ? `${TG.ids().length} pessoa(s)/grupo(s) recebem os alertas.` : 'Ninguém ainda.'} Convide e aprove nos quadros logo abaixo deste cartão.</p></div></div>
+<details class="fold" style="margin-bottom:12px"><summary class="mut small">${icone('chevron', 'chev')} Testes (opcional)</summary><div style="margin-top:10px">
 <div class="field"><label for="d_sim">Simular um fechamento</label><div style="display:flex;gap:8px;flex-wrap:wrap"><input id="d_sim" name="d_sim" type="date" value="${agora().data}"><button class="btn btn-sec" formaction="/config/automacao/simular">Simular (não envia nada)</button></div><p class="hint">Roda a conferência da data e avisa no Telegram se estaria tudo certo ou o que está faltando.</p></div>
 ${(() => { let ta = null; try { ta = JSON.parse(v('teste_auto') || 'null'); } catch {} const hojeA = agora().data, ult = agenda(lojasAtivas(), AG.soma(hojeA, -10), hojeA).map((p) => p.pagamento).sort().pop() || hojeA;
   return html`<div class="field" role="group" aria-label="Teste automático agendado (hoje)"><b>Teste automático agendado (hoje)</b>
 ${ta && !ta.feito ? html`<p class="cfg-sit ok" role="status">Agendado para hoje às <b>${ta.hora}</b>: fechamento de ${dataFmt(ta.data)}, e-mail de teste só para <b>${ta.email}</b>.</p>` : ta?.feito ? html`<p class="mut small">Último teste rodou em ${ta.feito.replace(/^(\d{4})-(\d{2})-(\d{2})/, '$3/$2/$1')} (fechamento de ${dataFmt(ta.data)}). O resultado foi para o Telegram e ficou no histórico.</p>` : ''}
 <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end"><div><label class="mut small" for="teste_data">Pagamento a testar</label><input id="teste_data" name="teste_data" type="date" value="${ta?.data || ult}"></div><div><label class="mut small" for="teste_hora">Hora de hoje</label><input id="teste_hora" name="teste_hora" type="time" value="${ta?.hora || '17:30'}"></div><div style="flex:1;min-width:220px"><label class="mut small" for="teste_email">Enviar o teste só para</label><input id="teste_email" name="teste_email" type="email" value="${ta?.email || req.user.email || ''}" autocomplete="off"></div></div>
 <div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-sec" formaction="/config/automacao/agendar-teste">Agendar teste</button>${ta && !ta.feito ? html`<button class="btn btn-ghost" formaction="/config/automacao/cancelar-teste">Cancelar teste</button>` : ''}</div>
-<p class="hint">Na hora marcada o sistema faz tudo como no dia real (puxa o Agilizone, confere, gera a planilha), mas manda o e-mail só para o endereço acima, com [TESTE] no assunto, sem registrar nada e sem o financeiro receber. O resultado vem no Telegram.</p></div>`; })()}</div>
-<div class="card-f"><button class="btn btn-pri">${icone('check')} Salvar</button><button class="btn btn-sec" formaction="/config/automacao/teste">${icone('enviar', 'sm')} Enviar teste</button></div></form>`;
+<p class="hint">Na hora marcada o sistema faz tudo como no dia real (puxa o Agilizone, confere, gera a planilha), mas manda o e-mail só para o endereço acima, com [TESTE] no assunto, sem registrar nada e sem o financeiro receber. O resultado vem no Telegram.</p></div>`; })()}
+<div class="field"><button class="btn btn-sec" formaction="/config/automacao/teste">${icone('enviar', 'sm')} Enviar mensagem de teste ao Telegram</button></div></div></details></div>
+<div class="card-f"><button class="btn btn-pri">${icone('check')} Salvar</button></div></form>`;
   const calCampos = (p, nome, cal, travaNome = false) => {
     const er = (c) => (erros[c] && ctx.abrir === p ? html`<div class="erro-campo" id="${p}-e-${c}" role="alert">${icone('erro', 'sm')} <span>${erros[c]}</span></div>` : ''), iv = (c) => (erros[c] && ctx.abrir === p ? new Raw(`aria-invalid="true" aria-describedby="${p}-e-${c}"`) : '');
     let leitura = ''; try { leitura = AG.textoCalendario(AG.lerCalendario(cal)); } catch (_) {}
@@ -2322,14 +2324,14 @@ app.post('/config/lojas/:id', so((r) => r.user.perfil === 'admin'), salvaLoja);
 
 // Fechamento automático + Telegram (token e chat id). O token nunca aparece na tela nem no log.
 function salvaAutomacao(req) {
-  const b = req.body, hora = String(b.hora_fechamento || '06:00'), corte = String(b.hora_corte || '05:00'), horaD = String(b.hora_drive || '12:00'), chat = String(b.telegram_chat || '').trim();
+  const b = req.body, hora = String(b.hora_fechamento || '06:00'), corte = String(b.hora_corte || '05:00'), chat = String(b.telegram_chat || '').trim();
   const emails = [...new Set(listaEmails(b.email_para).map((e) => e.toLowerCase()))], invalido = emails.find((e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
-  if (![hora, corte, horaD].every((h) => /^([01]\d|2[0-3]):[0-5]\d$/.test(h))) throw falha('Horário inválido.');
+  if (![hora, corte].every((h) => /^([01]\d|2[0-3]):[0-5]\d$/.test(h))) throw falha('Horário inválido.');
   if (hora < corte) throw falha(`O envio (${hora}) não pode ser antes do horário de corte dos pedidos (${corte}).`);
   if (invalido) throw falha(`E-mail inválido: ${invalido}. Use e-mails completos, um por linha ou separados por vírgula.`);
   if (chat && !/^-?\d+([\s,;]+-?\d+)*$/.test(chat)) throw falha('Chat ID inválido: só números, separados por vírgula (o de grupo começa com -).');
   const set = db.prepare('INSERT INTO config (chave, valor) VALUES (?, ?) ON CONFLICT (chave) DO UPDATE SET valor = excluded.valor');
-  tx(() => { set.run('auto_fechamento', b.auto_fechamento ? '1' : '0'); set.run('hora_fechamento', hora); set.run('hora_corte', corte); set.run('hora_drive', horaD); if (b.email_para !== undefined) set.run('email_para', emails.join(', ')); if (b.telegram_chat !== undefined) set.run('telegram_chat', chat.split(/[\s,;]+/).filter(Boolean).join(',')); });
+  tx(() => { set.run('auto_fechamento', b.auto_fechamento ? '1' : '0'); set.run('hora_fechamento', hora); set.run('hora_corte', corte); if (b.email_para !== undefined) set.run('email_para', emails.join(', ')); if (b.telegram_chat !== undefined) set.run('telegram_chat', chat.split(/[\s,;]+/).filter(Boolean).join(',')); });
   log(req.user.id, 'config', `Fechamento automático: ${b.auto_fechamento ? `ligado às ${hora}` : 'desligado'}; corte dos pedidos ${corte}; e-mails: ${emails.join(', ') || 'nenhum'}; Telegram: ${chat ? `chat ${chat}` : 'sem chat'}`);
 }
 const comAutomacao = (fn) => (req, res, next) => (async () => { // salva os campos do formulário e depois executa a ação do botão
@@ -2486,13 +2488,13 @@ async function cadastroTelegram() {
   catch (e) { /* sem rede ou token ruim: tenta de novo na próxima rodada */ }
   finally { lendoTg = false; }
 }
-// Drive no horário: no dia do fechamento, a partir de "Gravar no Drive às" (padrão 12:00), manda o script gravar as planilhas
-// ainda pendentes (as de dias anteriores vão sem esperar a hora). Tenta de novo a cada 30 min e avisa no Telegram.
+// Reenvio: se uma planilha ficou pendente no Drive (o script falhou na hora do envio), manda o script gravar de novo a cada 30 min
+// e avisa no Telegram.
 let driveRodando = false, driveUltimo = 0, driveAviso = 0;
 async function driveAgendado() {
   if (driveRodando || !driveRapido() || driveDestino() !== 'fila' || TESTE_LOCAL || process.env.ALERTAS === '0') return;
-  const { data: hoje, hora } = agora();
-  const pend = () => db.prepare('SELECT e.pagamento FROM drive_fila_envios q JOIN envios e ON e.id = q.envio_id WHERE q.drive_id IS NULL AND (e.pagamento < ? OR (e.pagamento = ? AND ? >= ?))').all(hoje, hoje, hora, horaDrive());
+  const { hora } = agora();
+  const pend = () => db.prepare('SELECT e.pagamento FROM drive_fila_envios q JOIN envios e ON e.id = q.envio_id WHERE q.drive_id IS NULL').all();
   if (!pend().length || Date.now() - driveUltimo < TENTAR_A_CADA) return;
   driveRodando = true; driveUltimo = Date.now();
   try {
@@ -2505,7 +2507,7 @@ setInterval(() => driveAgendado().catch((e) => console.error('drive agendado:', 
 setInterval(cadastroTelegram, Math.min(15e3, PASSO_FECHAMENTO)).unref();
 setTimeout(cadastroTelegram, 5e3).unref();
 const textoFalha = (d, problemas, auto) => `⚠️ Fechamento ${auto ? 'automático ' : ''}de ${dataFmt(d)} NÃO foi enviado (${problemas.length} problema${problemas.length > 1 ? 's' : ''}):\n${problemas.slice(0, 8).map((p) => `• ${p}`).join('\n')}${problemas.length > 8 ? `\n… e mais ${problemas.length - 8}` : ''}\n\nNada foi enviado.${auto ? ' Tento de novo a cada 30 min; ou corrija e envie na Conferência.' : ''}${linkConf(d)}`;
-const textoOk = (e, dia) => `${e.drive?.erro ? '⚠️' : '✅'} ${e.titulo} enviado automaticamente\n${porLoja(dia)}\nTotal ${brl(e.total)} (${e.linhas} linhas)\nE-mail: ${e.para.join(', ')}\n${e.drive === 'ok' ? 'Salvo no Google Drive.' : e.drive === 'fila' ? `Na fila do Drive: grava ${quandoGrava()}.` : e.drive === 'sem' ? 'Google Drive não configurado.' : `Drive FALHOU (${e.drive.erro}): use "Enviar ao Drive" na Conferência.`}`;
+const textoOk = (e, dia) => `${e.drive?.erro ? '⚠️' : '✅'} ${e.titulo} enviado automaticamente\n${porLoja(dia)}\nTotal ${brl(e.total)} (${e.linhas} linhas)\nE-mail: ${e.para.join(', ')}\nConfira o e-mail com a planilha em anexo.\n${e.drive === 'ok' ? 'Planilha salva no Google Drive.' : e.drive === 'fila' ? `Na fila do Drive: grava ${quandoGrava()}.` : e.drive === 'sem' ? 'Google Drive não configurado.' : `Drive FALHOU (${e.drive.erro}): use "Enviar ao Drive" na Conferência.`}`;
 async function fechamentoAutomatico() {
   if (fechando || TESTE_LOCAL || process.env.ALERTAS === '0' || cfg('auto_fechamento') !== '1') return; // no modo teste local o automático não roda
   const { data: d, hora } = agora();
